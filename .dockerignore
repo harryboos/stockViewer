@@ -1,6 +1,7 @@
 .git
 .gitignore
-.openai
+.openai/*
+!.openai/hosting.json
 .vinext
 .venv
 .wrangler
