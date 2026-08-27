@@ -8,7 +8,7 @@ x-log-policy: &log-policy
 
 services:
   caddy:
-    image: caddy:2.11.4-alpine
+    image: ${CADDY_IMAGE:-caddy:2.11.4-alpine}
     restart: unless-stopped
     depends_on:
       portal:
@@ -36,6 +36,8 @@ services:
   portal:
     build:
       context: ./portal
+      args:
+        NODE_BASE_IMAGE: ${NODE_IMAGE:-node:22-bookworm-slim}
     restart: unless-stopped
     init: true
     read_only: true
@@ -66,6 +68,8 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile.stock
+      args:
+        NODE_BASE_IMAGE: ${NODE_IMAGE:-node:22-bookworm-slim}
     restart: unless-stopped
     init: true
     environment:
@@ -106,7 +110,7 @@ services:
     logging: *log-policy
 
   legend-football-manager:
-    image: node:22-bookworm-slim
+    image: ${NODE_IMAGE:-node:22-bookworm-slim}
     restart: unless-stopped
     init: true
     working_dir: /app

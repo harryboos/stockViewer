@@ -1,4 +1,5 @@
-FROM node:22-bookworm-slim
+ARG NODE_BASE_IMAGE=node:22-bookworm-slim
+FROM ${NODE_BASE_IMAGE}
 
 ENV NODE_ENV=production \
     PORT=3000

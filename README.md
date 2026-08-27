@@ -71,7 +71,7 @@ npm run dev
 
 项目现在提供一个统一私人首页，可在验证一次共享访问密钥后进入“观星 A股”和同级目录中的 `legend-football-manager`。部署使用三个同域子域名、Caddy 自动 HTTPS、共享 HttpOnly 会话和 Docker Compose；股票与足球应用端口只在 Docker 内部网络中开放。
 
-完整的域名、环境变量、启动、验收与备份步骤见 [私人服务器部署文档](docs/server-deployment.md)。服务器专用密钥填写在 `deploy/.env.server`，不要填写到本地 `.env.local` 或提交到 Git。
+完整的域名、环境变量、启动、验收、Docker Hub 拉取失败处理与备份步骤见 [私人服务器部署文档](docs/server-deployment.md)。部署配置支持通过 `CADDY_IMAGE`、`NODE_IMAGE` 切换到阿里云 ACR 镜像。服务器专用密钥填写在 `deploy/.env.server`，不要填写到本地 `.env.local` 或提交到 Git。
 
 ## AI 配置
 

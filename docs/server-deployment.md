@@ -71,12 +71,68 @@ PORTAL_SESSION_SECRET=粘贴第二条命令生成的64位随机字符串
 - 股票和足球应用可以使用不同的 DeepSeek Key，分别填写 `STOCK_DEEPSEEK_API_KEY` 和 `FOOTBALL_DEEPSEEK_API_KEY`。
 - 修改 `SITE_ACCESS_KEY` 或 `PORTAL_SESSION_SECRET` 后，已登录浏览器的入口会话立即失效。
 
+## Docker Hub 拉取失败
+
+如果日志包含 `registry-1.docker.io:443`、`connection refused`，随后又出现 `No such image`，根因是服务器无法从 Docker Hub 拉取第一个基础镜像；后面的镜像会被中断，这不是 Caddy 或 Node 标签不存在。
+
+### 推荐：使用同地域的阿里云 ACR
+
+个人项目可以使用 ACR 个人版作为免费镜像中转。先在容器镜像服务中创建与 ECS 同地域的个人版实例、命名空间，以及 `caddy`、`node` 两个私有仓库。然后在一台能正常访问 Docker Hub 的电脑上执行以下命令，把占位内容替换成 ACR 控制台“访问凭证”和仓库页面显示的实际地址：
+
+```bash
+docker pull caddy:2.11.4-alpine
+docker pull node:22-bookworm-slim
+
+docker login --username='<ACR 登录名>' '<ACR 实例域名>'
+docker tag caddy:2.11.4-alpine '<ACR 实例域名>/<命名空间>/caddy:2.11.4-alpine'
+docker tag node:22-bookworm-slim '<ACR 实例域名>/<命名空间>/node:22-bookworm-slim'
+docker push '<ACR 实例域名>/<命名空间>/caddy:2.11.4-alpine'
+docker push '<ACR 实例域名>/<命名空间>/node:22-bookworm-slim'
+```
+
+回到 ECS，用同一个实例域名登录。不要把 Registry 密码写进 `.env.server` 或发到聊天中：
+
+```bash
+docker login --username='<ACR 登录名>' '<ACR 实例域名>'
+```
+
+在 `deploy/.env.server` 增加：
+
+```dotenv
+CADDY_IMAGE=<ACR 实例域名>/<命名空间>/caddy:2.11.4-alpine
+NODE_IMAGE=<ACR 实例域名>/<命名空间>/node:22-bookworm-slim
+```
+
+部署文件会把 `NODE_IMAGE` 同时用于首页和股票应用的构建基础镜像，以及足球应用的运行镜像。企业版 ACR 用户也可以用“制品订阅”直接把 `library/caddy` 和 `library/node` 的指定标签同步到同地域仓库，无需从本机推送。
+
+### 临时方案：阿里云专属镜像加速地址
+
+也可以在 ACR 控制台的“镜像工具 > 镜像加速器”复制本账号专属地址，并将它合并到 `/etc/docker/daemon.json`：
+
+```json
+{
+  "registry-mirrors": ["https://<你的专属地址>.mirror.aliyuncs.com"]
+}
+```
+
+如果文件中已有其他 Docker 配置，保留原字段，只增加 `registry-mirrors`，不要整文件覆盖。保存后执行：
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart docker
+docker info
+docker pull caddy:2.11.4-alpine
+docker pull node:22-bookworm-slim
+```
+
+阿里云目前说明镜像加速器已停止同步最新镜像，因此这条路径只能作为快速尝试；指定标签仍拉不到时，改用上面的 ACR 仓库方案。
+
 ## 首次启动
 
 先检查最终配置，再构建并启动：
 
 ```bash
-docker compose --env-file deploy/.env.server -f deploy/compose.server.yml config
+docker compose --env-file deploy/.env.server -f deploy/compose.server.yml config --quiet
 docker compose --env-file deploy/.env.server -f deploy/compose.server.yml up -d --build
 docker compose --env-file deploy/.env.server -f deploy/compose.server.yml ps
 ```
