@@ -1,0 +1,16 @@
+.git
+.gitignore
+.openai
+.vinext
+.venv
+.wrangler
+data
+deploy/.env.server
+dist
+node_modules
+npm-debug.log*
+outputs
+work
+__pycache__
+*.pyc
+.DS_Store
