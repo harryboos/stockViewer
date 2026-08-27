@@ -28,6 +28,7 @@ yarn-error.log*
 
 # local environment
 .env*
+!.env.example
 
 # deployment and generated files
 .vercel
@@ -36,3 +37,9 @@ next-env.d.ts
 /.wrangler/
 /outputs/
 /work/
+/.venv/
+/data/*.sqlite3
+/data/*.sqlite3-shm
+/data/*.sqlite3-wal
+__pycache__/
+*.pyc

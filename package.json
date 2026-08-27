@@ -6,13 +6,19 @@
     "node": ">=22.13.0"
   },
   "scripts": {
-    "dev": "vinext dev",
+    "setup": "node scripts/setup-python.mjs",
+    "dev": "node --env-file-if-exists=.env.local scripts/local-stack.mjs dev",
+    "dev:web": "vinext dev",
     "build": "vinext build",
-    "start": "vinext start",
-    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next"
+    "start": "node --env-file-if-exists=.env.local scripts/local-stack.mjs start",
+    "start:web": "vinext start",
+    "daily": "node --env-file-if-exists=.env.local scripts/run-daily.mjs",
+    "check:backend": ".venv/bin/python -m compileall -q backend",
+    "test:backend": ".venv/bin/python -m unittest discover backend -p 'test_*.py'",
+    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next --ignore-pattern .venv"
   },
   "dependencies": {
-    "next": "16.2.6",
+    "next": "^16.3.3",
     "react": "19.2.6",
     "react-dom": "19.2.6"
   },
