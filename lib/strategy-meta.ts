@@ -77,12 +77,12 @@ export const AI_META = {
     model: 'DeepSeek', monogram: 'D', theme: 'deepseek', fallbackTitle: '统一研究排序',
     logic: '同一提示语 · 同一候选池 · 同一输出约束',
   },
-  gemini: {
-    model: 'Gemini', monogram: 'G', theme: 'gemini', fallbackTitle: '统一研究排序',
+  glm: {
+    model: 'GLM 5.3', monogram: '智', theme: 'glm', fallbackTitle: '统一研究排序',
     logic: '同一提示语 · 同一候选池 · 同一输出约束',
   },
-  openai: {
-    model: 'ChatGPT', monogram: 'C', theme: 'chatgpt', fallbackTitle: '统一研究排序',
+  qwen: {
+    model: 'Qwen 3.8 Max', monogram: '千', theme: 'qwen', fallbackTitle: '统一研究排序',
     logic: '同一提示语 · 同一候选池 · 同一输出约束',
   },
 } satisfies Record<AiProvider, {

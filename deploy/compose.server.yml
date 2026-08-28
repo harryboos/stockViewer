@@ -91,10 +91,12 @@ services:
       DAILY_RUN_SECRET: ${DAILY_RUN_SECRET:-}
       DEEPSEEK_API_KEY: ${STOCK_DEEPSEEK_API_KEY:-}
       DEEPSEEK_MODEL: ${STOCK_DEEPSEEK_MODEL:-deepseek-chat}
-      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5.4-mini}
+      GLM_API_KEY: ${GLM_API_KEY:-}
+      GLM_MODEL: ${GLM_MODEL:-glm-5.3}
+      GLM_BASE_URL: ${GLM_BASE_URL:-https://open.bigmodel.cn/api/paas/v4}
+      QWEN_API_KEY: ${QWEN_API_KEY:-}
+      QWEN_MODEL: ${QWEN_MODEL:-qwen3.8-max}
+      QWEN_BASE_URL: ${QWEN_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
     expose:
       - "3000"
     volumes:

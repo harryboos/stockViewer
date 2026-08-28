@@ -140,7 +140,11 @@ export function StrategiesView({
         <div className="ai-grid">
           {aiItems.map((run) => {
             const meta = AI_META[run.provider];
-            const apiKeyName = run.provider === 'openai' ? 'OPENAI_API_KEY' : `${run.provider.toUpperCase()}_API_KEY`;
+            const apiKeyName = {
+              deepseek: 'DEEPSEEK_API_KEY',
+              glm: 'GLM_API_KEY',
+              qwen: 'QWEN_API_KEY',
+            }[run.provider];
             return (
               <article className={`ai-card ${meta.theme}`} key={run.provider}>
                 <div className="ai-card-heading">
@@ -156,11 +160,14 @@ export function StrategiesView({
                 <div className="logic-line"><span>选股逻辑</span><strong>{run.result?.logic ?? meta.logic}</strong></div>
                 <div className="ai-picks">
                   {run.result?.picks.map((pick, index) => (
-                    <div key={pick.code}>
+                    <div className="ai-pick-row" key={pick.code}>
                       <span className="rank-circle">{index + 1}</span>
-                      <div><strong>{pick.name}</strong><small>{pick.code} · {pick.reason}</small></div>
+                      <div className="ai-pick-copy">
+                        <div className="ai-pick-name"><strong>{pick.name}</strong><small>{pick.code}</small></div>
+                        <p className="ai-pick-reason">{pick.reason}</p>
+                        <p className="pick-risk"><span>风险</span>{pick.risk}</p>
+                      </div>
                       <div className="score"><i style={{ width: `${Math.max(pick.score - 25, 10)}%` }} /><span>{pick.score}</span></div>
-                      <p className="pick-risk">风险：{pick.risk}</p>
                     </div>
                   )) ?? (
                     <div className="ai-empty"><span className={run.status === 'running' ? 'loading-ring' : ''} /><strong>{run.status === 'running' ? '模型正在分析真实行情' : '暂无真实结果'}</strong></div>

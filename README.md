@@ -1,6 +1,6 @@
 # 观星 A股
 
-可在本地或私人服务器运行的简体中文 A 股观察台。它可以管理自选股、读取免费真实行情、按公开方法计算量化策略，并让 DeepSeek、Gemini、ChatGPT 各自每天完成一次 AI 选股。
+可在本地或私人服务器运行的简体中文 A 股观察台。它可以管理自选股、读取免费真实行情、按公开方法计算量化策略，查看大盘量能与资金流，并让 DeepSeek、GLM 5.3、Qwen 3.8 Max 各自每天完成一次 AI 选股。
 
 ![观星 A股预览](public/og.png)
 
@@ -34,7 +34,7 @@ FastAPI 数据服务（Python）
        ├── 东方财富备用线路：实时快照、概念板块与成份股（绕过异常系统代理）
        ├── BaoStock：股票目录、历史日线、故障降级
        ├── SQLite：自选股、缓存、每日结果
-       └── DeepSeek / Gemini / OpenAI 官方接口
+       └── DeepSeek / 智谱 GLM / 阿里云百炼 Qwen 官方接口
 ```
 
 前端继续保留原有界面，只把更适合 A 股数据生态的部分迁到了 Python。因此不用重做整个网站，也更方便以后加入回测、财务因子和机器学习。
@@ -81,16 +81,18 @@ npm run dev
 DEEPSEEK_API_KEY=
 DEEPSEEK_MODEL=deepseek-chat
 
-GEMINI_API_KEY=
-GEMINI_MODEL=gemini-2.5-flash
+GLM_API_KEY=
+GLM_MODEL=glm-5.3
+GLM_BASE_URL=https://open.bigmodel.cn/api/paas/v4
 
-OPENAI_API_KEY=
-OPENAI_MODEL=gpt-5.4-mini
+QWEN_API_KEY=
+QWEN_MODEL=qwen3.8-max
+QWEN_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 ```
 
 股票行情本身不需要密钥。AI 接口可能产生供应商费用；未配置的模型会显示“待配置”，不会使用演示结果冒充。
 
-DeepSeek、Gemini、ChatGPT 收到完全相同的系统提示语、任务说明、候选快照与 JSON 字段约束。三张卡片只保留模型供应商本身的差异；修改提示语后，旧版本当天缓存会自动失效并按新提示语重新运行一次。
+DeepSeek、GLM 5.3、Qwen 3.8 Max 收到完全相同的系统提示语、任务说明、候选快照与 JSON 字段约束。三张卡片只保留模型供应商本身的差异；修改提示语后，旧版本当天缓存会自动失效并按新提示语重新运行一次。新版阿里云百炼账号可能要求使用控制台给出的工作空间专属 `compatible-mode/v1` 地址，此时请替换 `QWEN_BASE_URL`。
 
 ## 免费行情如何工作
 

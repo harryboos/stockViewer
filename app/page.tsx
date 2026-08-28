@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { AddStockModal } from '@/components/add-stock-modal';
 import { AppHeader } from '@/components/app-header';
+import { MarketOverviewView } from '@/components/market-overview-view';
 import { StrategiesView } from '@/components/strategies-view';
 import { WatchlistView } from '@/components/watchlist-view';
 import { errorMessage, isAbortError, jsonFetch } from '@/lib/client-api';
@@ -12,6 +13,7 @@ import { buildStrategySummary } from '@/lib/strategy-summary';
 import {
   AI_PROVIDERS,
   type AiRunView,
+  type MarketOverview,
   type PublicStrategyResult,
   type StockBasic,
   type SystemStatus,
@@ -20,7 +22,7 @@ import {
 } from '@/lib/types';
 
 
-type ActiveTab = 'watchlist' | 'strategies';
+type ActiveTab = 'watchlist' | 'strategies' | 'market';
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('watchlist');
@@ -28,12 +30,14 @@ export default function Home() {
   const [stocks, setStocks] = useState<WatchlistStock[]>([]);
   const [publicStrategies, setPublicStrategies] = useState<PublicStrategyResult[]>([]);
   const [aiRuns, setAiRuns] = useState<AiRunView[]>([]);
+  const [marketOverview, setMarketOverview] = useState<MarketOverview | null>(null);
   const [query, setQuery] = useState('');
   const [addQuery, setAddQuery] = useState('');
   const [searchResults, setSearchResults] = useState<StockBasic[]>([]);
   const [modalOpen, setModalOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [strategyLoading, setStrategyLoading] = useState(false);
+  const [marketLoading, setMarketLoading] = useState(false);
   const [searching, setSearching] = useState(false);
   const [toast, setToast] = useState('');
   const [error, setError] = useState('');
@@ -112,6 +116,24 @@ export default function Home() {
     if (!strategyLoading && !publicStrategies.length && !aiRuns.length) void loadStrategies();
   }, [aiRuns.length, loadStrategies, publicStrategies.length, strategyLoading]);
 
+  const loadMarketOverview = useCallback(async (force = false) => {
+    setMarketLoading(true);
+    setError('');
+    try {
+      const queryString = force ? '?force=true' : '';
+      setMarketOverview(await jsonFetch<MarketOverview>(`/api/market/overview${queryString}`));
+    } catch (reason) {
+      setError(errorMessage(reason, '大盘数据加载失败'));
+    } finally {
+      setMarketLoading(false);
+    }
+  }, []);
+
+  const openMarket = useCallback(() => {
+    setActiveTab('market');
+    if (!marketLoading && !marketOverview) void loadMarketOverview();
+  }, [loadMarketOverview, marketLoading, marketOverview]);
+
   async function addStock(stock: StockBasic) {
     try {
       const data = await jsonFetch<WatchlistResponse>('/api/watchlist', {
@@ -159,7 +181,7 @@ export default function Home() {
     if (!value.trim()) setSearchResults([]);
   }
 
-  const tradeDate = stocks.find((stock) => stock.quote)?.quote?.tradeDate ?? null;
+  const tradeDate = stocks.find((stock) => stock.quote)?.quote?.tradeDate ?? marketOverview?.tradeDate ?? null;
   const completedAiCount = aiRuns.filter((run) => run.status === 'succeeded').length;
   const missingAiCount = status
     ? AI_PROVIDERS.filter((provider) => !status.providers[provider]).length
@@ -177,6 +199,7 @@ export default function Home() {
         tradeDate={tradeDate}
         onOpenWatchlist={() => setActiveTab('watchlist')}
         onOpenStrategies={openStrategies}
+        onOpenMarket={openMarket}
       />
 
       {error && (
@@ -197,7 +220,7 @@ export default function Home() {
           onOpenStrategies={openStrategies}
           onRemove={(stock) => void removeStock(stock)}
         />
-      ) : (
+      ) : activeTab === 'strategies' ? (
         <StrategiesView
           today={today}
           status={status}
@@ -206,6 +229,13 @@ export default function Home() {
           summary={strategySummary}
           loading={strategyLoading}
           onLoad={() => void loadStrategies()}
+        />
+      ) : (
+        <MarketOverviewView
+          today={today}
+          data={marketOverview}
+          loading={marketLoading}
+          onRefresh={() => void loadMarketOverview(true)}
         />
       )}
 

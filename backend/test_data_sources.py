@@ -142,6 +142,39 @@ class MarketDataServiceTests(unittest.TestCase):
         self.assertEqual(baostock.query_history_k_data_plus.call_count, 2)
         session.assert_called_once()
 
+    def test_market_overview_calculates_breadth_turnover_and_daily_delta(self) -> None:
+        service = MarketDataService()
+        snapshot = [
+            {"symbol": "600001", "name": "沪市样本", "exchange": "SSE", "tradeDate": "20260828", "pctChg": 10.01, "amount": 5_000_000_000, "source": "测试行情"},
+            {"symbol": "300001", "name": "创业样本", "exchange": "SZSE", "tradeDate": "20260828", "pctChg": 12.0, "amount": 3_000_000_000, "source": "测试行情"},
+            {"symbol": "000001", "name": "深市样本", "exchange": "SZSE", "tradeDate": "20260828", "pctChg": -10.02, "amount": 2_000_000_000, "source": "测试行情"},
+            {"symbol": "430001", "name": "北交样本", "exchange": "BSE", "tradeDate": "20260828", "pctChg": 0.0, "amount": 1_000_000_000, "source": "测试行情"},
+        ]
+        flow = [{
+            "date": "20260828", "shClose": 3500.0, "shPctChg": 0.5,
+            "szClose": 11000.0, "szPctChg": -0.2, "mainNetInflow": 8_000_000_000,
+            "mainNetInflowRatio": 0.7, "superLargeNetInflow": 5_000_000_000,
+            "largeNetInflow": 3_000_000_000,
+        }]
+        with (
+            patch.object(service, "market_snapshot", return_value=snapshot),
+            patch.object(service, "_index_turnover_history", return_value=([{"date": "20260827", "turnover": 10_000_000_000}], None)),
+            patch.object(service, "_fund_flow_history", return_value=(flow, None)),
+            patch("backend.data_sources.database.set_meta"),
+            patch("backend.data_sources.database.now_iso", return_value="2026-08-28T15:10:00+08:00"),
+        ):
+            result = service.market_overview()
+
+        self.assertEqual(result["snapshot"]["turnover"], 11_000_000_000)
+        self.assertEqual(result["snapshot"]["turnoverDelta"], 0)
+        self.assertEqual(result["turnoverHistory"][-1]["turnover"], 10_000_000_000)
+        self.assertEqual(result["snapshot"]["advancers"], 2)
+        self.assertEqual(result["snapshot"]["decliners"], 1)
+        self.assertEqual(result["snapshot"]["flat"], 1)
+        self.assertEqual(result["snapshot"]["limitUp"], 1)
+        self.assertEqual(result["snapshot"]["limitDown"], 1)
+        self.assertEqual(result["latestFlow"]["mainNetInflow"], 8_000_000_000)
+
 
 if __name__ == "__main__":
     unittest.main()

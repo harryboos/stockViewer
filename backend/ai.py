@@ -12,24 +12,39 @@ from . import database
 from .strategies import candidate_snapshot
 
 
-Provider = Literal["deepseek", "gemini", "openai"]
-PROVIDERS: tuple[Provider, ...] = ("deepseek", "gemini", "openai")
-KEY_NAMES: dict[Provider, str] = {
-    "deepseek": "DEEPSEEK_API_KEY",
-    "gemini": "GEMINI_API_KEY",
-    "openai": "OPENAI_API_KEY",
+Provider = Literal["deepseek", "glm", "qwen"]
+PROVIDERS: tuple[Provider, ...] = ("deepseek", "glm", "qwen")
+KEY_NAMES: dict[Provider, tuple[str, ...]] = {
+    "deepseek": ("DEEPSEEK_API_KEY",),
+    "glm": ("GLM_API_KEY",),
+    "qwen": ("QWEN_API_KEY", "DASHSCOPE_API_KEY"),
 }
 DEFAULT_MODELS: dict[Provider, str] = {
     "deepseek": "deepseek-chat",
-    "gemini": "gemini-2.5-flash",
-    "openai": "gpt-5.4-mini",
+    "glm": "glm-5.3",
+    "qwen": "qwen3.8-max",
 }
 MODEL_KEYS: dict[Provider, str] = {
     "deepseek": "DEEPSEEK_MODEL",
-    "gemini": "GEMINI_MODEL",
-    "openai": "OPENAI_MODEL",
+    "glm": "GLM_MODEL",
+    "qwen": "QWEN_MODEL",
 }
-PROMPT_VERSION = "2"
+DEFAULT_BASE_URLS: dict[Provider, str] = {
+    "deepseek": "https://api.deepseek.com",
+    "glm": "https://open.bigmodel.cn/api/paas/v4",
+    "qwen": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+}
+BASE_URL_KEYS: dict[Provider, str] = {
+    "deepseek": "DEEPSEEK_BASE_URL",
+    "glm": "GLM_BASE_URL",
+    "qwen": "QWEN_BASE_URL",
+}
+PROVIDER_LABELS: dict[Provider, str] = {
+    "deepseek": "DeepSeek",
+    "glm": "GLM",
+    "qwen": "Qwen",
+}
+PROMPT_VERSION = "3"
 SHARED_SYSTEM_INSTRUCTION = (
     "你是谨慎的 A 股量化研究助手。只根据用户提供的候选快照做横向研究排序，"
     "输出简体中文 JSON；不得杜撰事实，不构成投资建议。"
@@ -63,12 +78,24 @@ def read_secret(name: str) -> str | None:
     return value or None
 
 
+def provider_key(provider: Provider) -> str | None:
+    for name in KEY_NAMES[provider]:
+        value = read_secret(name)
+        if value:
+            return value
+    return None
+
+
 def model_for(provider: Provider) -> str:
     return read_secret(MODEL_KEYS[provider]) or DEFAULT_MODELS[provider]
 
 
+def base_url_for(provider: Provider) -> str:
+    return (read_secret(BASE_URL_KEYS[provider]) or DEFAULT_BASE_URLS[provider]).rstrip("/")
+
+
 def provider_status() -> dict[str, bool]:
-    return {provider: bool(read_secret(KEY_NAMES[provider])) for provider in PROVIDERS}
+    return {provider: bool(provider_key(provider)) for provider in PROVIDERS}
 
 
 def _empty_run(provider: Provider, status: str) -> dict[str, Any]:
@@ -125,81 +152,36 @@ async def _post_json(url: str, headers: dict[str, str], payload: dict[str, Any])
         raise RuntimeError("模型接口返回了无法解析的数据") from error
 
 
-def _openai_text(payload: dict[str, Any]) -> str | None:
-    if isinstance(payload.get("output_text"), str):
-        return payload["output_text"]
-    for item in payload.get("output", []):
-        for content in item.get("content", []):
-            if content.get("type") == "output_text" and content.get("text"):
-                return str(content["text"])
-    return None
-
-
-async def _call_openai(prompt: str, model: str, key: str) -> dict[str, Any]:
+async def _call_compatible(provider: Provider, prompt: str, model: str, key: str) -> dict[str, Any]:
+    request: dict[str, Any] = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": SHARED_SYSTEM_INSTRUCTION},
+            {"role": "user", "content": prompt},
+        ],
+        "response_format": {"type": "json_object"},
+        "temperature": 0.2,
+    }
+    if provider == "qwen":
+        request["enable_thinking"] = False
     payload = await _post_json(
-        "https://api.openai.com/v1/responses",
+        f"{base_url_for(provider)}/chat/completions",
         {"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-        {
-            "model": model,
-            "store": False,
-            "input": [
-                {"role": "developer", "content": SHARED_SYSTEM_INSTRUCTION},
-                {"role": "user", "content": prompt},
-            ],
-            "text": {"format": {"type": "json_schema", "name": "a_share_picks", "strict": True, "schema": RESULT_SCHEMA}},
-        },
-    )
-    text = _openai_text(payload)
-    if not text:
-        raise RuntimeError("OpenAI 未返回可解析结果")
-    return json.loads(text)
-
-
-async def _call_deepseek(prompt: str, model: str, key: str) -> dict[str, Any]:
-    payload = await _post_json(
-        "https://api.deepseek.com/chat/completions",
-        {"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-        {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": SHARED_SYSTEM_INSTRUCTION},
-                {"role": "user", "content": prompt},
-            ],
-            "response_format": {"type": "json_object"},
-            "temperature": 0.2,
-        },
+        request,
     )
     try:
-        return json.loads(payload["choices"][0]["message"]["content"])
+        content = payload["choices"][0]["message"]["content"]
+        if not isinstance(content, str) or not content.strip():
+            raise TypeError("empty content")
+        return json.loads(content)
     except (KeyError, IndexError, TypeError, json.JSONDecodeError) as error:
-        raise RuntimeError("DeepSeek 未返回可解析结果") from error
-
-
-async def _call_gemini(prompt: str, model: str, key: str) -> dict[str, Any]:
-    payload = await _post_json(
-        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-        {"x-goog-api-key": key, "Content-Type": "application/json"},
-        {
-            "systemInstruction": {"parts": [{"text": SHARED_SYSTEM_INSTRUCTION}]},
-            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-            "generationConfig": {
-                "responseMimeType": "application/json",
-                "responseJsonSchema": RESULT_SCHEMA,
-                "temperature": 0.2,
-            },
-        },
-    )
-    try:
-        text = "".join(part.get("text", "") for part in payload["candidates"][0]["content"]["parts"])
-        return json.loads(text)
-    except (KeyError, IndexError, TypeError, json.JSONDecodeError) as error:
-        raise RuntimeError("Gemini 未返回可解析结果") from error
+        raise RuntimeError(f"{PROVIDER_LABELS[provider]} 未返回可解析结果") from error
 
 
 async def _execute_provider(provider: Provider, candidates: list[dict[str, Any]], force: bool = False) -> dict[str, Any]:
     run_date = database.china_date()
     model = model_for(provider)
-    key = read_secret(KEY_NAMES[provider])
+    key = provider_key(provider)
     if not key:
         return _empty_run(provider, "not_configured")
     existing = database.read_ai_run(provider, run_date)
@@ -211,12 +193,7 @@ async def _execute_provider(provider: Provider, candidates: list[dict[str, Any]]
     database.set_meta(_prompt_cache_key(provider, run_date), PROMPT_VERSION)
     try:
         prompt = _build_prompt(candidates)
-        if provider == "openai":
-            raw = await _call_openai(prompt, model, key)
-        elif provider == "deepseek":
-            raw = await _call_deepseek(prompt, model, key)
-        else:
-            raw = await _call_gemini(prompt, model, key)
+        raw = await _call_compatible(provider, prompt, model, key)
         result = AiResult.model_validate(raw)
         allowed = {stock["symbol"]: stock["name"] for stock in candidates}
         codes = [pick.code for pick in result.picks]
@@ -241,7 +218,7 @@ def get_daily_ai_runs() -> dict[str, Any]:
     run_date = database.china_date()
     runs: list[dict[str, Any]] = []
     for provider in PROVIDERS:
-        if not read_secret(KEY_NAMES[provider]):
+        if not provider_key(provider):
             runs.append(_empty_run(provider, "not_configured"))
             continue
         existing = database.read_ai_run(provider, run_date)

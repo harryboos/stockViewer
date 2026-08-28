@@ -143,6 +143,14 @@ async def stock_search(q: str = Query("", max_length=30)) -> dict:
     return {"stocks": database.search_stocks(normalized)}
 
 
+@app.get("/api/market/overview")
+async def market_overview(force: bool = Query(False)) -> dict:
+    try:
+        return await asyncio.to_thread(market_data.market_overview, force)
+    except Exception as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
 @app.get("/api/strategies/public")
 async def public_strategies(force: bool = Query(False)) -> dict:
     try:

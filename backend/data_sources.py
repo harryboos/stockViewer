@@ -5,6 +5,7 @@ import math
 import threading
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
+from statistics import median
 from typing import Any, Iterator
 
 from . import database
@@ -14,6 +15,7 @@ from .eastmoney import EastmoneyClient
 
 CATALOG_CACHE_SECONDS = 24 * 60 * 60
 CONCEPT_CACHE_VERSION = "2"
+MARKET_OVERVIEW_CACHE_VERSION = "1"
 CONCEPT_EXCLUDED_MARKERS = (
     "昨日", "连板", "涨停", "融资融券", "沪股通", "深股通", "QFII", "MSCI",
     "基金重仓", "机构重仓", "预盈预增", "破净股", "高送转",
@@ -59,6 +61,8 @@ class MarketDataService:
         self._spot_fetched_at: datetime | None = None
         self._trade_date: str | None = None
         self._spot_failed_at: datetime | None = None
+        self._overview_cache: dict[str, Any] | None = None
+        self._overview_fetched_at: datetime | None = None
 
     @staticmethod
     def _akshare() -> Any:
@@ -582,6 +586,222 @@ class MarketDataService:
                 "concepts": [],
                 "error": str(error),
             }
+
+    @staticmethod
+    def _limit_threshold(row: dict[str, Any]) -> float:
+        name = str(row.get("name") or "").upper()
+        symbol = str(row.get("symbol") or "")
+        if "ST" in name:
+            return 4.8
+        if symbol.startswith(("30", "68")):
+            return 19.8
+        if str(row.get("exchange")) == "BSE":
+            return 29.8
+        return 9.8
+
+    @staticmethod
+    def _cached_json(key: str) -> Any:
+        raw = database.get_meta(key)
+        if not raw:
+            return None
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+
+    def _fund_flow_history(self) -> tuple[list[dict[str, Any]], str | None]:
+        cache_key = f"market_fund_flow:v{MARKET_OVERVIEW_CACHE_VERSION}"
+        cached = self._cached_json(cache_key)
+        try:
+            frame = self._akshare().stock_market_fund_flow()
+            rows: list[dict[str, Any]] = []
+            for _, row in frame.iterrows():
+                raw_date = row.get("日期")
+                trade_date = str(raw_date).replace("-", "")[:8]
+                main = number_or_none(row.get("主力净流入-净额"))
+                if len(trade_date) != 8 or main is None:
+                    continue
+                rows.append(
+                    {
+                        "date": trade_date,
+                        "shClose": number_or_none(row.get("上证-收盘价")),
+                        "shPctChg": number_or_none(row.get("上证-涨跌幅")),
+                        "szClose": number_or_none(row.get("深证-收盘价")),
+                        "szPctChg": number_or_none(row.get("深证-涨跌幅")),
+                        "mainNetInflow": main,
+                        "mainNetInflowRatio": number_or_none(row.get("主力净流入-净占比")),
+                        "superLargeNetInflow": number_or_none(row.get("超大单净流入-净额")),
+                        "largeNetInflow": number_or_none(row.get("大单净流入-净额")),
+                    }
+                )
+            rows.sort(key=lambda item: item["date"])
+            if not rows:
+                raise RuntimeError("大盘资金流接口没有返回有效数据")
+            result = rows[-20:]
+            database.set_meta(cache_key, json.dumps(result, ensure_ascii=False))
+            return result, None
+        except Exception as error:
+            if isinstance(cached, list) and cached:
+                return cached[-20:], f"资金流暂用最近成功缓存：{error}"
+            return [], f"资金流暂不可用：{error}"
+
+    def _index_turnover_history(self) -> tuple[list[dict[str, Any]], str | None]:
+        cache_key = f"market_turnover:v{MARKET_OVERVIEW_CACHE_VERSION}"
+        cached = self._cached_json(cache_key)
+        today = datetime.now(database.CHINA_TZ).date()
+        start = today - timedelta(days=45)
+        try:
+            by_date: dict[str, float] = {}
+            for symbol in ("sh000001", "sz399106"):
+                frame = self._akshare().stock_zh_index_daily_em(
+                    symbol=symbol,
+                    start_date=start.strftime("%Y%m%d"),
+                    end_date=today.strftime("%Y%m%d"),
+                )
+                for _, row in frame.iterrows():
+                    trade_date = str(row.get("date", "")).replace("-", "")[:8]
+                    amount = number_or_none(row.get("amount"))
+                    if len(trade_date) == 8 and amount is not None and amount >= 0:
+                        by_date[trade_date] = by_date.get(trade_date, 0.0) + amount
+            if not by_date:
+                raise RuntimeError("沪深指数没有返回量能历史")
+            result = [{"date": key, "turnover": by_date[key]} for key in sorted(by_date)][-20:]
+            database.set_meta(cache_key, json.dumps(result, ensure_ascii=False))
+            return result, None
+        except Exception as error:
+            if isinstance(cached, list) and cached:
+                return cached[-20:], f"量能历史暂用最近成功缓存：{error}"
+            return [], f"量能历史暂不可用：{error}"
+
+    def market_overview(self, force: bool = False) -> dict[str, Any]:
+        with self._spot_lock:
+            if (
+                not force
+                and self._overview_cache
+                and self._overview_fetched_at
+                and (datetime.now(database.CHINA_TZ) - self._overview_fetched_at).total_seconds()
+                < MARKET.spot_cache_seconds
+            ):
+                return self._overview_cache
+
+            snapshot = self.market_snapshot(force=force)
+            pct_values = [
+                float(row["pctChg"])
+                for row in snapshot
+                if row.get("pctChg") is not None
+            ]
+            amount_values = [
+                float(row["amount"])
+                for row in snapshot
+                if row.get("amount") is not None and float(row["amount"]) >= 0
+            ]
+            trade_date = max(
+                (str(row.get("tradeDate") or "") for row in snapshot),
+                default=self.latest_trade_date(),
+            )
+            advancers = sum(1 for value in pct_values if value > 0)
+            decliners = sum(1 for value in pct_values if value < 0)
+            flat = len(pct_values) - advancers - decliners
+            limit_up = sum(
+                1
+                for row in snapshot
+                if row.get("pctChg") is not None
+                and float(row["pctChg"]) >= self._limit_threshold(row)
+            )
+            limit_down = sum(
+                1
+                for row in snapshot
+                if row.get("pctChg") is not None
+                and float(row["pctChg"]) <= -self._limit_threshold(row)
+            )
+            current_turnover = sum(amount_values)
+            current_hs_turnover = sum(
+                float(row["amount"])
+                for row in snapshot
+                if row.get("amount") is not None
+                and float(row["amount"]) >= 0
+                and str(row.get("exchange")) != "BSE"
+            )
+
+            turnover_history, turnover_error = self._index_turnover_history()
+            turnover_by_date = {
+                str(item.get("date")): float(item.get("turnover") or 0)
+                for item in turnover_history
+                if item.get("date")
+            }
+            # 指数历史只覆盖沪深两市；今日柱与日增量沿用同一口径，避免把
+            # 北交所成交额只计入当天、却没有计入上一交易日。
+            turnover_by_date[trade_date] = current_hs_turnover
+            turnover_history = [
+                {"date": key, "turnover": turnover_by_date[key]}
+                for key in sorted(turnover_by_date)
+            ][-12:]
+            database.set_meta(
+                f"market_turnover:v{MARKET_OVERVIEW_CACHE_VERSION}",
+                json.dumps(turnover_history, ensure_ascii=False),
+            )
+            previous_turnover = next(
+                (
+                    float(item["turnover"])
+                    for item in reversed(turnover_history)
+                    if item["date"] < trade_date and float(item["turnover"]) > 0
+                ),
+                None,
+            )
+            turnover_delta = (
+                current_hs_turnover - previous_turnover
+                if previous_turnover is not None
+                else None
+            )
+            turnover_delta_pct = (
+                turnover_delta / previous_turnover * 100
+                if turnover_delta is not None and previous_turnover
+                else None
+            )
+
+            fund_flow_history, flow_error = self._fund_flow_history()
+            latest_flow = fund_flow_history[-1] if fund_flow_history else None
+            top_turnover = sorted(
+                (
+                    {
+                        "code": row["symbol"],
+                        "name": row["name"],
+                        "pctChg": row.get("pctChg"),
+                        "amount": row.get("amount"),
+                    }
+                    for row in snapshot
+                    if row.get("amount") is not None
+                ),
+                key=lambda item: float(item["amount"] or 0),
+                reverse=True,
+            )[:6]
+            source = str(snapshot[0].get("source") or "AKShare · 东方财富")
+            result = {
+                "tradeDate": trade_date,
+                "updatedAt": database.now_iso(),
+                "source": source,
+                "snapshot": {
+                    "turnover": current_turnover,
+                    "previousTurnover": previous_turnover,
+                    "turnoverDelta": turnover_delta,
+                    "turnoverDeltaPct": turnover_delta_pct,
+                    "advancers": advancers,
+                    "decliners": decliners,
+                    "flat": flat,
+                    "limitUp": limit_up,
+                    "limitDown": limit_down,
+                    "medianPctChg": median(pct_values) if pct_values else None,
+                    "breadth": advancers / max(advancers + decliners, 1) * 100,
+                },
+                "turnoverHistory": turnover_history,
+                "fundFlowHistory": fund_flow_history[-12:],
+                "latestFlow": latest_flow,
+                "topTurnover": top_turnover,
+                "warnings": [warning for warning in (turnover_error, flow_error) if warning],
+            }
+            self._overview_cache = result
+            self._overview_fetched_at = datetime.now(database.CHINA_TZ)
+            return result
 
     def status(self) -> dict[str, Any]:
         source = database.get_meta("market_data_source") or "等待首次获取"

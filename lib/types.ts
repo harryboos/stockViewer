@@ -1,4 +1,4 @@
-export const AI_PROVIDERS = ['deepseek', 'gemini', 'openai'] as const;
+export const AI_PROVIDERS = ['deepseek', 'glm', 'qwen'] as const;
 export type AiProvider = (typeof AI_PROVIDERS)[number];
 
 export const STRATEGY_IDS = [
@@ -119,6 +119,52 @@ export type WatchlistResponse = {
   stocks: WatchlistStock[];
   dataSource: DataSourceStatus;
   updatedAt?: string;
+};
+
+export type MarketTurnoverPoint = {
+  date: string;
+  turnover: number;
+};
+
+export type MarketFundFlowPoint = {
+  date: string;
+  shClose: number | null;
+  shPctChg: number | null;
+  szClose: number | null;
+  szPctChg: number | null;
+  mainNetInflow: number;
+  mainNetInflowRatio: number | null;
+  superLargeNetInflow: number | null;
+  largeNetInflow: number | null;
+};
+
+export type MarketOverview = {
+  tradeDate: string;
+  updatedAt: string;
+  source: string;
+  snapshot: {
+    turnover: number;
+    previousTurnover: number | null;
+    turnoverDelta: number | null;
+    turnoverDeltaPct: number | null;
+    advancers: number;
+    decliners: number;
+    flat: number;
+    limitUp: number;
+    limitDown: number;
+    medianPctChg: number | null;
+    breadth: number;
+  };
+  turnoverHistory: MarketTurnoverPoint[];
+  fundFlowHistory: MarketFundFlowPoint[];
+  latestFlow: MarketFundFlowPoint | null;
+  topTurnover: Array<{
+    code: string;
+    name: string;
+    pctChg: number | null;
+    amount: number | null;
+  }>;
+  warnings: string[];
 };
 
 export type StrategySummary = {
