@@ -101,9 +101,11 @@ export default function Home() {
       ]);
       setPublicStrategies(publicData.strategies);
       setAiRuns(aiData.runs);
-      if (aiData.runs.some((run) => run.status === 'pending')) {
+      if (aiData.runs.some((run) => run.status === 'pending' || run.status === 'failed')) {
         setAiRuns((runs) => runs.map((run) => (
-          run.status === 'pending' ? { ...run, status: 'running' } : run
+          run.status === 'pending' || run.status === 'failed'
+            ? { ...run, status: 'running', error: null }
+            : run
         )));
         const completed = await jsonFetch<{ runs: AiRunView[] }>('/api/strategies/ai', { method: 'POST' });
         setAiRuns(completed.runs);

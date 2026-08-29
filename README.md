@@ -72,7 +72,7 @@ npm run dev
 
 统一私人首页、Caddy、共享访问密钥和 Docker Compose 已拆分到同级的 `private-apps-gateway` 项目；本项目只负责股票应用及其镜像构建。服务器真实配置统一保存在仓库外的 `/opt/private-apps/config/private-apps.env`，避免应用项目更新或重建目录时丢失密钥。
 
-完整迁移流程见 [私人服务器部署文档](docs/server-deployment.md)。当前 `deploy/` 中的旧编排文件暂时保留用于迁移兼容；完成 gateway 切换并验收三个域名后再清理，避免部署中断。
+完整部署与更新流程见 [私人服务器部署文档](docs/server-deployment.md)。`deploy/` 只保留股票应用镜像所需的 `Dockerfile.stock`；首页、证书、路由和服务编排均由 gateway 项目统一管理。
 
 ## AI 配置
 
@@ -93,7 +93,7 @@ QWEN_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 
 股票行情本身不需要密钥。AI 接口可能产生供应商费用；未配置的模型会显示“待配置”，不会使用演示结果冒充。
 
-DeepSeek、GLM 5.3、Qwen 3.8 Max 收到完全相同的系统提示语、任务说明、候选快照与 JSON 字段约束。三张卡片只保留模型供应商本身的差异；修改提示语后，旧版本当天缓存会自动失效并按新提示语重新运行一次。新版阿里云百炼账号可能要求使用控制台给出的工作空间专属 `compatible-mode/v1` 地址，此时请替换 `QWEN_BASE_URL`。
+DeepSeek、GLM 5.3、Qwen 3.8 Max 收到完全相同的系统提示语、任务说明、候选快照与 JSON 字段约束。分析文字不设影响正常表达的短字数硬限制，卡片会对长内容提供展开与收起；后端只保留防止异常输出的宽松安全上限。三张卡片只保留模型供应商本身的差异；修改提示语后，旧版本当天缓存会自动失效并按新提示语重新运行一次。新版阿里云百炼账号可能要求使用控制台给出的工作空间专属 `compatible-mode/v1` 地址，此时请替换 `QWEN_BASE_URL`。
 
 ## 免费行情如何工作
 

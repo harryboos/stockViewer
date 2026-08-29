@@ -20,6 +20,32 @@ type StrategiesViewProps = {
   onLoad: () => void;
 };
 
+type ExpandableCopyProps = {
+  text: string;
+  previewLength: number;
+  className: string;
+  label?: string;
+};
+
+function ExpandableCopy({ text, previewLength, className, label }: ExpandableCopyProps) {
+  const characters = Array.from(text);
+  const labelNode = label ? <span className="copy-label">{label}</span> : null;
+  if (characters.length <= previewLength) {
+    return <p className={className}>{labelNode}{text}</p>;
+  }
+
+  return (
+    <details className={`ai-expandable ${className}`}>
+      <summary>
+        <span className="ai-expandable-preview">{labelNode}{characters.slice(0, previewLength).join('')}…</span>
+        <span className="ai-expandable-action ai-expandable-open">展开全文</span>
+        <span className="ai-expandable-action ai-expandable-close">收起</span>
+      </summary>
+      <p>{labelNode}{text}</p>
+    </details>
+  );
+}
+
 function displayedStrategies(strategies: PublicStrategyResult[]): PublicStrategyResult[] {
   if (strategies.length) return strategies;
   return (Object.entries(PUBLIC_STRATEGY_META) as Array<[StrategyId, StrategyMeta]>).map(([id, meta]) => ({
@@ -152,20 +178,20 @@ export function StrategiesView({
                   <div><small>{meta.model} · {run.model}</small><h3>{run.result?.title ?? meta.fallbackTitle}</h3></div>
                   <span className={`run-badge status-${run.status}`}>{runStatusLabel(run)}</span>
                 </div>
-                <p className="ai-desc">{run.result?.summary ?? (
+                <ExpandableCopy className="ai-desc" previewLength={180} text={run.result?.summary ?? (
                   run.status === 'not_configured'
                     ? `请在 .env.local 配置 ${apiKeyName}`
                     : run.status === 'failed' ? run.error : '今日首次进入策略页时自动运行。'
-                )}</p>
-                <div className="logic-line"><span>选股逻辑</span><strong>{run.result?.logic ?? meta.logic}</strong></div>
+                ) ?? '模型运行失败，请点击重试'} />
+                <div className="logic-line"><span>选股逻辑</span><ExpandableCopy className="logic-copy" previewLength={120} text={run.result?.logic ?? meta.logic} /></div>
                 <div className="ai-picks">
                   {run.result?.picks.map((pick, index) => (
                     <div className="ai-pick-row" key={pick.code}>
                       <span className="rank-circle">{index + 1}</span>
                       <div className="ai-pick-copy">
                         <div className="ai-pick-name"><strong>{pick.name}</strong><small>{pick.code}</small></div>
-                        <p className="ai-pick-reason">{pick.reason}</p>
-                        <p className="pick-risk"><span>风险</span>{pick.risk}</p>
+                        <ExpandableCopy className="ai-pick-reason" previewLength={110} text={pick.reason} />
+                        <ExpandableCopy className="pick-risk" previewLength={80} text={pick.risk} label="风险" />
                       </div>
                       <div className="score"><i style={{ width: `${Math.max(pick.score - 25, 10)}%` }} /><span>{pick.score}</span></div>
                     </div>

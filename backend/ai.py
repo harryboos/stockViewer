@@ -44,7 +44,15 @@ PROVIDER_LABELS: dict[Provider, str] = {
     "glm": "GLM",
     "qwen": "Qwen",
 }
-PROMPT_VERSION = "3"
+PROMPT_VERSION = "5"
+TEXT_SAFETY_LIMITS = {
+    "title": 50,
+    "summary": 5000,
+    "logic": 2000,
+    "name": 100,
+    "reason": 2000,
+    "risk": 1000,
+}
 SHARED_SYSTEM_INSTRUCTION = (
     "你是谨慎的 A 股量化研究助手。只根据用户提供的候选快照做横向研究排序，"
     "输出简体中文 JSON；不得杜撰事实，不构成投资建议。"
@@ -55,18 +63,18 @@ class AiPick(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     code: str = Field(pattern=r"^\d{6}$")
-    name: str = Field(min_length=1, max_length=20)
+    name: str = Field(min_length=1)
     score: int = Field(ge=0, le=100)
-    reason: str = Field(min_length=4, max_length=160)
-    risk: str = Field(min_length=2, max_length=100)
+    reason: str = Field(min_length=4)
+    risk: str = Field(min_length=2)
 
 
 class AiResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    title: str = Field(min_length=2, max_length=20)
-    summary: str = Field(min_length=8, max_length=220)
-    logic: str = Field(min_length=4, max_length=100)
+    title: str = Field(min_length=2, max_length=TEXT_SAFETY_LIMITS["title"])
+    summary: str = Field(min_length=8)
+    logic: str = Field(min_length=4)
     picks: list[AiPick] = Field(min_length=3, max_length=3)
 
 
@@ -133,8 +141,39 @@ def _build_prompt(candidates: list[dict[str, Any]]) -> str:
         "不预测确定收益；三只股票不得重复且必须来自候选池。\n"
         "输出要求：title、summary、logic 使用简体中文；picks 恰好包含 3 项；"
         "每项必须包含 code、name、0-100 的整数 score、引用输入数据或明确说明数据不足的 reason，以及具体 risk。\n"
+        "表达建议：title 尽量控制在 30 字内，其余说明优先使用清晰短句；"
+        "完整表达需要更多文字时可以超过建议长度，不会仅因文字较长判定失败。\n"
         f"候选快照：{json.dumps(snapshot, ensure_ascii=False)}"
     )
+
+
+def _clamp_text(value: Any, max_length: int) -> Any:
+    if not isinstance(value, str):
+        return value
+    return value.strip()[:max_length]
+
+
+def _normalize_result_text(raw: dict[str, Any]) -> dict[str, Any]:
+    """Keep a valid model response usable when a provider ignores text limits."""
+    normalized = dict(raw)
+    for field in ("title", "summary", "logic"):
+        if field in normalized:
+            normalized[field] = _clamp_text(normalized[field], TEXT_SAFETY_LIMITS[field])
+
+    picks = normalized.get("picks")
+    if isinstance(picks, list):
+        normalized_picks: list[Any] = []
+        for item in picks:
+            if not isinstance(item, dict):
+                normalized_picks.append(item)
+                continue
+            pick = dict(item)
+            for field in ("name", "reason", "risk"):
+                if field in pick:
+                    pick[field] = _clamp_text(pick[field], TEXT_SAFETY_LIMITS[field])
+            normalized_picks.append(pick)
+        normalized["picks"] = normalized_picks
+    return normalized
 
 
 async def _post_json(url: str, headers: dict[str, str], payload: dict[str, Any]) -> dict[str, Any]:
@@ -186,7 +225,7 @@ async def _execute_provider(provider: Provider, candidates: list[dict[str, Any]]
         return _empty_run(provider, "not_configured")
     existing = database.read_ai_run(provider, run_date)
     prompt_is_current = database.get_meta(_prompt_cache_key(provider, run_date)) == PROMPT_VERSION
-    if existing and prompt_is_current and not force:
+    if existing and prompt_is_current and existing.get("status") in {"running", "succeeded"} and not force:
         return existing
 
     database.start_ai_run(provider, model, run_date)
@@ -194,7 +233,7 @@ async def _execute_provider(provider: Provider, candidates: list[dict[str, Any]]
     try:
         prompt = _build_prompt(candidates)
         raw = await _call_compatible(provider, prompt, model, key)
-        result = AiResult.model_validate(raw)
+        result = AiResult.model_validate(_normalize_result_text(raw))
         allowed = {stock["symbol"]: stock["name"] for stock in candidates}
         codes = [pick.code for pick in result.picks]
         if len(set(codes)) != 3:
@@ -206,7 +245,11 @@ async def _execute_provider(provider: Provider, candidates: list[dict[str, Any]]
         saved = result.model_dump()
         database.finish_ai_run(provider, run_date, saved, None)
         return database.read_ai_run(provider, run_date) or _empty_run(provider, "failed")
-    except (RuntimeError, ValidationError, json.JSONDecodeError) as error:
+    except ValidationError as error:
+        message = f"模型返回格式不符合约定（{len(error.errors())} 处），请点击重试"
+        database.finish_ai_run(provider, run_date, None, message)
+        return database.read_ai_run(provider, run_date) or _empty_run(provider, "failed")
+    except (RuntimeError, json.JSONDecodeError) as error:
         database.finish_ai_run(provider, run_date, None, str(error))
         return database.read_ai_run(provider, run_date) or _empty_run(provider, "failed")
     except Exception as error:
