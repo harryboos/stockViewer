@@ -3,12 +3,13 @@ import type { SystemStatus } from '@/lib/types';
 
 
 type AppHeaderProps = {
-  activeTab: 'watchlist' | 'strategies' | 'market';
+  activeTab: 'watchlist' | 'strategies' | 'market' | 'sectors';
   status: SystemStatus | null;
   tradeDate: string | null;
   onOpenWatchlist: () => void;
   onOpenStrategies: () => void;
   onOpenMarket: () => void;
+  onOpenSectors: () => void;
 };
 
 export function AppHeader({
@@ -18,6 +19,7 @@ export function AppHeader({
   onOpenWatchlist,
   onOpenStrategies,
   onOpenMarket,
+  onOpenSectors,
 }: AppHeaderProps) {
   return (
     <header className="topbar">
@@ -28,6 +30,7 @@ export function AppHeader({
         <button className={`nav-item ${activeTab === 'watchlist' ? 'active' : ''}`} onClick={onOpenWatchlist}>我的自选</button>
         <button className={`nav-item ${activeTab === 'strategies' ? 'active' : ''}`} onClick={onOpenStrategies}>策略选股</button>
         <button className={`nav-item ${activeTab === 'market' ? 'active' : ''}`} onClick={onOpenMarket}>大盘观察</button>
+        <button className={`nav-item ${activeTab === 'sectors' ? 'active' : ''}`} onClick={onOpenSectors}>板块概念</button>
       </nav>
       <div className={`market-state ${status?.providers.marketData ? 'live' : ''}`}>
         <span />

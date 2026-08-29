@@ -16,9 +16,14 @@ from .eastmoney import EastmoneyClient
 CATALOG_CACHE_SECONDS = 24 * 60 * 60
 CONCEPT_CACHE_VERSION = "2"
 MARKET_OVERVIEW_CACHE_VERSION = "1"
+SECTOR_OVERVIEW_CACHE_VERSION = "1"
+SECTOR_DISPLAY_LIMIT = 6
 CONCEPT_EXCLUDED_MARKERS = (
     "昨日", "连板", "涨停", "融资融券", "沪股通", "深股通", "QFII", "MSCI",
-    "基金重仓", "机构重仓", "预盈预增", "破净股", "高送转",
+    "基金重仓", "机构重仓", "社保重仓", "券商金股", "预盈预增", "破净股", "高送转",
+    "中报", "年报", "季报", "业绩预", "首亏", "扭亏", "续亏", "续盈",
+    "低市净率", "高市净率", "低市盈率", "高市盈率", "高成长股", "题材股",
+    "反转股", "趋势股", "历史新高", "历史新低", "百元股", "低价股", "高价股",
 )
 
 
@@ -56,6 +61,7 @@ class MarketDataService:
     def __init__(self, eastmoney_client: EastmoneyClient | None = None) -> None:
         self._eastmoney_client = eastmoney_client or EastmoneyClient()
         self._spot_lock = threading.RLock()
+        self._sector_lock = threading.RLock()
         self._baostock_lock = threading.RLock()
         self._spot_rows: list[dict[str, Any]] = []
         self._spot_fetched_at: datetime | None = None
@@ -63,6 +69,8 @@ class MarketDataService:
         self._spot_failed_at: datetime | None = None
         self._overview_cache: dict[str, Any] | None = None
         self._overview_fetched_at: datetime | None = None
+        self._sector_cache: dict[str, Any] | None = None
+        self._sector_fetched_at: datetime | None = None
 
     @staticmethod
     def _akshare() -> Any:
@@ -462,6 +470,39 @@ class MarketDataService:
             errors.append(f"AKShare：{error}")
         raise RuntimeError("；".join(errors) or "概念板块获取失败")
 
+    def _industry_name_frame(self) -> tuple[Any, str]:
+        errors: list[str] = []
+        if MARKET.eastmoney_delay_enabled:
+            try:
+                return self._eastmoney_client.industry_name_frame(), "东方财富行业板块备用线路"
+            except Exception as error:
+                errors.append(f"备用线路：{error}")
+        try:
+            return self._akshare().stock_board_industry_name_em(), "AKShare · 东方财富行业板块"
+        except Exception as error:
+            errors.append(f"AKShare：{error}")
+        raise RuntimeError("；".join(errors) or "行业板块获取失败")
+
+    def _sector_fund_flow_frame(self, kind: str) -> tuple[Any, str]:
+        errors: list[str] = []
+        if MARKET.eastmoney_delay_enabled:
+            try:
+                return self._eastmoney_client.sector_fund_flow_frame(kind), "东方财富板块资金备用线路"
+            except Exception as error:
+                errors.append(f"备用线路：{error}")
+        try:
+            sector_type = "行业资金流" if kind == "industry" else "概念资金流"
+            return (
+                self._akshare().stock_sector_fund_flow_rank(
+                    indicator="今日",
+                    sector_type=sector_type,
+                ),
+                "AKShare · 东方财富板块资金",
+            )
+        except Exception as error:
+            errors.append(f"AKShare：{error}")
+        raise RuntimeError("；".join(errors) or "板块资金流获取失败")
+
     def _concept_cons_frame(self, code: str) -> Any:
         errors: list[str] = []
         if MARKET.eastmoney_delay_enabled:
@@ -586,6 +627,236 @@ class MarketDataService:
                 "concepts": [],
                 "error": str(error),
             }
+
+    @staticmethod
+    def _normalized_symbol(value: Any) -> str | None:
+        raw = str(value or "").strip().split(".", 1)[0]
+        if raw.endswith(".0"):
+            raw = raw[:-2]
+        return raw.zfill(6) if raw.isdigit() and len(raw) <= 6 else None
+
+    @staticmethod
+    def _leader_view(
+        name: str,
+        role: str,
+        stock_by_name: dict[str, dict[str, Any]],
+        stock_by_symbol: dict[str, dict[str, Any]],
+        code: str | None = None,
+        fallback_pct_chg: float | None = None,
+    ) -> dict[str, Any] | None:
+        normalized_name = name.strip()
+        if not normalized_name or "ST" in normalized_name.upper() or "退" in normalized_name:
+            return None
+        stock = stock_by_symbol.get(code or "") or stock_by_name.get(normalized_name)
+        return {
+            "role": role,
+            "code": str(stock.get("symbol")) if stock else code,
+            "name": str(stock.get("name")) if stock else normalized_name,
+            "price": number_or_none(stock.get("close")) if stock else None,
+            "pctChg": (
+                number_or_none(stock.get("pctChg"))
+                if stock else fallback_pct_chg
+            ),
+            "amount": number_or_none(stock.get("amount")) if stock else None,
+        }
+
+    def _board_rows(
+        self,
+        kind: str,
+        board_frame: Any,
+        fund_frame: Any | None,
+        snapshot: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        stock_by_name = {
+            str(stock.get("name") or "").strip(): stock
+            for stock in snapshot
+            if str(stock.get("name") or "").strip()
+        }
+        stock_by_symbol = {
+            str(stock.get("symbol") or ""): stock
+            for stock in snapshot
+            if stock.get("symbol")
+        }
+        fund_by_name: dict[str, Any] = {}
+        if fund_frame is not None:
+            for _, row in fund_frame.iterrows():
+                name = str(row.get("名称", "")).strip()
+                if name:
+                    fund_by_name[name] = row
+
+        boards: list[dict[str, Any]] = []
+        for _, row in board_frame.iterrows():
+            name = str(row.get("板块名称", "")).strip()
+            code = str(row.get("板块代码", "")).strip()
+            pct_chg = number_or_none(row.get("涨跌幅"))
+            up_count = number_or_none(row.get("上涨家数"))
+            down_count = number_or_none(row.get("下跌家数"))
+            if (
+                not name
+                or not code
+                or pct_chg is None
+                or up_count is None
+                or down_count is None
+                or (kind == "concept" and any(
+                    marker.upper() in name.upper()
+                    for marker in CONCEPT_EXCLUDED_MARKERS
+                ))
+            ):
+                continue
+
+            flow = fund_by_name.get(name)
+            main_net_inflow = number_or_none(flow.get("主力净流入-净额")) if flow is not None else None
+            main_net_ratio = number_or_none(flow.get("主力净流入-净占比")) if flow is not None else None
+            leaders: list[dict[str, Any]] = []
+            price_leader = self._leader_view(
+                str(row.get("领涨股票", "")),
+                "领涨龙头",
+                stock_by_name,
+                stock_by_symbol,
+                fallback_pct_chg=number_or_none(row.get("领涨股票-涨跌幅")),
+            )
+            if price_leader:
+                leaders.append(price_leader)
+            if flow is not None:
+                flow_leader = self._leader_view(
+                    str(flow.get("主力净流入最大股", "")),
+                    "资金龙头",
+                    stock_by_name,
+                    stock_by_symbol,
+                    code=self._normalized_symbol(flow.get("主力净流入最大股代码")),
+                )
+                if flow_leader and all(
+                    (leader.get("code") or leader["name"])
+                    != (flow_leader.get("code") or flow_leader["name"])
+                    for leader in leaders
+                ):
+                    leaders.append(flow_leader)
+
+            total = int(up_count + down_count)
+            boards.append(
+                {
+                    "kind": kind,
+                    "code": code,
+                    "name": name,
+                    "pctChg": pct_chg,
+                    "turnoverRate": number_or_none(row.get("换手率")),
+                    "marketCap": number_or_none(row.get("总市值")),
+                    "upCount": int(up_count),
+                    "downCount": int(down_count),
+                    "breadth": up_count / max(total, 1) * 100,
+                    "mainNetInflow": main_net_inflow,
+                    "mainNetInflowRatio": main_net_ratio,
+                    "leaders": leaders,
+                }
+            )
+        boards.sort(
+            key=lambda item: (
+                item["pctChg"],
+                item["breadth"],
+                item["mainNetInflow"] if item["mainNetInflow"] is not None else -math.inf,
+            ),
+            reverse=True,
+        )
+        return boards
+
+    def sector_overview(self, force: bool = False) -> dict[str, Any]:
+        with self._sector_lock:
+            if (
+                not force
+                and self._sector_cache
+                and self._sector_fetched_at
+                and (datetime.now(database.CHINA_TZ) - self._sector_fetched_at).total_seconds()
+                < MARKET.spot_cache_seconds
+            ):
+                return self._sector_cache
+
+            cache_key = f"sector_overview:v{SECTOR_OVERVIEW_CACHE_VERSION}"
+            cached = self._cached_json(cache_key)
+            warnings: list[str] = []
+            debug_errors: list[str] = []
+            sources: list[str] = []
+            try:
+                snapshot = self.market_snapshot(force=False)
+            except Exception as error:
+                snapshot = []
+                warnings.append("龙头股行情暂不可用")
+                debug_errors.append(f"行情快照：{error}")
+
+            category_rows: dict[str, list[dict[str, Any]]] = {}
+            counts: dict[str, int] = {}
+            rising_counts: dict[str, int] = {}
+            for kind in ("industry", "concept"):
+                label = "行业" if kind == "industry" else "概念"
+                try:
+                    board_frame, board_source = (
+                        self._industry_name_frame()
+                        if kind == "industry"
+                        else self._concept_name_frame()
+                    )
+                    sources.append(board_source)
+                except Exception as error:
+                    debug_errors.append(f"{label}板块：{error}")
+                    warnings.append(f"{label}板块暂不可用")
+                    category_rows[kind] = []
+                    counts[kind] = 0
+                    rising_counts[kind] = 0
+                    continue
+
+                fund_frame = None
+                try:
+                    fund_frame, fund_source = self._sector_fund_flow_frame(kind)
+                    sources.append(fund_source)
+                except Exception as error:
+                    debug_errors.append(f"{label}资金：{error}")
+                    warnings.append(f"{label}资金流暂不可用")
+
+                rows = self._board_rows(kind, board_frame, fund_frame, snapshot)
+                category_rows[kind] = rows
+                counts[kind] = len(rows)
+                rising_counts[kind] = sum(1 for item in rows if item["pctChg"] > 0)
+
+            if not category_rows.get("industry") and not category_rows.get("concept"):
+                if isinstance(cached, dict):
+                    fallback = {**cached}
+                    fallback["warnings"] = ["板块数据已使用最近成功缓存"]
+                    return fallback
+                raise RuntimeError("行业与概念板块数据暂不可用")
+
+            industry_boards = category_rows.get("industry", [])[:SECTOR_DISPLAY_LIMIT]
+            concept_boards = category_rows.get("concept", [])[:SECTOR_DISPLAY_LIMIT]
+            all_boards = [*category_rows.get("industry", []), *category_rows.get("concept", [])]
+            top_board = max(all_boards, key=lambda item: item["pctChg"], default=None)
+            boards_with_flow = [item for item in all_boards if item["mainNetInflow"] is not None]
+            top_fund_board = max(
+                boards_with_flow,
+                key=lambda item: float(item["mainNetInflow"]),
+                default=None,
+            )
+            trade_date = max(
+                (str(stock.get("tradeDate") or "") for stock in snapshot),
+                default=self.latest_trade_date(),
+            )
+            result = {
+                "tradeDate": trade_date,
+                "updatedAt": database.now_iso(),
+                "source": " · ".join(dict.fromkeys(sources)) or "AKShare · 东方财富板块",
+                "summary": {
+                    "industryCount": counts.get("industry", 0),
+                    "conceptCount": counts.get("concept", 0),
+                    "risingIndustryCount": rising_counts.get("industry", 0),
+                    "risingConceptCount": rising_counts.get("concept", 0),
+                    "topBoard": top_board,
+                    "topFundBoard": top_fund_board,
+                },
+                "industryBoards": industry_boards,
+                "conceptBoards": concept_boards,
+                "warnings": list(dict.fromkeys(warnings)),
+            }
+            database.set_meta(cache_key, json.dumps(result, ensure_ascii=False))
+            database.set_meta("sector_overview_error", "；".join(debug_errors))
+            self._sector_cache = result
+            self._sector_fetched_at = datetime.now(database.CHINA_TZ)
+            return result
 
     @staticmethod
     def _limit_threshold(row: dict[str, Any]) -> float:

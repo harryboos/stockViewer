@@ -91,6 +91,23 @@ class MarketDataServiceTests(unittest.TestCase):
         self.assertEqual(source, "AKShare · 东方财富")
         self.assertEqual(transport, "AKShare 标准线路")
 
+    def test_sector_fund_flow_route_uses_industry_and_concept_filters(self) -> None:
+        client = EastmoneyClient()
+        payload = [{
+            "f14": "半导体", "f3": 2.5, "f62": 1_200_000_000,
+            "f184": 3.2, "f204": "龙头科技", "f205": "688001",
+        }]
+        with patch.object(client, "fetch_pages", return_value=payload) as fetch:
+            industry = client.sector_fund_flow_frame("industry")
+            industry_params = fetch.call_args.args[1]
+            concept = client.sector_fund_flow_frame("concept")
+            concept_params = fetch.call_args.args[1]
+
+        self.assertEqual(industry_params["fs"], "m:90 t:2")
+        self.assertEqual(concept_params["fs"], "m:90 t:3")
+        self.assertEqual(industry.iloc[0]["主力净流入最大股代码"], "688001")
+        self.assertEqual(concept.iloc[0]["名称"], "半导体")
+
     def test_normalized_spot_keeps_actual_source_and_filters_invalid_rows(self) -> None:
         service = MarketDataService()
         frame = pd.DataFrame(
@@ -174,6 +191,70 @@ class MarketDataServiceTests(unittest.TestCase):
         self.assertEqual(result["snapshot"]["limitUp"], 1)
         self.assertEqual(result["snapshot"]["limitDown"], 1)
         self.assertEqual(result["latestFlow"]["mainNetInflow"], 8_000_000_000)
+
+    def test_sector_overview_merges_strength_fund_flow_and_leaders(self) -> None:
+        service = MarketDataService()
+        industry = pd.DataFrame([
+            {
+                "板块名称": "半导体", "板块代码": "BK1036", "涨跌幅": 3.5,
+                "换手率": 2.1, "总市值": 8_000_000_000_000,
+                "上涨家数": 80, "下跌家数": 20,
+                "领涨股票": "龙头科技", "领涨股票-涨跌幅": 12.0,
+            },
+            {
+                "板块名称": "银行", "板块代码": "BK0475", "涨跌幅": -0.2,
+                "换手率": 0.4, "总市值": 10_000_000_000_000,
+                "上涨家数": 10, "下跌家数": 30,
+                "领涨股票": "稳健银行", "领涨股票-涨跌幅": 1.1,
+            },
+        ])
+        concept = pd.DataFrame([
+            {
+                "板块名称": "AI算力", "板块代码": "BK2001", "涨跌幅": 4.2,
+                "换手率": 4.1, "总市值": 4_000_000_000_000,
+                "上涨家数": 45, "下跌家数": 5,
+                "领涨股票": "算力股份", "领涨股票-涨跌幅": 10.0,
+            },
+            {
+                "板块名称": "昨日连板", "板块代码": "BK9999", "涨跌幅": 8.0,
+                "换手率": 9.0, "总市值": 1_000_000,
+                "上涨家数": 9, "下跌家数": 1,
+                "领涨股票": "样本", "领涨股票-涨跌幅": 10.0,
+            },
+        ])
+        industry_flow = pd.DataFrame([{
+            "名称": "半导体", "主力净流入-净额": 2_000_000_000,
+            "主力净流入-净占比": 4.5, "主力净流入最大股": "资金科技",
+            "主力净流入最大股代码": "600002",
+        }])
+        concept_flow = pd.DataFrame([{
+            "名称": "AI算力", "主力净流入-净额": 3_000_000_000,
+            "主力净流入-净占比": 5.5, "主力净流入最大股": "算力股份",
+            "主力净流入最大股代码": "300001",
+        }])
+        snapshot = [
+            {"symbol": "688001", "name": "龙头科技", "tradeDate": "20260828", "close": 88.0, "pctChg": 12.0, "amount": 5_000_000_000},
+            {"symbol": "600002", "name": "资金科技", "tradeDate": "20260828", "close": 20.0, "pctChg": 6.0, "amount": 8_000_000_000},
+            {"symbol": "300001", "name": "算力股份", "tradeDate": "20260828", "close": 30.0, "pctChg": 10.0, "amount": 7_000_000_000},
+        ]
+        with (
+            patch.object(service, "market_snapshot", return_value=snapshot),
+            patch.object(service, "_industry_name_frame", return_value=(industry, "行业源")),
+            patch.object(service, "_concept_name_frame", return_value=(concept, "概念源")),
+            patch.object(service, "_sector_fund_flow_frame", side_effect=[(industry_flow, "资金源"), (concept_flow, "资金源")]),
+            patch("backend.data_sources.database.get_meta", return_value=None),
+            patch("backend.data_sources.database.set_meta"),
+            patch("backend.data_sources.database.now_iso", return_value="2026-08-28T15:10:00+08:00"),
+        ):
+            result = service.sector_overview()
+
+        self.assertEqual(result["summary"]["industryCount"], 2)
+        self.assertEqual(result["summary"]["conceptCount"], 1)
+        self.assertEqual(result["summary"]["topBoard"]["name"], "AI算力")
+        self.assertEqual(result["summary"]["topFundBoard"]["mainNetInflow"], 3_000_000_000)
+        self.assertEqual(result["industryBoards"][0]["leaders"][0]["code"], "688001")
+        self.assertEqual(result["industryBoards"][0]["leaders"][1]["role"], "资金龙头")
+        self.assertEqual(len(result["conceptBoards"][0]["leaders"]), 1)
 
 
 if __name__ == "__main__":

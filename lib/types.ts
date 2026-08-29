@@ -167,6 +167,47 @@ export type MarketOverview = {
   warnings: string[];
 };
 
+export type SectorLeader = {
+  role: '领涨龙头' | '资金龙头';
+  code: string | null;
+  name: string;
+  price: number | null;
+  pctChg: number | null;
+  amount: number | null;
+};
+
+export type SectorBoard = {
+  kind: 'industry' | 'concept';
+  code: string;
+  name: string;
+  pctChg: number;
+  turnoverRate: number | null;
+  marketCap: number | null;
+  upCount: number;
+  downCount: number;
+  breadth: number;
+  mainNetInflow: number | null;
+  mainNetInflowRatio: number | null;
+  leaders: SectorLeader[];
+};
+
+export type SectorOverview = {
+  tradeDate: string;
+  updatedAt: string;
+  source: string;
+  summary: {
+    industryCount: number;
+    conceptCount: number;
+    risingIndustryCount: number;
+    risingConceptCount: number;
+    topBoard: SectorBoard | null;
+    topFundBoard: SectorBoard | null;
+  };
+  industryBoards: SectorBoard[];
+  conceptBoards: SectorBoard[];
+  warnings: string[];
+};
+
 export type StrategySummary = {
   consensus: Array<{
     code: string;

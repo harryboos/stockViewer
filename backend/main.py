@@ -151,6 +151,14 @@ async def market_overview(force: bool = Query(False)) -> dict:
         raise HTTPException(status_code=503, detail=str(error)) from error
 
 
+@app.get("/api/market/sectors")
+async def sector_overview(force: bool = Query(False)) -> dict:
+    try:
+        return await asyncio.to_thread(market_data.sector_overview, force)
+    except Exception as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
 @app.get("/api/strategies/public")
 async def public_strategies(force: bool = Query(False)) -> dict:
     try:

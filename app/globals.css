@@ -304,6 +304,60 @@ h1 { margin: 0; font-family: "Songti SC", "STSong", serif; font-size: clamp(29px
 .market-footnote p { margin: 4px 0; }
 .market-warning { color: #a06b4d; }
 
+/* Sector and concept radar */
+.sector-kpi-grid .market-kpi strong { font-family: "Songti SC", Georgia, serif; }
+.sector-kpi-grid .market-kpi strong i { color: #95a099; font: 500 11px Georgia, serif; }
+.sector-kpi-grid .market-kpi-dark strong i { color: #9fbaaa; }
+.sector-ranking-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
+.sector-ranking-panel { min-height: 382px; }
+.sector-ranking-list { margin-top: 14px; }
+.sector-ranking-row { min-height: 49px; display: grid; grid-template-columns: 24px minmax(105px, 1fr) 80px 42px 62px; align-items: center; gap: 8px; border-bottom: 1px solid #edf0ec; }
+.sector-ranking-row:last-child { border-bottom: 0; }
+.sector-rank { width: 19px; height: 19px; display: grid; place-items: center; border-radius: 50%; background: #edf3ef; color: var(--green); font: 650 7px Georgia, serif; }
+.sector-rank-name { min-width: 0; }
+.sector-rank-name strong, .sector-rank-name small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sector-rank-name strong { font-size: 10px; }
+.sector-rank-name small { margin-top: 3px; color: #9ba39e; font-size: 7px; }
+.sector-strength { height: 4px; overflow: hidden; border-radius: 5px; background: #edf0ec; }
+.sector-strength i { height: 100%; display: block; border-radius: inherit; }
+.sector-strength i.positive { background: linear-gradient(90deg, #d58a78, #bd4935); }
+.sector-strength i.negative { background: linear-gradient(90deg, #68a88a, #19714a); }
+.sector-ranking-row > b, .sector-ranking-row > em { font: 650 8px Georgia, serif; text-align: right; white-space: nowrap; }
+.sector-ranking-row > em { font-size: 7px; }
+.sector-empty { min-height: 290px; display: grid; place-items: center; color: #929c96; font-size: 10px; }
+.sector-leader-section { margin-top: 30px; }
+.sector-leader-heading { display: flex; align-items: end; justify-content: space-between; gap: 18px; margin-bottom: 14px; }
+.sector-leader-heading .eyebrow { margin-bottom: 4px; }
+.sector-leader-heading h2 { margin: 0; font: 700 24px/1.2 "Songti SC", serif; }
+.sector-leader-heading > div:first-child > span { display: block; margin-top: 5px; color: #8d9891; font-size: 9px; }
+.sector-mode-switch { padding: 3px; display: flex; border: 1px solid #dfe5df; border-radius: 10px; background: #edf1ed; }
+.sector-mode-switch button { min-width: 76px; height: 32px; border: 0; border-radius: 7px; background: transparent; color: #7b8780; font-size: 10px; cursor: pointer; }
+.sector-mode-switch button.active { color: var(--green); background: white; font-weight: 700; box-shadow: 0 2px 8px rgba(38,66,49,.08); }
+.sector-leader-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.sector-leader-card { min-width: 0; padding: 19px; border: 1px solid var(--line); border-radius: 17px; background: white; box-shadow: 0 10px 28px rgba(48,64,53,.035); }
+.sector-card-head { display: grid; grid-template-columns: 27px 1fr auto; align-items: center; gap: 9px; }
+.sector-card-head > span { width: 23px; height: 23px; display: grid; place-items: center; border-radius: 8px; color: var(--green); background: var(--green-soft); font: 650 8px Georgia, serif; }
+.sector-card-head small, .sector-card-head h3 { display: block; }
+.sector-card-head small { color: #98a19b; font-size: 7px; }
+.sector-card-head h3 { margin: 3px 0 0; font: 700 17px/1.1 "Songti SC", serif; }
+.sector-card-head > b { font: 650 11px Georgia, serif; }
+.sector-card-metrics { margin: 15px 0 10px; padding: 10px 0; display: grid; grid-template-columns: repeat(3, 1fr); border-top: 1px solid #edf0ec; border-bottom: 1px solid #edf0ec; }
+.sector-card-metrics > span { padding: 0 9px; border-right: 1px solid #edf0ec; }
+.sector-card-metrics > span:first-child { padding-left: 0; }
+.sector-card-metrics > span:last-child { padding-right: 0; border-right: 0; }
+.sector-card-metrics small, .sector-card-metrics strong { display: block; }
+.sector-card-metrics small { color: #9aa39d; font-size: 7px; }
+.sector-card-metrics strong { margin-top: 5px; font: 650 10px Georgia, serif; }
+.sector-leaders > div { min-height: 48px; display: grid; grid-template-columns: 54px minmax(90px, 1fr) 40px 70px; align-items: center; gap: 8px; border-bottom: 1px solid #f0f2ef; }
+.sector-leaders > div:last-child { border-bottom: 0; }
+.sector-leaders > div > span { width: fit-content; padding: 3px 5px; border-radius: 5px; color: #8b6e58; background: #f6eee7; font-size: 7px; }
+.sector-leaders strong, .sector-leaders small { display: block; }
+.sector-leaders strong { font-size: 10px; }
+.sector-leaders small { margin-top: 3px; color: #9ca49f; font: 7px Georgia, serif; }
+.sector-leaders b { font: 650 8px Georgia, serif; text-align: right; }
+.sector-leaders em { color: #6c7871; font: 7px Georgia, serif; text-align: right; white-space: nowrap; }
+.sector-leaders > p { min-height: 48px; margin: 0; display: grid; place-items: center; color: #959f99; font-size: 9px; }
+
 /* Modal and feedback */
 .modal-backdrop { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; padding: 20px; background: rgba(21,31,24,.34); backdrop-filter: blur(5px); animation: fade .2s ease; }
 @keyframes fade { from { opacity: 0; } }
@@ -340,6 +394,7 @@ h1 { margin: 0; font-family: "Songti SC", "STSong", serif; font-size: clamp(29px
   .summary-overview, .summary-body { grid-template-columns: 1fr; }
   .market-kpi-grid { grid-template-columns: repeat(2, 1fr); }
   .market-primary-grid, .market-secondary-grid { grid-template-columns: 1fr; }
+  .sector-ranking-grid, .sector-leader-grid { grid-template-columns: 1fr; }
   .public-card > p, .ai-desc { min-height: 0; }
   .mini-picks { display: grid; grid-template-columns: 1fr 1fr; }
   .mini-picks > div:nth-child(odd) { padding-right: 14px; }
@@ -351,8 +406,8 @@ h1 { margin: 0; font-family: "Songti SC", "STSong", serif; font-size: clamp(29px
   .topbar { height: auto; min-height: 68px; grid-template-columns: 1fr; padding: 10px 18px 0; }
   .brand { font-size: 18px; }
   .brand-mark { width: 31px; height: 31px; }
-  .main-nav { height: 42px; gap: 24px; }
-  .nav-item { font-size: 13px; }
+  .main-nav { width: 100%; height: 42px; justify-content: space-between; gap: 10px; }
+  .nav-item { font-size: 12px; }
   .content { padding: 32px 16px 60px; }
   .hero-row { align-items: flex-start; }
   .hero-actions { align-items: stretch; }
@@ -374,6 +429,11 @@ h1 { margin: 0; font-family: "Songti SC", "STSong", serif; font-size: clamp(29px
   .market-kpi-grid { grid-template-columns: 1fr; }
   .market-kpi { min-height: 105px; }
   .market-panel { padding: 17px; }
+  .sector-ranking-row { grid-template-columns: 22px minmax(92px, 1fr) 48px 38px 52px; gap: 5px; }
+  .sector-leader-heading { display: block; }
+  .sector-mode-switch { width: fit-content; margin-top: 14px; }
+  .sector-leader-card { padding: 16px; }
+  .sector-leaders > div { grid-template-columns: 51px minmax(82px, 1fr) 36px 59px; gap: 5px; }
   .breadth-visual { grid-template-columns: 125px 1fr; gap: 10px; }
   .breadth-ring { width: 116px; height: 116px; }
   .fund-flow-chart { gap: 3px; }

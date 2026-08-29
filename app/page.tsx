@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AddStockModal } from '@/components/add-stock-modal';
 import { AppHeader } from '@/components/app-header';
 import { MarketOverviewView } from '@/components/market-overview-view';
+import { SectorConceptView } from '@/components/sector-concept-view';
 import { StrategiesView } from '@/components/strategies-view';
 import { WatchlistView } from '@/components/watchlist-view';
 import { errorMessage, isAbortError, jsonFetch } from '@/lib/client-api';
@@ -15,6 +16,7 @@ import {
   type AiRunView,
   type MarketOverview,
   type PublicStrategyResult,
+  type SectorOverview,
   type StockBasic,
   type SystemStatus,
   type WatchlistResponse,
@@ -22,7 +24,7 @@ import {
 } from '@/lib/types';
 
 
-type ActiveTab = 'watchlist' | 'strategies' | 'market';
+type ActiveTab = 'watchlist' | 'strategies' | 'market' | 'sectors';
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('watchlist');
@@ -31,6 +33,7 @@ export default function Home() {
   const [publicStrategies, setPublicStrategies] = useState<PublicStrategyResult[]>([]);
   const [aiRuns, setAiRuns] = useState<AiRunView[]>([]);
   const [marketOverview, setMarketOverview] = useState<MarketOverview | null>(null);
+  const [sectorOverview, setSectorOverview] = useState<SectorOverview | null>(null);
   const [query, setQuery] = useState('');
   const [addQuery, setAddQuery] = useState('');
   const [searchResults, setSearchResults] = useState<StockBasic[]>([]);
@@ -38,6 +41,7 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [strategyLoading, setStrategyLoading] = useState(false);
   const [marketLoading, setMarketLoading] = useState(false);
+  const [sectorLoading, setSectorLoading] = useState(false);
   const [searching, setSearching] = useState(false);
   const [toast, setToast] = useState('');
   const [error, setError] = useState('');
@@ -134,6 +138,24 @@ export default function Home() {
     if (!marketLoading && !marketOverview) void loadMarketOverview();
   }, [loadMarketOverview, marketLoading, marketOverview]);
 
+  const loadSectorOverview = useCallback(async (force = false) => {
+    setSectorLoading(true);
+    setError('');
+    try {
+      const queryString = force ? '?force=true' : '';
+      setSectorOverview(await jsonFetch<SectorOverview>(`/api/market/sectors${queryString}`));
+    } catch (reason) {
+      setError(errorMessage(reason, '板块概念数据加载失败'));
+    } finally {
+      setSectorLoading(false);
+    }
+  }, []);
+
+  const openSectors = useCallback(() => {
+    setActiveTab('sectors');
+    if (!sectorLoading && !sectorOverview) void loadSectorOverview();
+  }, [loadSectorOverview, sectorLoading, sectorOverview]);
+
   async function addStock(stock: StockBasic) {
     try {
       const data = await jsonFetch<WatchlistResponse>('/api/watchlist', {
@@ -181,7 +203,7 @@ export default function Home() {
     if (!value.trim()) setSearchResults([]);
   }
 
-  const tradeDate = stocks.find((stock) => stock.quote)?.quote?.tradeDate ?? marketOverview?.tradeDate ?? null;
+  const tradeDate = stocks.find((stock) => stock.quote)?.quote?.tradeDate ?? marketOverview?.tradeDate ?? sectorOverview?.tradeDate ?? null;
   const completedAiCount = aiRuns.filter((run) => run.status === 'succeeded').length;
   const missingAiCount = status
     ? AI_PROVIDERS.filter((provider) => !status.providers[provider]).length
@@ -200,6 +222,7 @@ export default function Home() {
         onOpenWatchlist={() => setActiveTab('watchlist')}
         onOpenStrategies={openStrategies}
         onOpenMarket={openMarket}
+        onOpenSectors={openSectors}
       />
 
       {error && (
@@ -230,12 +253,19 @@ export default function Home() {
           loading={strategyLoading}
           onLoad={() => void loadStrategies()}
         />
-      ) : (
+      ) : activeTab === 'market' ? (
         <MarketOverviewView
           today={today}
           data={marketOverview}
           loading={marketLoading}
           onRefresh={() => void loadMarketOverview(true)}
+        />
+      ) : (
+        <SectorConceptView
+          today={today}
+          data={sectorOverview}
+          loading={sectorLoading}
+          onRefresh={() => void loadSectorOverview(true)}
         />
       )}
 

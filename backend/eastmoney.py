@@ -40,6 +40,13 @@ CONSTITUENT_FIELD_MAP = {
     "最高": "f15", "最低": "f16", "今开": "f17", "昨收": "f18", "市净率": "f23",
 }
 
+SECTOR_FUND_FLOW_FIELD_MAP = {
+    "名称": "f14", "涨跌幅": "f3", "主力净流入-净额": "f62",
+    "主力净流入-净占比": "f184", "超大单净流入-净额": "f66",
+    "大单净流入-净额": "f72", "主力净流入最大股": "f204",
+    "主力净流入最大股代码": "f205",
+}
+
 
 class EastmoneyClient:
     """Small, testable client for Eastmoney's AKShare-compatible delayed route."""
@@ -165,6 +172,27 @@ class EastmoneyClient:
             "fields": ",".join(CONCEPT_FIELD_MAP.values()),
         }
         return self._frame(self.fetch_pages("79", params), CONCEPT_FIELD_MAP)
+
+    def industry_name_frame(self) -> pd.DataFrame:
+        params = {
+            **COMMON_PARAMS,
+            "fs": "m:90 t:2 f:!50",
+            "fields": ",".join(CONCEPT_FIELD_MAP.values()),
+        }
+        return self._frame(self.fetch_pages("79", params), CONCEPT_FIELD_MAP)
+
+    def sector_fund_flow_frame(self, sector_type: str) -> pd.DataFrame:
+        if sector_type not in {"industry", "concept"}:
+            raise ValueError("sector_type 必须是 industry 或 concept")
+        params = {
+            **COMMON_PARAMS,
+            "fid": "f62",
+            "fid0": "f62",
+            "stat": "1",
+            "fs": f"m:90 t:{'2' if sector_type == 'industry' else '3'}",
+            "fields": ",".join(SECTOR_FUND_FLOW_FIELD_MAP.values()),
+        }
+        return self._frame(self.fetch_pages("79", params), SECTOR_FUND_FLOW_FIELD_MAP)
 
     def concept_constituent_frame(self, code: str) -> pd.DataFrame:
         params = {
