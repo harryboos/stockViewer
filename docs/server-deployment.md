@@ -1,5 +1,32 @@
 # 私人服务器部署
 
+> 推荐结构已升级：统一首页、Caddy 与 Compose 由同级的 `private-apps-gateway` 项目管理，真实配置保存在 `/opt/private-apps/config/private-apps.env`。本文件保留旧结构细节供迁移核对；新服务器部署与日常更新请优先遵循 gateway 项目的 README。
+
+推荐服务器目录：
+
+```text
+/opt/private-apps/
+├── private-apps-gateway/
+├── stockViewer/
+├── legend-football-manager/
+└── config/
+    └── private-apps.env
+```
+
+从旧结构迁移时，先克隆 `private-apps-gateway`，再执行：
+
+```bash
+cd /opt/private-apps
+mkdir -p config
+mv stockViewer/deploy/.env.server config/private-apps.env
+chmod 600 config/private-apps.env
+cd private-apps-gateway
+./scripts/check.sh
+./scripts/deploy.sh
+```
+
+确认三个域名全部正常前，保留股票项目中的旧部署文件。
+
 这套部署会在同一台服务器上运行一个中文私人首页、观星 A股和传奇足球经理，并用同一把访问密钥保护三个站点。
 
 ## 访问结构
