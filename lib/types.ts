@@ -208,6 +208,7 @@ export type SectorOverview = {
   };
   industryBoards: SectorBoard[];
   conceptBoards: SectorBoard[];
+  turnoverBoards: SectorBoard[];
   warnings: string[];
 };
 

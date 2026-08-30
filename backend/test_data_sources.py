@@ -248,6 +248,13 @@ class MarketDataServiceTests(unittest.TestCase):
                 "上涨家数": 9, "下跌家数": 1,
                 "领涨股票": "样本", "领涨股票-涨跌幅": 10.0,
             },
+            {
+                "板块名称": "富时罗素", "板块代码": "BK0867", "涨跌幅": 0.5,
+                "成交额": 99_000_000_000,
+                "换手率": 1.0, "总市值": 20_000_000_000_000,
+                "上涨家数": 60, "下跌家数": 40,
+                "领涨股票": "宽基样本", "领涨股票-涨跌幅": 2.0,
+            },
         ])
         industry_flow = pd.DataFrame([{
             "名称": "半导体", "主力净流入-净额": 2_000_000_000,
@@ -296,6 +303,12 @@ class MarketDataServiceTests(unittest.TestCase):
         self.assertEqual(result["industryBoards"][1]["amountDelta"], -500_000_000)
         self.assertEqual(result["conceptBoards"][0]["amountDelta"], 2_000_000_000)
         self.assertEqual(len(result["conceptBoards"][0]["leaders"]), 1)
+        self.assertEqual(
+            [board["name"] for board in result["turnoverBoards"]],
+            ["AI算力", "半导体", "银行"],
+        )
+        self.assertEqual(result["turnoverBoards"][0]["amount"], 6_000_000_000)
+        self.assertEqual(result["turnoverBoards"][0]["amountDelta"], 2_000_000_000)
 
 
 if __name__ == "__main__":

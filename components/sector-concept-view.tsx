@@ -63,6 +63,45 @@ function BoardRanking({ title, eyebrow, boards }: { title: string; eyebrow: stri
   );
 }
 
+function TurnoverMatrix({ boards }: { boards: SectorBoard[] }) {
+  const maxAmount = Math.max(...boards.map((board) => board.amount ?? 0), 1);
+
+  return (
+    <section className="sector-turnover-section" aria-labelledby="sector-turnover-title">
+      <div className="sector-turnover-heading">
+        <div>
+          <p className="eyebrow">量能矩阵</p>
+          <h2 id="sector-turnover-title">成交额 Top 板块</h2>
+          <span>行业与概念统一按今日成交额排序，观察资金最密集的方向。</span>
+        </div>
+        <b>Top {boards.length}</b>
+      </div>
+      {boards.length ? (
+        <div className="sector-turnover-grid">
+          {boards.map((board, index) => (
+            <article className={`sector-turnover-card ${board.kind}`} key={`${board.kind}-${board.code}`}>
+              <div className="sector-turnover-card-head">
+                <span>{String(index + 1).padStart(2, '0')}</span>
+                <small>{board.kind === 'industry' ? '行业' : '概念'}</small>
+                <b className={changeTone(board.pctChg)}>{formatPct(board.pctChg)}</b>
+              </div>
+              <h3>{board.name}</h3>
+              <p>{board.code} · 上涨广度 {board.breadth.toFixed(0)}%</p>
+              <div className="sector-turnover-values">
+                <span><small>今日成交额</small><strong>{formatTurnover(board.amount)}</strong></span>
+                <span><small>较昨日</small><strong className={changeTone(board.amountDelta)}>{formatAmount(board.amountDelta)}</strong></span>
+              </div>
+              <div className="sector-turnover-bar" aria-hidden="true">
+                <i style={{ width: `${Math.max(((board.amount ?? 0) / maxAmount) * 100, 4)}%` }} />
+              </div>
+            </article>
+          ))}
+        </div>
+      ) : <div className="sector-turnover-empty">当前没有可展示的板块成交额数据</div>}
+    </section>
+  );
+}
+
 function LeaderBoardCard({ board, index }: { board: SectorBoard; index: number }) {
   return (
     <article className="sector-leader-card">
@@ -140,6 +179,8 @@ export function SectorConceptView({ today, data, loading, onRefresh }: SectorCon
         <BoardRanking title="今日概念热度榜" eyebrow="主题热度" boards={data.conceptBoards} />
       </div>
 
+      <TurnoverMatrix boards={data.turnoverBoards ?? []} />
+
       <section className="sector-leader-section">
         <div className="sector-leader-heading">
           <div><p className="eyebrow">龙头矩阵</p><h2>板块强势股</h2><span>领涨龙头看价格强度，资金龙头看主力净流入最大股；两者可能重合。</span></div>
@@ -154,7 +195,7 @@ export function SectorConceptView({ today, data, loading, onRefresh }: SectorCon
       </section>
 
       <div className="market-footnote">
-        <p>板块强度、今日成交额、上涨家数与领涨股来自东方财富实时板块行情；“较昨日”按前一交易日板块日线成交额计算，主力资金龙头来自板块资金流排名。龙头仅表示当日价格或资金口径靠前，不代表公司基本面质量或后续涨幅。</p>
+        <p>成交额 Top 矩阵在全部行业与概念板块中统一排名；板块强度、今日成交额、上涨家数与领涨股来自东方财富实时板块行情。“较昨日”按前一交易日板块日线成交额计算，主力资金龙头来自板块资金流排名。龙头仅表示当日价格或资金口径靠前，不代表公司基本面质量或后续涨幅。</p>
         {data.warnings.length > 0 && <p className="market-warning">部分扩展数据已降级：{data.warnings.join('；')}</p>}
       </div>
     </section>

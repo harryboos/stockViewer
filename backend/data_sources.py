@@ -15,16 +15,20 @@ from .eastmoney import EastmoneyClient
 
 
 CATALOG_CACHE_SECONDS = 24 * 60 * 60
-CONCEPT_CACHE_VERSION = "2"
+CONCEPT_CACHE_VERSION = "3"
 MARKET_OVERVIEW_CACHE_VERSION = "1"
-SECTOR_OVERVIEW_CACHE_VERSION = "2"
+SECTOR_OVERVIEW_CACHE_VERSION = "3"
 SECTOR_DISPLAY_LIMIT = 6
+SECTOR_TURNOVER_LIMIT = 6
 CONCEPT_EXCLUDED_MARKERS = (
     "昨日", "连板", "涨停", "融资融券", "沪股通", "深股通", "QFII", "MSCI",
     "基金重仓", "机构重仓", "社保重仓", "券商金股", "预盈预增", "破净股", "高送转",
     "中报", "年报", "季报", "业绩预", "首亏", "扭亏", "续亏", "续盈",
     "低市净率", "高市净率", "低市盈率", "高市盈率", "高成长股", "题材股",
     "反转股", "趋势股", "历史新高", "历史新低", "百元股", "低价股", "高价股",
+    "富时罗素", "标准普尔", "大盘股", "上证指数", "上证50", "沪深300",
+    "深证成指", "深成500", "创业板指", "创业板综", "中证500", "中证1000",
+    "HS300",
 )
 
 
@@ -559,12 +563,11 @@ class MarketDataService:
         boards: list[dict[str, Any]],
         trade_date: str,
     ) -> tuple[list[str], int]:
-        visible = boards[:SECTOR_DISPLAY_LIMIT]
         cache_key = f"sector_previous_amount:{trade_date}:v1"
         cached = self._cached_json(cache_key)
         previous_by_code = dict(cached) if isinstance(cached, dict) else {}
         targets = [
-            board for board in visible
+            board for board in boards
             if number_or_none(previous_by_code.get(board["code"])) is None
             or number_or_none(board.get("amount")) is None
         ]
@@ -588,7 +591,7 @@ class MarketDataService:
                     except Exception:
                         failures += 1
 
-        for board in visible:
+        for board in boards:
             amount = number_or_none(board.get("amount"))
             previous = number_or_none(previous_by_code.get(board["code"]))
             board["amount"] = amount
@@ -915,10 +918,6 @@ class MarketDataService:
                     warnings.append(f"{label}资金流暂不可用")
 
                 rows = self._board_rows(kind, board_frame, fund_frame, snapshot)
-                turnover_sources, turnover_failures = self._enrich_board_turnover(kind, rows, trade_date)
-                sources.extend(turnover_sources)
-                if turnover_failures:
-                    warnings.append(f"部分{label}板块昨日成交额暂不可用")
                 category_rows[kind] = rows
                 counts[kind] = len(rows)
                 rising_counts[kind] = sum(1 for item in rows if item["pctChg"] > 0)
@@ -933,6 +932,32 @@ class MarketDataService:
             industry_boards = category_rows.get("industry", [])[:SECTOR_DISPLAY_LIMIT]
             concept_boards = category_rows.get("concept", [])[:SECTOR_DISPLAY_LIMIT]
             all_boards = [*category_rows.get("industry", []), *category_rows.get("concept", [])]
+            turnover_boards = sorted(
+                (item for item in all_boards if number_or_none(item.get("amount")) is not None),
+                key=lambda item: float(item["amount"]),
+                reverse=True,
+            )[:SECTOR_TURNOVER_LIMIT]
+            for kind, displayed_boards in (
+                ("industry", industry_boards),
+                ("concept", concept_boards),
+            ):
+                selected_by_code = {board["code"]: board for board in displayed_boards}
+                selected_by_code.update({
+                    board["code"]: board
+                    for board in turnover_boards
+                    if board["kind"] == kind
+                })
+                if not selected_by_code:
+                    continue
+                turnover_sources, turnover_failures = self._enrich_board_turnover(
+                    kind,
+                    list(selected_by_code.values()),
+                    trade_date,
+                )
+                sources.extend(turnover_sources)
+                if turnover_failures:
+                    label = "行业" if kind == "industry" else "概念"
+                    warnings.append(f"部分{label}板块昨日成交额暂不可用")
             top_board = max(all_boards, key=lambda item: item["pctChg"], default=None)
             boards_with_flow = [item for item in all_boards if item["mainNetInflow"] is not None]
             top_fund_board = max(
@@ -954,6 +979,7 @@ class MarketDataService:
                 },
                 "industryBoards": industry_boards,
                 "conceptBoards": concept_boards,
+                "turnoverBoards": turnover_boards,
                 "warnings": list(dict.fromkeys(warnings)),
             }
             database.set_meta(cache_key, json.dumps(result, ensure_ascii=False))
