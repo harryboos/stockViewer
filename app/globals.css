@@ -109,8 +109,12 @@ h1 { margin: 0; font-family: "Songti SC", "STSong", serif; font-size: clamp(29px
 .strategies-page { padding-top: 44px; }
 .strategy-hero { display: flex; align-items: end; justify-content: space-between; gap: 30px; padding-bottom: 36px; }
 .strategy-hero h1 { max-width: 700px; }
-.daily-status { min-width: 245px; padding: 15px 17px; display: flex; align-items: center; gap: 12px; background: white; border: 1px solid var(--line); border-radius: 14px; }
+.strategy-actions { width: 245px; flex: 0 0 auto; display: grid; gap: 8px; }
+.daily-status { min-width: 0; padding: 15px 17px; display: flex; align-items: center; gap: 12px; background: white; border: 1px solid var(--line); border-radius: 14px; }
 .pulse-dot { width: 10px; height: 10px; border-radius: 50%; background: #3f9569; box-shadow: 0 0 0 5px #e5f1e9; }
+.rerun-mark { width: 25px; height: 25px; display: grid; place-items: center; border-radius: 8px; color: #986a47; background: #f1e4d5; font: 700 17px/1 Georgia, serif; }
+.manual-rerun { border-color: #eadfce; background: #fbf7f0; }
+.manual-rerun:hover { border-color: #d8bea0; }
 .daily-status strong, .daily-status small { display: block; }
 .daily-status strong { font-size: 12px; }
 .daily-status small { margin-top: 4px; color: #8b9690; font-size: 10px; }
@@ -447,7 +451,8 @@ h1 { margin: 0; font-family: "Songti SC", "STSong", serif; font-size: clamp(29px
   .breadth-ring { width: 116px; height: 116px; }
   .fund-flow-chart { gap: 3px; }
   .fund-flow-column:nth-child(-n+4) { display: none; }
-  .daily-status { margin-top: 22px; min-width: 0; }
+  .strategy-actions { width: 100%; margin-top: 22px; }
+  .daily-status { min-width: 0; }
   .section-heading { align-items: flex-start; }
   .section-heading p { max-width: 220px; }
   .source-count { margin-top: 5px; }

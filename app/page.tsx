@@ -91,10 +91,27 @@ export default function Home() {
     };
   }, [addQuery, modalOpen, stocks]);
 
-  const loadStrategies = useCallback(async () => {
+  const loadStrategies = useCallback(async (force = false) => {
     setStrategyLoading(true);
     setError('');
     try {
+      if (force) {
+        setAiRuns((runs) => runs.map((run) => (
+          run.status === 'not_configured'
+            ? run
+            : { ...run, status: 'running', error: null }
+        )));
+        const [publicData, aiData] = await Promise.all([
+          jsonFetch<{ status: string; strategies: PublicStrategyResult[] }>('/api/strategies/public?force=true'),
+          jsonFetch<{ runs: AiRunView[] }>('/api/strategies/ai?force=true', { method: 'POST' }),
+        ]);
+        setPublicStrategies(publicData.strategies);
+        setAiRuns(aiData.runs);
+        const succeeded = aiData.runs.filter((run) => run.status === 'succeeded').length;
+        setToast(`手动重跑完成，AI ${succeeded}/3 已完成`);
+        return;
+      }
+
       const [publicData, aiData] = await Promise.all([
         jsonFetch<{ status: string; strategies: PublicStrategyResult[] }>('/api/strategies/public'),
         jsonFetch<{ runs: AiRunView[] }>('/api/strategies/ai'),
@@ -116,6 +133,13 @@ export default function Home() {
       setStrategyLoading(false);
     }
   }, []);
+
+  const rerunStrategies = useCallback(() => {
+    const confirmed = window.confirm(
+      '手动重跑会重新获取行情、重新计算全部规则策略，并再次调用所有已配置的 AI，可能产生接口费用。确定继续吗？',
+    );
+    if (confirmed) void loadStrategies(true);
+  }, [loadStrategies]);
 
   const openStrategies = useCallback(() => {
     setActiveTab('strategies');
@@ -254,6 +278,7 @@ export default function Home() {
           summary={strategySummary}
           loading={strategyLoading}
           onLoad={() => void loadStrategies()}
+          onRerun={rerunStrategies}
         />
       ) : activeTab === 'market' ? (
         <MarketOverviewView

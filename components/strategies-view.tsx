@@ -18,6 +18,7 @@ type StrategiesViewProps = {
   summary: StrategySummary;
   loading: boolean;
   onLoad: () => void;
+  onRerun: () => void;
 };
 
 type ExpandableCopyProps = {
@@ -86,6 +87,7 @@ export function StrategiesView({
   summary,
   loading,
   onLoad,
+  onRerun,
 }: StrategiesViewProps) {
   const publicItems = displayedStrategies(strategies);
   const aiItems = displayedAiRuns(status, aiRuns);
@@ -100,10 +102,16 @@ export function StrategiesView({
           <h1>把真实数据与不同方法，放在同一张桌上</h1>
           <p className="subtitle">规则策略每日计算；三家 AI 使用同一提示语、同一候选池和同一输出约束。结果写入本地 SQLite，避免重复调用。</p>
         </div>
-        <button className="daily-status daily-button" onClick={onLoad} disabled={loading}>
-          <span className="pulse-dot" />
-          <div><strong>{loading ? '策略运行中…' : '今日策略状态'}</strong><small>{today} · 点击检查更新</small></div>
-        </button>
+        <div className="strategy-actions">
+          <button type="button" className="daily-status daily-button" onClick={onLoad} disabled={loading}>
+            <span className="pulse-dot" />
+            <div><strong>{loading ? '策略运行中…' : '今日策略状态'}</strong><small>{today} · 检查缺失或失败结果</small></div>
+          </button>
+          <button type="button" className="daily-status daily-button manual-rerun" onClick={onRerun} disabled={loading}>
+            <span className="rerun-mark" aria-hidden="true">↻</span>
+            <div><strong>{loading ? '请等待当前任务' : '手动重跑全部'}</strong><small>重新取数 · 会再次调用 AI</small></div>
+          </button>
+        </div>
       </div>
 
       <section className="strategy-section">
