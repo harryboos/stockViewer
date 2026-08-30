@@ -20,9 +20,18 @@ function formatAmount(value: number | null | undefined): string {
   return `${yi >= 0 ? '+' : ''}${yi.toFixed(Math.abs(yi) >= 100 ? 0 : 1)}亿`;
 }
 
+function formatTurnover(value: number | null | undefined): string {
+  return formatAmount(value).replace(/^\+/, '');
+}
+
 function formatPct(value: number | null | undefined): string {
   if (value === null || value === undefined || !Number.isFinite(value)) return '—';
   return `${value >= 0 ? '+' : ''}${value.toFixed(2)}%`;
+}
+
+function changeTone(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return '';
+  return value >= 0 ? 'up-text' : 'down-text';
 }
 
 function BoardRanking({ title, eyebrow, boards }: { title: string; eyebrow: string; boards: SectorBoard[] }) {
@@ -31,14 +40,18 @@ function BoardRanking({ title, eyebrow, boards }: { title: string; eyebrow: stri
     <article className="market-panel sector-ranking-panel">
       <div className="market-panel-heading">
         <div><small>{eyebrow}</small><h2>{title}</h2></div>
-        <span>涨幅 · 广度 · 主力资金</span>
+        <span>涨幅 · 成交额 · 较昨日 · 主力资金</span>
       </div>
       {boards.length ? (
         <div className="sector-ranking-list">
           {boards.map((board, index) => (
             <div className="sector-ranking-row" key={board.code}>
               <span className="sector-rank">{index + 1}</span>
-              <div className="sector-rank-name"><strong>{board.name}</strong><small>{board.code} · 上涨广度 {board.breadth.toFixed(0)}%</small></div>
+              <div className="sector-rank-name">
+                <strong>{board.name}</strong>
+                <small>{board.code} · 上涨广度 {board.breadth.toFixed(0)}%</small>
+                <small className="sector-rank-amount">成交 {formatTurnover(board.amount)} · <i className={changeTone(board.amountDelta)}>较昨 {formatAmount(board.amountDelta)}</i></small>
+              </div>
               <div className="sector-strength"><i className={board.pctChg >= 0 ? 'positive' : 'negative'} style={{ width: `${Math.max(Math.abs(board.pctChg) / maxMove * 100, 4)}%` }} /></div>
               <b className={board.pctChg >= 0 ? 'up-text' : 'down-text'}>{formatPct(board.pctChg)}</b>
               <em className={(board.mainNetInflow ?? 0) >= 0 ? 'up-text' : 'down-text'}>{formatAmount(board.mainNetInflow)}</em>
@@ -57,6 +70,10 @@ function LeaderBoardCard({ board, index }: { board: SectorBoard; index: number }
         <span>{String(index + 1).padStart(2, '0')}</span>
         <div><small>{board.kind === 'industry' ? '行业板块' : '概念主题'} · {board.code}</small><h3>{board.name}</h3></div>
         <b className={board.pctChg >= 0 ? 'up-text' : 'down-text'}>{formatPct(board.pctChg)}</b>
+      </div>
+      <div className="sector-card-turnover">
+        <span><small>今日成交额</small><strong>{formatTurnover(board.amount)}</strong></span>
+        <span><small>较昨日</small><strong className={changeTone(board.amountDelta)}>{formatAmount(board.amountDelta)}</strong></span>
       </div>
       <div className="sector-card-metrics">
         <span><small>上涨广度</small><strong>{board.breadth.toFixed(0)}%</strong></span>
@@ -83,7 +100,7 @@ export function SectorConceptView({ today, data, loading, onRefresh }: SectorCon
   if (!data && loading) {
     return (
       <section className="content market-page page-enter">
-        <div className="market-loading"><span className="loading-ring" /><strong>正在扫描行业与概念板块</strong><p>合并板块强度、涨跌广度、资金流和龙头股</p></div>
+        <div className="market-loading"><span className="loading-ring" /><strong>正在扫描行业与概念板块</strong><p>合并板块强度、成交额、涨跌广度、资金流和龙头股</p></div>
       </section>
     );
   }
@@ -137,7 +154,7 @@ export function SectorConceptView({ today, data, loading, onRefresh }: SectorCon
       </section>
 
       <div className="market-footnote">
-        <p>板块强度、上涨家数与领涨股来自东方财富实时板块行情；主力资金龙头来自板块资金流排名。龙头仅表示当日价格或资金口径靠前，不代表公司基本面质量或后续涨幅。</p>
+        <p>板块强度、今日成交额、上涨家数与领涨股来自东方财富实时板块行情；“较昨日”按前一交易日板块日线成交额计算，主力资金龙头来自板块资金流排名。龙头仅表示当日价格或资金口径靠前，不代表公司基本面质量或后续涨幅。</p>
         {data.warnings.length > 0 && <p className="market-warning">部分扩展数据已降级：{data.warnings.join('；')}</p>}
       </div>
     </section>

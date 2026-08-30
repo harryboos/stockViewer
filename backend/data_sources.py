@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from statistics import median
@@ -16,7 +17,7 @@ from .eastmoney import EastmoneyClient
 CATALOG_CACHE_SECONDS = 24 * 60 * 60
 CONCEPT_CACHE_VERSION = "2"
 MARKET_OVERVIEW_CACHE_VERSION = "1"
-SECTOR_OVERVIEW_CACHE_VERSION = "1"
+SECTOR_OVERVIEW_CACHE_VERSION = "2"
 SECTOR_DISPLAY_LIMIT = 6
 CONCEPT_EXCLUDED_MARKERS = (
     "昨日", "连板", "涨停", "融资融券", "沪股通", "深股通", "QFII", "MSCI",
@@ -503,6 +504,100 @@ class MarketDataService:
             errors.append(f"AKShare：{error}")
         raise RuntimeError("；".join(errors) or "板块资金流获取失败")
 
+    def _sector_history_frame(self, kind: str, code: str) -> tuple[Any, str]:
+        errors: list[str] = []
+        if MARKET.eastmoney_delay_enabled:
+            try:
+                return self._eastmoney_client.sector_history_frame(code), "东方财富板块历史备用线路"
+            except Exception as error:
+                errors.append(f"备用线路：{error}")
+        today = datetime.now(database.CHINA_TZ).date()
+        start = today - timedelta(days=14)
+        try:
+            if kind == "industry":
+                frame = self._akshare().stock_board_industry_hist_em(
+                    symbol=code,
+                    start_date=start.strftime("%Y%m%d"),
+                    end_date=today.strftime("%Y%m%d"),
+                    period="日k",
+                    adjust="",
+                )
+            else:
+                frame = self._akshare().stock_board_concept_hist_em(
+                    symbol=code,
+                    period="daily",
+                    start_date=start.strftime("%Y%m%d"),
+                    end_date=today.strftime("%Y%m%d"),
+                    adjust="",
+                )
+            return frame, "AKShare · 东方财富板块历史"
+        except Exception as error:
+            errors.append(f"AKShare：{error}")
+        raise RuntimeError("；".join(errors) or f"板块 {code} 历史成交额获取失败")
+
+    def _sector_amount_pair(
+        self,
+        kind: str,
+        code: str,
+        trade_date: str,
+    ) -> tuple[float | None, float | None, str]:
+        frame, source = self._sector_history_frame(kind, code)
+        points: list[tuple[str, float]] = []
+        for _, row in frame.iterrows():
+            raw_date = str(row.get("日期", "")).replace("-", "")[:8]
+            amount = number_or_none(row.get("成交额"))
+            if len(raw_date) == 8 and raw_date.isdigit() and amount is not None and amount >= 0:
+                points.append((raw_date, amount))
+        points.sort(key=lambda item: item[0])
+        current = next((amount for date_key, amount in reversed(points) if date_key == trade_date), None)
+        previous = next((amount for date_key, amount in reversed(points) if date_key < trade_date), None)
+        return current, previous, source
+
+    def _enrich_board_turnover(
+        self,
+        kind: str,
+        boards: list[dict[str, Any]],
+        trade_date: str,
+    ) -> tuple[list[str], int]:
+        visible = boards[:SECTOR_DISPLAY_LIMIT]
+        cache_key = f"sector_previous_amount:{trade_date}:v1"
+        cached = self._cached_json(cache_key)
+        previous_by_code = dict(cached) if isinstance(cached, dict) else {}
+        targets = [
+            board for board in visible
+            if number_or_none(previous_by_code.get(board["code"])) is None
+            or number_or_none(board.get("amount")) is None
+        ]
+        sources: list[str] = []
+        failures = 0
+        if targets:
+            with ThreadPoolExecutor(max_workers=min(3, len(targets))) as executor:
+                futures = {
+                    executor.submit(self._sector_amount_pair, kind, board["code"], trade_date): board
+                    for board in targets
+                }
+                for future in as_completed(futures):
+                    board = futures[future]
+                    try:
+                        current, previous, source = future.result()
+                        sources.append(source)
+                        if number_or_none(board.get("amount")) is None:
+                            board["amount"] = current
+                        if previous is not None:
+                            previous_by_code[board["code"]] = previous
+                    except Exception:
+                        failures += 1
+
+        for board in visible:
+            amount = number_or_none(board.get("amount"))
+            previous = number_or_none(previous_by_code.get(board["code"]))
+            board["amount"] = amount
+            board["previousAmount"] = previous
+            board["amountDelta"] = amount - previous if amount is not None and previous is not None else None
+        if previous_by_code:
+            database.set_meta(cache_key, json.dumps(previous_by_code, ensure_ascii=False))
+        return list(dict.fromkeys(sources)), failures
+
     def _concept_cons_frame(self, code: str) -> Any:
         errors: list[str] = []
         if MARKET.eastmoney_delay_enabled:
@@ -739,6 +834,9 @@ class MarketDataService:
                     "code": code,
                     "name": name,
                     "pctChg": pct_chg,
+                    "amount": number_or_none(row.get("成交额")),
+                    "previousAmount": None,
+                    "amountDelta": None,
                     "turnoverRate": number_or_none(row.get("换手率")),
                     "marketCap": number_or_none(row.get("总市值")),
                     "upCount": int(up_count),
@@ -781,6 +879,12 @@ class MarketDataService:
                 snapshot = []
                 warnings.append("龙头股行情暂不可用")
                 debug_errors.append(f"行情快照：{error}")
+            trade_dates = [
+                str(stock.get("tradeDate"))
+                for stock in snapshot
+                if len(str(stock.get("tradeDate") or "")) == 8
+            ]
+            trade_date = max(trade_dates, default=self.latest_trade_date())
 
             category_rows: dict[str, list[dict[str, Any]]] = {}
             counts: dict[str, int] = {}
@@ -811,6 +915,10 @@ class MarketDataService:
                     warnings.append(f"{label}资金流暂不可用")
 
                 rows = self._board_rows(kind, board_frame, fund_frame, snapshot)
+                turnover_sources, turnover_failures = self._enrich_board_turnover(kind, rows, trade_date)
+                sources.extend(turnover_sources)
+                if turnover_failures:
+                    warnings.append(f"部分{label}板块昨日成交额暂不可用")
                 category_rows[kind] = rows
                 counts[kind] = len(rows)
                 rising_counts[kind] = sum(1 for item in rows if item["pctChg"] > 0)
@@ -831,10 +939,6 @@ class MarketDataService:
                 boards_with_flow,
                 key=lambda item: float(item["mainNetInflow"]),
                 default=None,
-            )
-            trade_date = max(
-                (str(stock.get("tradeDate") or "") for stock in snapshot),
-                default=self.latest_trade_date(),
             )
             result = {
                 "tradeDate": trade_date,

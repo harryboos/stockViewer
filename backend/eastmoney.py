@@ -30,7 +30,7 @@ SPOT_FIELD_MAP = {
 
 CONCEPT_FIELD_MAP = {
     "板块名称": "f14", "板块代码": "f12", "最新价": "f2", "涨跌额": "f4", "涨跌幅": "f3",
-    "总市值": "f20", "换手率": "f8", "上涨家数": "f104", "下跌家数": "f105",
+    "成交额": "f6", "总市值": "f20", "换手率": "f8", "上涨家数": "f104", "下跌家数": "f105",
     "领涨股票": "f128", "领涨股票-涨跌幅": "f136",
 }
 
@@ -193,6 +193,59 @@ class EastmoneyClient:
             "fields": ",".join(SECTOR_FUND_FLOW_FIELD_MAP.values()),
         }
         return self._frame(self.fetch_pages("79", params), SECTOR_FUND_FLOW_FIELD_MAP)
+
+    def sector_history_frame(self, code: str) -> pd.DataFrame:
+        normalized = str(code).strip().upper()
+        if not normalized.startswith("BK") or not normalized[2:].isdigit():
+            raise ValueError("板块代码格式不正确")
+        trend_params = {
+            "secid": f"90.{normalized}",
+            "fields1": "f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13",
+            "fields2": "f51,f52,f53,f54,f55,f56,f57,f58",
+            "ndays": "2",
+            "iscr": "0",
+            "iscca": "0",
+        }
+        hosts = ("91.push2his.eastmoney.com", "7.push2his.eastmoney.com")
+        last_error: Exception | None = None
+        for trust_env in (False, True):
+            for host in hosts:
+                session = self._session(trust_env)
+                try:
+                    response = session.get(
+                        f"https://{host}/api/qt/stock/trends2/get",
+                        params=trend_params,
+                        timeout=(4, 10),
+                    )
+                    response.raise_for_status()
+                    payload = response.json()
+                    data = payload.get("data") if isinstance(payload, dict) else None
+                    trends = data.get("trends") if isinstance(data, dict) else None
+                    if not isinstance(trends, list) or not trends:
+                        raise RuntimeError("东方财富板块分时历史没有返回有效数据")
+                    amount_by_date: dict[str, float] = {}
+                    for item in trends:
+                        values = str(item).split(",")
+                        if len(values) < 7:
+                            continue
+                        trade_date = values[0][:10]
+                        try:
+                            amount = float(values[6])
+                        except (TypeError, ValueError):
+                            continue
+                        if math.isfinite(amount) and amount >= 0:
+                            amount_by_date[trade_date] = amount_by_date.get(trade_date, 0.0) + amount
+                    if len(amount_by_date) < 2:
+                        raise RuntimeError("东方财富板块分时历史缺少前一交易日")
+                    return pd.DataFrame(
+                        [{"日期": date_key, "成交额": amount_by_date[date_key]} for date_key in sorted(amount_by_date)]
+                    )
+                except (requests.RequestException, ValueError, RuntimeError) as error:
+                    last_error = error
+                finally:
+                    session.close()
+
+        raise RuntimeError(f"东方财富板块历史连接失败：{last_error or '未知错误'}")
 
     def concept_constituent_frame(self, code: str) -> pd.DataFrame:
         params = {

@@ -181,6 +181,9 @@ export type SectorBoard = {
   code: string;
   name: string;
   pctChg: number;
+  amount: number | null;
+  previousAmount: number | null;
+  amountDelta: number | null;
   turnoverRate: number | null;
   marketCap: number | null;
   upCount: number;

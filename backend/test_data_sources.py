@@ -108,6 +108,29 @@ class MarketDataServiceTests(unittest.TestCase):
         self.assertEqual(industry.iloc[0]["主力净流入最大股代码"], "688001")
         self.assertEqual(concept.iloc[0]["名称"], "半导体")
 
+    def test_sector_history_route_returns_recent_turnover(self) -> None:
+        client = EastmoneyClient()
+        response = _FakeResponse({
+            "data": {
+                "trends": [
+                    "2026-08-27 09:30,1,2,3,0,100,400000000,2",
+                    "2026-08-27 15:00,1,2,3,0,100,800000000,2",
+                    "2026-08-28 09:30,1,2,3,0,100,600000000,2",
+                    "2026-08-28 15:00,1,2,3,0,100,1200000000,2",
+                ],
+            },
+        })
+        session = Mock()
+        session.get.return_value = response
+        with patch.object(client, "_session", return_value=session):
+            frame = client.sector_history_frame("BK1036")
+
+        self.assertEqual(list(frame["日期"]), ["2026-08-27", "2026-08-28"])
+        self.assertEqual(frame.iloc[0]["成交额"], 1_200_000_000)
+        self.assertEqual(frame.iloc[-1]["成交额"], 1_800_000_000)
+        self.assertEqual(session.get.call_args.kwargs["params"]["ndays"], "2")
+        session.close.assert_called_once()
+
     def test_normalized_spot_keeps_actual_source_and_filters_invalid_rows(self) -> None:
         service = MarketDataService()
         frame = pd.DataFrame(
@@ -197,12 +220,14 @@ class MarketDataServiceTests(unittest.TestCase):
         industry = pd.DataFrame([
             {
                 "板块名称": "半导体", "板块代码": "BK1036", "涨跌幅": 3.5,
+                "成交额": 4_000_000_000,
                 "换手率": 2.1, "总市值": 8_000_000_000_000,
                 "上涨家数": 80, "下跌家数": 20,
                 "领涨股票": "龙头科技", "领涨股票-涨跌幅": 12.0,
             },
             {
                 "板块名称": "银行", "板块代码": "BK0475", "涨跌幅": -0.2,
+                "成交额": 2_000_000_000,
                 "换手率": 0.4, "总市值": 10_000_000_000_000,
                 "上涨家数": 10, "下跌家数": 30,
                 "领涨股票": "稳健银行", "领涨股票-涨跌幅": 1.1,
@@ -211,12 +236,14 @@ class MarketDataServiceTests(unittest.TestCase):
         concept = pd.DataFrame([
             {
                 "板块名称": "AI算力", "板块代码": "BK2001", "涨跌幅": 4.2,
+                "成交额": 6_000_000_000,
                 "换手率": 4.1, "总市值": 4_000_000_000_000,
                 "上涨家数": 45, "下跌家数": 5,
                 "领涨股票": "算力股份", "领涨股票-涨跌幅": 10.0,
             },
             {
                 "板块名称": "昨日连板", "板块代码": "BK9999", "涨跌幅": 8.0,
+                "成交额": 1_000_000_000,
                 "换手率": 9.0, "总市值": 1_000_000,
                 "上涨家数": 9, "下跌家数": 1,
                 "领涨股票": "样本", "领涨股票-涨跌幅": 10.0,
@@ -242,6 +269,15 @@ class MarketDataServiceTests(unittest.TestCase):
             patch.object(service, "_industry_name_frame", return_value=(industry, "行业源")),
             patch.object(service, "_concept_name_frame", return_value=(concept, "概念源")),
             patch.object(service, "_sector_fund_flow_frame", side_effect=[(industry_flow, "资金源"), (concept_flow, "资金源")]),
+            patch.object(
+                service,
+                "_sector_amount_pair",
+                side_effect=lambda kind, code, _date: {
+                    "BK1036": (4_000_000_000, 3_000_000_000, "历史源"),
+                    "BK0475": (2_000_000_000, 2_500_000_000, "历史源"),
+                    "BK2001": (6_000_000_000, 4_000_000_000, "历史源"),
+                }[code],
+            ),
             patch("backend.data_sources.database.get_meta", return_value=None),
             patch("backend.data_sources.database.set_meta"),
             patch("backend.data_sources.database.now_iso", return_value="2026-08-28T15:10:00+08:00"),
@@ -254,6 +290,11 @@ class MarketDataServiceTests(unittest.TestCase):
         self.assertEqual(result["summary"]["topFundBoard"]["mainNetInflow"], 3_000_000_000)
         self.assertEqual(result["industryBoards"][0]["leaders"][0]["code"], "688001")
         self.assertEqual(result["industryBoards"][0]["leaders"][1]["role"], "资金龙头")
+        self.assertEqual(result["industryBoards"][0]["amount"], 4_000_000_000)
+        self.assertEqual(result["industryBoards"][0]["previousAmount"], 3_000_000_000)
+        self.assertEqual(result["industryBoards"][0]["amountDelta"], 1_000_000_000)
+        self.assertEqual(result["industryBoards"][1]["amountDelta"], -500_000_000)
+        self.assertEqual(result["conceptBoards"][0]["amountDelta"], 2_000_000_000)
         self.assertEqual(len(result["conceptBoards"][0]["leaders"]), 1)
 
 
