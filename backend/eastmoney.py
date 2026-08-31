@@ -194,12 +194,9 @@ class EastmoneyClient:
         }
         return self._frame(self.fetch_pages("79", params), SECTOR_FUND_FLOW_FIELD_MAP)
 
-    def sector_history_frame(self, code: str) -> pd.DataFrame:
-        normalized = str(code).strip().upper()
-        if not normalized.startswith("BK") or not normalized[2:].isdigit():
-            raise ValueError("板块代码格式不正确")
+    def _trend_rows(self, secid: str) -> list[str]:
         trend_params = {
-            "secid": f"90.{normalized}",
+            "secid": secid,
             "fields1": "f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13",
             "fields2": "f51,f52,f53,f54,f55,f56,f57,f58",
             "ndays": "2",
@@ -222,30 +219,94 @@ class EastmoneyClient:
                     data = payload.get("data") if isinstance(payload, dict) else None
                     trends = data.get("trends") if isinstance(data, dict) else None
                     if not isinstance(trends, list) or not trends:
-                        raise RuntimeError("东方财富板块分时历史没有返回有效数据")
-                    amount_by_date: dict[str, float] = {}
-                    for item in trends:
-                        values = str(item).split(",")
-                        if len(values) < 7:
-                            continue
-                        trade_date = values[0][:10]
-                        try:
-                            amount = float(values[6])
-                        except (TypeError, ValueError):
-                            continue
-                        if math.isfinite(amount) and amount >= 0:
-                            amount_by_date[trade_date] = amount_by_date.get(trade_date, 0.0) + amount
-                    if len(amount_by_date) < 2:
-                        raise RuntimeError("东方财富板块分时历史缺少前一交易日")
-                    return pd.DataFrame(
-                        [{"日期": date_key, "成交额": amount_by_date[date_key]} for date_key in sorted(amount_by_date)]
-                    )
+                        raise RuntimeError("东方财富分时历史没有返回有效数据")
+                    return [str(item) for item in trends]
                 except (requests.RequestException, ValueError, RuntimeError) as error:
                     last_error = error
                 finally:
                     session.close()
 
-        raise RuntimeError(f"东方财富板块历史连接失败：{last_error or '未知错误'}")
+        raise RuntimeError(f"东方财富分时历史连接失败：{last_error or '未知错误'}")
+
+    @staticmethod
+    def _turnover_points(rows: list[str]) -> list[tuple[str, str, float]]:
+        points: list[tuple[str, str, float]] = []
+        for item in rows:
+            values = item.split(",")
+            if len(values) < 7:
+                continue
+            timestamp = values[0]
+            if len(timestamp) < 16:
+                continue
+            try:
+                amount = float(values[6])
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(amount) and amount >= 0:
+                points.append((timestamp[:10], timestamp[11:16], amount))
+        return points
+
+    def sector_history_frame(self, code: str) -> pd.DataFrame:
+        normalized = str(code).strip().upper()
+        if not normalized.startswith("BK") or not normalized[2:].isdigit():
+            raise ValueError("板块代码格式不正确")
+        points = self._turnover_points(self._trend_rows(f"90.{normalized}"))
+        amount_by_date: dict[str, float] = {}
+        for trade_date, _, amount in points:
+            amount_by_date[trade_date] = amount_by_date.get(trade_date, 0.0) + amount
+        if len(amount_by_date) < 2:
+            raise RuntimeError("东方财富板块分时历史缺少前一交易日")
+        return pd.DataFrame(
+            [{"日期": date_key, "成交额": amount_by_date[date_key]} for date_key in sorted(amount_by_date)]
+        )
+
+    def market_intraday_turnover_pair(self, trade_date: str, cutoff_time: str) -> dict[str, Any]:
+        if len(trade_date) != 8 or not trade_date.isdigit():
+            raise ValueError("交易日期格式不正确")
+        if len(cutoff_time) != 5 or cutoff_time[2] != ":":
+            raise ValueError("对比时间格式不正确")
+
+        normalized_date = f"{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:]}"
+        points_by_index = {
+            secid: self._turnover_points(self._trend_rows(secid))
+            for secid in ("1.000001", "0.399106")
+        }
+        common_dates = set.intersection(*(
+            {point[0] for point in points}
+            for points in points_by_index.values()
+        ))
+        if normalized_date not in common_dates:
+            raise RuntimeError("沪深指数分时历史缺少当前交易日")
+        previous_date = max(
+            (date_key for date_key in common_dates if date_key < normalized_date),
+            default=None,
+        )
+        if previous_date is None:
+            raise RuntimeError("沪深指数分时历史缺少前一交易日")
+
+        current_turnover = 0.0
+        previous_turnover = 0.0
+        for points in points_by_index.values():
+            current_points = [
+                amount for date_key, minute, amount in points
+                if date_key == normalized_date and minute <= cutoff_time
+            ]
+            previous_points = [
+                amount for date_key, minute, amount in points
+                if date_key == previous_date and minute <= cutoff_time
+            ]
+            if not current_points or not previous_points:
+                raise RuntimeError("沪深指数分时历史在指定时点没有完整数据")
+            current_turnover += sum(current_points)
+            previous_turnover += sum(previous_points)
+
+        return {
+            "date": trade_date,
+            "previousDate": previous_date.replace("-", ""),
+            "comparisonTime": cutoff_time,
+            "currentTurnover": current_turnover,
+            "previousTurnover": previous_turnover,
+        }
 
     def concept_constituent_frame(self, code: str) -> pd.DataFrame:
         params = {

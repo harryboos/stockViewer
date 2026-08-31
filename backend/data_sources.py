@@ -16,7 +16,7 @@ from .eastmoney import EastmoneyClient
 
 CATALOG_CACHE_SECONDS = 24 * 60 * 60
 CONCEPT_CACHE_VERSION = "3"
-MARKET_OVERVIEW_CACHE_VERSION = "1"
+MARKET_OVERVIEW_CACHE_VERSION = "2"
 SECTOR_OVERVIEW_CACHE_VERSION = "3"
 SECTOR_DISPLAY_LIMIT = 6
 SECTOR_TURNOVER_LIMIT = 6
@@ -142,11 +142,14 @@ class MarketDataService:
                 continue
             quote_timestamp = number_or_none(row.get("行情时间"))
             if quote_timestamp is not None and quote_timestamp >= 1_000_000_000:
-                trade_date = datetime.fromtimestamp(quote_timestamp, database.CHINA_TZ).strftime("%Y%m%d")
+                quote_datetime = datetime.fromtimestamp(quote_timestamp, database.CHINA_TZ)
+                trade_date = quote_datetime.strftime("%Y%m%d")
+                quote_time = quote_datetime.strftime("%H:%M")
             else:
                 if fallback_trade_date is None:
                     fallback_trade_date = self.latest_trade_date()
                 trade_date = fallback_trade_date
+                quote_time = None
             ts_code, exchange, market = market_info(symbol)
             result.append(
                 {
@@ -159,6 +162,7 @@ class MarketDataService:
                     "exchange": exchange,
                     "listDate": None,
                     "tradeDate": trade_date,
+                    "quoteTime": quote_time,
                     "open": number_or_none(row.get("今开")),
                     "high": number_or_none(row.get("最高")),
                     "low": number_or_none(row.get("最低")),
@@ -1074,6 +1078,41 @@ class MarketDataService:
                 return cached[-20:], f"量能历史暂用最近成功缓存：{error}"
             return [], f"量能历史暂不可用：{error}"
 
+    @staticmethod
+    def _market_comparison_time(trade_date: str, snapshot: list[dict[str, Any]]) -> str:
+        quote_times = [
+            str(row.get("quoteTime"))
+            for row in snapshot
+            if row.get("tradeDate") == trade_date
+            and len(str(row.get("quoteTime") or "")) == 5
+        ]
+        now = datetime.now(database.CHINA_TZ)
+        raw_time = max(quote_times, default=(now.strftime("%H:%M") if trade_date == now.strftime("%Y%m%d") else "15:00"))
+        if raw_time < "09:30":
+            return "09:30"
+        if "11:30" < raw_time < "13:00":
+            return "11:30"
+        if raw_time > "15:00":
+            return "15:00"
+        return raw_time
+
+    def _intraday_turnover_comparison(
+        self,
+        trade_date: str,
+        snapshot: list[dict[str, Any]],
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        comparison_time = self._market_comparison_time(trade_date, snapshot)
+        try:
+            return (
+                self._eastmoney_client.market_intraday_turnover_pair(
+                    trade_date,
+                    comparison_time,
+                ),
+                None,
+            )
+        except Exception as error:
+            return None, f"实时量能同比暂不可用：{error}"
+
     def market_overview(self, force: bool = False) -> dict[str, Any]:
         with self._spot_lock:
             if (
@@ -1141,13 +1180,14 @@ class MarketDataService:
                 f"market_turnover:v{MARKET_OVERVIEW_CACHE_VERSION}",
                 json.dumps(turnover_history, ensure_ascii=False),
             )
-            previous_turnover = next(
-                (
-                    float(item["turnover"])
-                    for item in reversed(turnover_history)
-                    if item["date"] < trade_date and float(item["turnover"]) > 0
-                ),
-                None,
+            intraday_comparison, comparison_error = self._intraday_turnover_comparison(
+                trade_date,
+                snapshot,
+            )
+            previous_turnover = (
+                number_or_none(intraday_comparison.get("previousTurnover"))
+                if intraday_comparison
+                else None
             )
             turnover_delta = (
                 current_hs_turnover - previous_turnover
@@ -1186,6 +1226,16 @@ class MarketDataService:
                     "previousTurnover": previous_turnover,
                     "turnoverDelta": turnover_delta,
                     "turnoverDeltaPct": turnover_delta_pct,
+                    "turnoverComparisonDate": (
+                        intraday_comparison.get("previousDate")
+                        if intraday_comparison
+                        else None
+                    ),
+                    "turnoverComparisonTime": (
+                        intraday_comparison.get("comparisonTime")
+                        if intraday_comparison
+                        else None
+                    ),
                     "advancers": advancers,
                     "decliners": decliners,
                     "flat": flat,
@@ -1198,7 +1248,11 @@ class MarketDataService:
                 "fundFlowHistory": fund_flow_history[-12:],
                 "latestFlow": latest_flow,
                 "topTurnover": top_turnover,
-                "warnings": [warning for warning in (turnover_error, flow_error) if warning],
+                "warnings": [
+                    warning
+                    for warning in (turnover_error, comparison_error, flow_error)
+                    if warning
+                ],
             }
             self._overview_cache = result
             self._overview_fetched_at = datetime.now(database.CHINA_TZ)

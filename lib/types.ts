@@ -147,6 +147,8 @@ export type MarketOverview = {
     previousTurnover: number | null;
     turnoverDelta: number | null;
     turnoverDeltaPct: number | null;
+    turnoverComparisonDate: string | null;
+    turnoverComparisonTime: string | null;
     advancers: number;
     decliners: number;
     flat: number;

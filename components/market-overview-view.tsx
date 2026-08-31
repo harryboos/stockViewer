@@ -42,6 +42,7 @@ function friendlyWarnings(warnings: string[]): string[] {
   return [...new Set(warnings.map((warning) => {
     if (warning.startsWith('量能历史暂用')) return '量能历史已使用最近成功缓存';
     if (warning.startsWith('量能历史暂不可用')) return '量能历史暂不可用';
+    if (warning.startsWith('实时量能同比暂不可用')) return '实时量能同比暂不可用';
     if (warning.startsWith('资金流暂用')) return '资金流已使用最近成功缓存';
     if (warning.startsWith('资金流暂不可用')) return '资金流暂不可用';
     return '部分扩展数据暂不可用';
@@ -90,7 +91,7 @@ export function MarketOverviewView({ today, data, loading, onRefresh }: MarketOv
         </article>
         <article className="market-kpi">
           <span className="market-kpi-icon">增</span>
-          <div><small>日量能增量</small><strong className={(snapshot.turnoverDelta ?? 0) >= 0 ? 'up-text' : 'down-text'}>{formatSignedAmount(snapshot.turnoverDelta)}</strong><p>{formatPct(snapshot.turnoverDeltaPct)} · 较前一交易日收盘</p></div>
+          <div><small>实时量能同比</small><strong className={(snapshot.turnoverDelta ?? 0) >= 0 ? 'up-text' : 'down-text'}>{formatSignedAmount(snapshot.turnoverDelta)}</strong><p>{formatPct(snapshot.turnoverDeltaPct)} · {snapshot.turnoverComparisonDate && snapshot.turnoverComparisonTime ? `对比 ${shortTradeDate(snapshot.turnoverComparisonDate)} ${snapshot.turnoverComparisonTime}` : '同期数据暂不可用'}</p></div>
         </article>
         <article className="market-kpi">
           <span className="market-kpi-icon">资</span>
@@ -158,7 +159,7 @@ export function MarketOverviewView({ today, data, loading, onRefresh }: MarketOv
       </div>
 
       <div className="market-footnote">
-        <p>主力资金流来自东方财富历史接口；A 股成交额为全市场行情快照汇总，量能趋势与日增量使用沪深两市一致口径。盘中数值不可视为同期同比，涨跌停数量按不同板块常用阈值估算。</p>
+        <p>主力资金流来自东方财富历史接口；A 股成交额为全市场行情快照汇总。实时量能同比使用沪深两市一致口径，盘中对比前一交易日同一时点的累计成交额，收盘后对比完整交易日；涨跌停数量按不同板块常用阈值估算。</p>
         {warnings.length > 0 && <p className="market-warning">部分扩展数据已降级：{warnings.join('；')}</p>}
       </div>
     </section>

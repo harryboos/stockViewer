@@ -131,6 +131,30 @@ class MarketDataServiceTests(unittest.TestCase):
         self.assertEqual(session.get.call_args.kwargs["params"]["ndays"], "2")
         session.close.assert_called_once()
 
+    def test_market_intraday_turnover_pair_compares_same_minute(self) -> None:
+        client = EastmoneyClient()
+        sh_rows = [
+            "2026-08-27 09:30,1,2,3,0,100,400000000,2",
+            "2026-08-27 10:00,1,2,3,0,100,600000000,2",
+            "2026-08-27 15:00,1,2,3,0,100,2000000000,2",
+            "2026-08-28 09:30,1,2,3,0,100,500000000,2",
+            "2026-08-28 10:00,1,2,3,0,100,700000000,2",
+        ]
+        sz_rows = [
+            "2026-08-27 09:30,1,2,3,0,100,300000000,2",
+            "2026-08-27 10:00,1,2,3,0,100,500000000,2",
+            "2026-08-27 15:00,1,2,3,0,100,1800000000,2",
+            "2026-08-28 09:30,1,2,3,0,100,450000000,2",
+            "2026-08-28 10:00,1,2,3,0,100,650000000,2",
+        ]
+        with patch.object(client, "_trend_rows", side_effect=[sh_rows, sz_rows]):
+            result = client.market_intraday_turnover_pair("20260828", "10:00")
+
+        self.assertEqual(result["previousDate"], "20260827")
+        self.assertEqual(result["comparisonTime"], "10:00")
+        self.assertEqual(result["previousTurnover"], 1_800_000_000)
+        self.assertEqual(result["currentTurnover"], 2_300_000_000)
+
     def test_normalized_spot_keeps_actual_source_and_filters_invalid_rows(self) -> None:
         service = MarketDataService()
         frame = pd.DataFrame(
@@ -151,7 +175,25 @@ class MarketDataServiceTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["tsCode"], "600519.SH")
         self.assertEqual(rows[0]["tradeDate"], "20260827")
+        self.assertEqual(rows[0]["quoteTime"], "15:37")
         self.assertEqual(rows[0]["source"], "东方财富备用线路")
+
+    def test_market_comparison_time_respects_lunch_and_close(self) -> None:
+        service = MarketDataService()
+        self.assertEqual(
+            service._market_comparison_time(
+                "20260828",
+                [{"tradeDate": "20260828", "quoteTime": "12:10"}],
+            ),
+            "11:30",
+        )
+        self.assertEqual(
+            service._market_comparison_time(
+                "20260828",
+                [{"tradeDate": "20260828", "quoteTime": "15:20"}],
+            ),
+            "15:00",
+        )
 
     def test_wilder_rsi_handles_monotonic_prices(self) -> None:
         self.assertEqual(wilder_rsi([float(value) for value in range(1, 20)]), 100.0)
@@ -199,6 +241,16 @@ class MarketDataServiceTests(unittest.TestCase):
         with (
             patch.object(service, "market_snapshot", return_value=snapshot),
             patch.object(service, "_index_turnover_history", return_value=([{"date": "20260827", "turnover": 10_000_000_000}], None)),
+            patch.object(
+                service,
+                "_intraday_turnover_comparison",
+                return_value=({
+                    "previousDate": "20260827",
+                    "comparisonTime": "10:00",
+                    "currentTurnover": 9_000_000_000,
+                    "previousTurnover": 8_000_000_000,
+                }, None),
+            ),
             patch.object(service, "_fund_flow_history", return_value=(flow, None)),
             patch("backend.data_sources.database.set_meta"),
             patch("backend.data_sources.database.now_iso", return_value="2026-08-28T15:10:00+08:00"),
@@ -206,7 +258,10 @@ class MarketDataServiceTests(unittest.TestCase):
             result = service.market_overview()
 
         self.assertEqual(result["snapshot"]["turnover"], 11_000_000_000)
-        self.assertEqual(result["snapshot"]["turnoverDelta"], 0)
+        self.assertEqual(result["snapshot"]["turnoverDelta"], 2_000_000_000)
+        self.assertEqual(result["snapshot"]["turnoverDeltaPct"], 25)
+        self.assertEqual(result["snapshot"]["turnoverComparisonDate"], "20260827")
+        self.assertEqual(result["snapshot"]["turnoverComparisonTime"], "10:00")
         self.assertEqual(result["turnoverHistory"][-1]["turnover"], 10_000_000_000)
         self.assertEqual(result["snapshot"]["advancers"], 2)
         self.assertEqual(result["snapshot"]["decliners"], 1)
