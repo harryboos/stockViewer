@@ -136,6 +136,14 @@ export type MarketFundFlowPoint = {
   mainNetInflowRatio: number | null;
   superLargeNetInflow: number | null;
   largeNetInflow: number | null;
+  source: string;
+};
+
+export type MarketMetricStatus = {
+  state: 'live' | 'fallback' | 'cached' | 'unavailable';
+  source: string | null;
+  updatedAt: string | null;
+  message: string | null;
 };
 
 export type MarketOverview = {
@@ -160,6 +168,10 @@ export type MarketOverview = {
   turnoverHistory: MarketTurnoverPoint[];
   fundFlowHistory: MarketFundFlowPoint[];
   latestFlow: MarketFundFlowPoint | null;
+  dataStatus?: {
+    turnoverComparison: MarketMetricStatus;
+    fundFlow: MarketMetricStatus;
+  };
   topTurnover: Array<{
     code: string;
     name: string;

@@ -12,11 +12,18 @@ from typing import Any, Iterator
 from . import database
 from .config import MARKET
 from .eastmoney import EastmoneyClient
+from .tencent import TencentClient
 
 
 CATALOG_CACHE_SECONDS = 24 * 60 * 60
 CONCEPT_CACHE_VERSION = "3"
-MARKET_OVERVIEW_CACHE_VERSION = "2"
+MARKET_TURNOVER_CACHE_KEY = "market_turnover:v1"
+MARKET_TURNOVER_COMPAT_KEYS = ("market_turnover:v2",)
+MARKET_FUND_FLOW_EAST_CACHE_KEY = "market_fund_flow:eastmoney:v1"
+MARKET_FUND_FLOW_TENCENT_CACHE_KEY = "market_fund_flow:tencent:v1"
+MARKET_FUND_FLOW_COMPAT_KEYS = ("market_fund_flow:v2", "market_fund_flow:v1")
+MARKET_INTRADAY_PAIR_CACHE_VERSION = "1"
+MARKET_INTRADAY_INDEX_CACHE_VERSION = "1"
 SECTOR_OVERVIEW_CACHE_VERSION = "3"
 SECTOR_DISPLAY_LIMIT = 6
 SECTOR_TURNOVER_LIMIT = 6
@@ -63,8 +70,13 @@ def _last_weekday(value: date) -> date:
 
 
 class MarketDataService:
-    def __init__(self, eastmoney_client: EastmoneyClient | None = None) -> None:
+    def __init__(
+        self,
+        eastmoney_client: EastmoneyClient | None = None,
+        tencent_client: TencentClient | None = None,
+    ) -> None:
         self._eastmoney_client = eastmoney_client or EastmoneyClient()
+        self._tencent_client = tencent_client or TencentClient()
         self._spot_lock = threading.RLock()
         self._sector_lock = threading.RLock()
         self._baostock_lock = threading.RLock()
@@ -1014,45 +1026,169 @@ class MarketDataService:
         except json.JSONDecodeError:
             return None
 
-    def _fund_flow_history(self) -> tuple[list[dict[str, Any]], str | None]:
-        cache_key = f"market_fund_flow:v{MARKET_OVERVIEW_CACHE_VERSION}"
-        cached = self._cached_json(cache_key)
+    @classmethod
+    def _cached_json_any(cls, keys: tuple[str, ...]) -> Any:
+        for key in keys:
+            value = cls._cached_json(key)
+            if value is not None:
+                return value
+        return None
+
+    @staticmethod
+    def _metric_status(
+        state: str,
+        source: str | None,
+        updated_at: str | None,
+        message: str | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "state": state,
+            "source": source,
+            "updatedAt": updated_at,
+            "message": message,
+        }
+
+    @staticmethod
+    def _flow_cache_rows(payload: Any, default_source: str) -> tuple[list[dict[str, Any]], str | None]:
+        cached_at: str | None = None
+        if isinstance(payload, dict):
+            raw_rows = payload.get("rows")
+            cached_at = str(payload.get("cachedAt") or "") or None
+        else:
+            raw_rows = payload
+        if not isinstance(raw_rows, list):
+            return [], cached_at
+        rows: list[dict[str, Any]] = []
+        for raw in raw_rows:
+            if not isinstance(raw, dict):
+                continue
+            trade_date = str(raw.get("date") or "")
+            main = number_or_none(raw.get("mainNetInflow"))
+            if len(trade_date) != 8 or main is None:
+                continue
+            rows.append({**raw, "mainNetInflow": main, "source": str(raw.get("source") or default_source)})
+        rows.sort(key=lambda item: item["date"])
+        return rows, cached_at
+
+    @staticmethod
+    def _fund_flow_frame_rows(frame: Any) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for _, row in frame.iterrows():
+            raw_date = row.get("日期")
+            trade_date = str(raw_date).replace("-", "")[:8]
+            main = number_or_none(row.get("主力净流入-净额"))
+            if len(trade_date) != 8 or main is None:
+                continue
+            rows.append(
+                {
+                    "date": trade_date,
+                    "shClose": number_or_none(row.get("上证-收盘价")),
+                    "shPctChg": number_or_none(row.get("上证-涨跌幅")),
+                    "szClose": number_or_none(row.get("深证-收盘价")),
+                    "szPctChg": number_or_none(row.get("深证-涨跌幅")),
+                    "mainNetInflow": main,
+                    "mainNetInflowRatio": number_or_none(row.get("主力净流入-净占比")),
+                    "superLargeNetInflow": number_or_none(row.get("超大单净流入-净额")),
+                    "largeNetInflow": number_or_none(row.get("大单净流入-净额")),
+                    "source": "东方财富大盘资金流",
+                }
+            )
+        rows.sort(key=lambda item: item["date"])
+        return rows
+
+    @staticmethod
+    def _merge_flow_rows(*groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        by_date: dict[str, dict[str, Any]] = {}
+        for rows in groups:
+            for row in rows:
+                by_date[str(row["date"])] = row
+        return [by_date[key] for key in sorted(by_date)][-20:]
+
+    def _fund_flow_history(
+        self,
+        trade_date: str,
+        force: bool = False,
+    ) -> tuple[list[dict[str, Any]], str | None, dict[str, Any]]:
+        legacy_payload = self._cached_json_any(MARKET_FUND_FLOW_COMPAT_KEYS)
+        legacy_rows, legacy_at = self._flow_cache_rows(
+            legacy_payload,
+            "东方财富大盘资金流",
+        )
+        east_payload = self._cached_json(MARKET_FUND_FLOW_EAST_CACHE_KEY)
+        east_rows, east_at = self._flow_cache_rows(
+            east_payload,
+            "东方财富大盘资金流",
+        )
+        east_rows = east_rows or legacy_rows
+        east_at = east_at or legacy_at
         try:
-            frame = self._akshare().stock_market_fund_flow()
-            rows: list[dict[str, Any]] = []
-            for _, row in frame.iterrows():
-                raw_date = row.get("日期")
-                trade_date = str(raw_date).replace("-", "")[:8]
-                main = number_or_none(row.get("主力净流入-净额"))
-                if len(trade_date) != 8 or main is None:
-                    continue
-                rows.append(
-                    {
-                        "date": trade_date,
-                        "shClose": number_or_none(row.get("上证-收盘价")),
-                        "shPctChg": number_or_none(row.get("上证-涨跌幅")),
-                        "szClose": number_or_none(row.get("深证-收盘价")),
-                        "szPctChg": number_or_none(row.get("深证-涨跌幅")),
-                        "mainNetInflow": main,
-                        "mainNetInflowRatio": number_or_none(row.get("主力净流入-净占比")),
-                        "superLargeNetInflow": number_or_none(row.get("超大单净流入-净额")),
-                        "largeNetInflow": number_or_none(row.get("大单净流入-净额")),
-                    }
-                )
-            rows.sort(key=lambda item: item["date"])
+            rows = self._fund_flow_frame_rows(self._eastmoney_client.market_fund_flow_frame())
             if not rows:
                 raise RuntimeError("大盘资金流接口没有返回有效数据")
             result = rows[-20:]
-            database.set_meta(cache_key, json.dumps(result, ensure_ascii=False))
-            return result, None
-        except Exception as error:
-            if isinstance(cached, list) and cached:
-                return cached[-20:], f"资金流暂用最近成功缓存：{error}"
-            return [], f"资金流暂不可用：{error}"
+            cached_at = database.now_iso()
+            database.set_meta(
+                MARKET_FUND_FLOW_EAST_CACHE_KEY,
+                json.dumps({"cachedAt": cached_at, "rows": result}, ensure_ascii=False),
+            )
+            return result, None, self._metric_status(
+                "live", "东方财富大盘资金流", cached_at
+            )
+        except Exception as east_error:
+            tencent_payload = self._cached_json(MARKET_FUND_FLOW_TENCENT_CACHE_KEY)
+            tencent_rows, tencent_at = self._flow_cache_rows(
+                tencent_payload,
+                "腾讯证券逐股资金汇总",
+            )
+            has_today = any(row["date"] == trade_date for row in tencent_rows)
+            if force or not has_today:
+                try:
+                    current = self._tencent_client.market_fund_flow_snapshot(trade_date)
+                    tencent_rows = self._merge_flow_rows(tencent_rows, [current])
+                    tencent_at = database.now_iso()
+                    database.set_meta(
+                        MARKET_FUND_FLOW_TENCENT_CACHE_KEY,
+                        json.dumps(
+                            {"cachedAt": tencent_at, "rows": tencent_rows},
+                            ensure_ascii=False,
+                        ),
+                    )
+                    merged = self._merge_flow_rows(east_rows, tencent_rows)
+                    warning = f"资金流已降级至腾讯证券逐股汇总：{east_error}"
+                    return merged, warning, self._metric_status(
+                        "fallback",
+                        "腾讯证券逐股资金汇总",
+                        tencent_at,
+                        "东方财富资金流不可用，已自动切换腾讯证券",
+                    )
+                except Exception as tencent_error:
+                    fallback = self._merge_flow_rows(east_rows, tencent_rows)
+                    if fallback:
+                        warning = (
+                            "资金流暂用最近成功缓存："
+                            f"东方财富 {east_error}；腾讯证券 {tencent_error}"
+                        )
+                        source = str(fallback[-1].get("source") or "最近成功缓存")
+                        return fallback, warning, self._metric_status(
+                            "cached", source, tencent_at or east_at, "两个实时来源均不可用"
+                        )
+                    warning = f"资金流暂不可用：东方财富 {east_error}；腾讯证券 {tencent_error}"
+                    return [], warning, self._metric_status(
+                        "unavailable", None, None, "两个资金流来源均不可用"
+                    )
+
+            merged = self._merge_flow_rows(east_rows, tencent_rows)
+            warning = f"资金流已使用腾讯证券当日缓存：{east_error}"
+            return merged, warning, self._metric_status(
+                "cached",
+                "腾讯证券逐股资金汇总",
+                tencent_at,
+                "东方财富资金流不可用，已使用腾讯证券当日缓存",
+            )
 
     def _index_turnover_history(self) -> tuple[list[dict[str, Any]], str | None]:
-        cache_key = f"market_turnover:v{MARKET_OVERVIEW_CACHE_VERSION}"
-        cached = self._cached_json(cache_key)
+        cache_key = MARKET_TURNOVER_CACHE_KEY
+        cached = self._cached_json_any((cache_key, *MARKET_TURNOVER_COMPAT_KEYS))
         today = datetime.now(database.CHINA_TZ).date()
         start = today - timedelta(days=45)
         try:
@@ -1100,18 +1236,102 @@ class MarketDataService:
         self,
         trade_date: str,
         snapshot: list[dict[str, Any]],
-    ) -> tuple[dict[str, Any] | None, str | None]:
+    ) -> tuple[dict[str, Any] | None, str | None, dict[str, Any]]:
         comparison_time = self._market_comparison_time(trade_date, snapshot)
+        points_by_index: dict[str, list[tuple[str, str, float]]] = {}
+        index_errors: list[str] = []
+        cached_indexes = 0
+        fetched_at: str | None = None
+        for secid in ("1.000001", "0.399106"):
+            cache_key = f"market_intraday_index:{secid}:v{MARKET_INTRADAY_INDEX_CACHE_VERSION}"
+            try:
+                points = self._eastmoney_client.index_intraday_turnover_points(secid)
+                points_by_index[secid] = points
+                fetched_at = database.now_iso()
+                database.set_meta(
+                    cache_key,
+                    json.dumps({"cachedAt": fetched_at, "points": points}, ensure_ascii=False),
+                )
+            except Exception as error:
+                index_errors.append(f"{secid} {error}")
+                cached = self._cached_json(cache_key)
+                raw_points = cached.get("points") if isinstance(cached, dict) else None
+                parsed: list[tuple[str, str, float]] = []
+                if isinstance(raw_points, list):
+                    for point in raw_points:
+                        if not isinstance(point, (list, tuple)) or len(point) != 3:
+                            continue
+                        amount = number_or_none(point[2])
+                        if amount is not None:
+                            parsed.append((str(point[0]), str(point[1]), amount))
+                if parsed:
+                    points_by_index[secid] = parsed
+                    cached_indexes += 1
+                    fetched_at = str(cached.get("cachedAt") or "") or fetched_at
+
+        pair_cache_key = f"market_intraday_pair:{trade_date}:v{MARKET_INTRADAY_PAIR_CACHE_VERSION}"
         try:
-            return (
-                self._eastmoney_client.market_intraday_turnover_pair(
+            result = self._eastmoney_client.market_intraday_pair_from_points(
+                points_by_index,
+                trade_date,
+                comparison_time,
+            )
+            source = "东方财富指数分时"
+            state = "cached" if cached_indexes else "live"
+            warning = "实时量能同比已使用东方财富逐指数缓存" if cached_indexes else None
+            fetched_at = fetched_at or database.now_iso()
+            database.set_meta(
+                pair_cache_key,
+                json.dumps(
+                    {"cachedAt": fetched_at, "source": source, "result": result},
+                    ensure_ascii=False,
+                ),
+            )
+            return result, warning, self._metric_status(state, source, fetched_at)
+        except Exception as east_error:
+            try:
+                result = self._tencent_client.index_intraday_turnover_pair(
                     trade_date,
                     comparison_time,
-                ),
-                None,
-            )
-        except Exception as error:
-            return None, f"实时量能同比暂不可用：{error}"
+                )
+                fetched_at = database.now_iso()
+                source = "腾讯证券指数分时"
+                database.set_meta(
+                    pair_cache_key,
+                    json.dumps(
+                        {"cachedAt": fetched_at, "source": source, "result": result},
+                        ensure_ascii=False,
+                    ),
+                )
+                warning = f"实时量能同比已降级至腾讯证券：{east_error}"
+                return result, warning, self._metric_status(
+                    "fallback",
+                    source,
+                    fetched_at,
+                    "东方财富指数分时不可用，已自动切换腾讯证券",
+                )
+            except Exception as tencent_error:
+                cached_pair = self._cached_json(pair_cache_key)
+                cached_result = cached_pair.get("result") if isinstance(cached_pair, dict) else None
+                if isinstance(cached_result, dict) and cached_result.get("date") == trade_date:
+                    source = str(cached_pair.get("source") or "最近成功缓存")
+                    warning = (
+                        "实时量能同比已使用最近成功缓存："
+                        f"东方财富 {'；'.join(index_errors) or east_error}；腾讯证券 {tencent_error}"
+                    )
+                    return cached_result, warning, self._metric_status(
+                        "cached",
+                        source,
+                        str(cached_pair.get("cachedAt") or "") or None,
+                        "两个实时来源均不可用",
+                    )
+                warning = (
+                    "实时量能同比暂不可用："
+                    f"东方财富 {'；'.join(index_errors) or east_error}；腾讯证券 {tencent_error}"
+                )
+                return None, warning, self._metric_status(
+                    "unavailable", None, None, "两个指数分时来源均不可用"
+                )
 
     def market_overview(self, force: bool = False) -> dict[str, Any]:
         with self._spot_lock:
@@ -1177,12 +1397,17 @@ class MarketDataService:
                 for key in sorted(turnover_by_date)
             ][-12:]
             database.set_meta(
-                f"market_turnover:v{MARKET_OVERVIEW_CACHE_VERSION}",
+                MARKET_TURNOVER_CACHE_KEY,
                 json.dumps(turnover_history, ensure_ascii=False),
             )
-            intraday_comparison, comparison_error = self._intraday_turnover_comparison(
+            intraday_comparison, comparison_error, comparison_status = self._intraday_turnover_comparison(
                 trade_date,
                 snapshot,
+            )
+            comparison_turnover = (
+                number_or_none(intraday_comparison.get("currentTurnover"))
+                if intraday_comparison
+                else None
             )
             previous_turnover = (
                 number_or_none(intraday_comparison.get("previousTurnover"))
@@ -1190,8 +1415,8 @@ class MarketDataService:
                 else None
             )
             turnover_delta = (
-                current_hs_turnover - previous_turnover
-                if previous_turnover is not None
+                comparison_turnover - previous_turnover
+                if comparison_turnover is not None and previous_turnover is not None
                 else None
             )
             turnover_delta_pct = (
@@ -1200,7 +1425,10 @@ class MarketDataService:
                 else None
             )
 
-            fund_flow_history, flow_error = self._fund_flow_history()
+            fund_flow_history, flow_error, flow_status = self._fund_flow_history(
+                trade_date,
+                force=force,
+            )
             latest_flow = fund_flow_history[-1] if fund_flow_history else None
             top_turnover = sorted(
                 (
@@ -1247,6 +1475,10 @@ class MarketDataService:
                 "turnoverHistory": turnover_history,
                 "fundFlowHistory": fund_flow_history[-12:],
                 "latestFlow": latest_flow,
+                "dataStatus": {
+                    "turnoverComparison": comparison_status,
+                    "fundFlow": flow_status,
+                },
                 "topTurnover": top_turnover,
                 "warnings": [
                     warning

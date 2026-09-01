@@ -9,6 +9,7 @@ import pandas as pd
 from backend.data_sources import MarketDataService
 from backend.eastmoney import EastmoneyClient
 from backend.strategy_factors import volume_breakout_picks, wilder_rsi
+from backend.tencent import TencentClient
 
 
 class _FakeResponse:
@@ -155,6 +156,94 @@ class MarketDataServiceTests(unittest.TestCase):
         self.assertEqual(result["previousTurnover"], 1_800_000_000)
         self.assertEqual(result["currentTurnover"], 2_300_000_000)
 
+    def test_tencent_intraday_pair_uses_cumulative_amount_at_same_minute(self) -> None:
+        client = TencentClient()
+        sh_days = [
+            {"date": "20260827", "data": ["0930 1 10 400", "1000 1 20 1000", "1500 1 30 5000"]},
+            {"date": "20260828", "data": ["0930 1 10 500", "1000 1 20 1300"]},
+        ]
+        sz_days = [
+            {"date": "20260827", "data": ["0930 1 10 300", "1000 1 20 800", "1500 1 30 4000"]},
+            {"date": "20260828", "data": ["0930 1 10 450", "1000 1 20 1100"]},
+        ]
+        with patch.object(client, "_index_days", side_effect=[sh_days, sz_days]):
+            result = client.index_intraday_turnover_pair("20260828", "10:00")
+
+        self.assertEqual(result["previousDate"], "20260827")
+        self.assertEqual(result["comparisonTime"], "10:00")
+        self.assertEqual(result["previousTurnover"], 1800)
+        self.assertEqual(result["currentTurnover"], 2400)
+
+    def test_tencent_market_fund_flow_aggregates_stock_net_values(self) -> None:
+        client = TencentClient()
+        rows = [
+            {"turnover": "1000", "zljlr": "120.5"},
+            {"turnover": "500", "zljlr": "-20.5"},
+            {"turnover": "-", "zljlr": "-"},
+        ]
+        with patch.object(client, "fetch_rank_rows", return_value=rows):
+            result = client.market_fund_flow_snapshot("20260828")
+
+        self.assertEqual(result["mainNetInflow"], 1_000_000)
+        self.assertAlmostEqual(result["mainNetInflowRatio"], 100 / 1500 * 100)
+        self.assertEqual(result["source"], "腾讯证券逐股资金汇总")
+
+    def test_fund_flow_falls_back_to_tencent_and_persists_snapshot(self) -> None:
+        eastmoney = Mock()
+        eastmoney.market_fund_flow_frame.side_effect = RuntimeError("blocked")
+        tencent = Mock()
+        tencent.market_fund_flow_snapshot.return_value = {
+            "date": "20260828",
+            "shClose": None,
+            "shPctChg": None,
+            "szClose": None,
+            "szPctChg": None,
+            "mainNetInflow": 1_000_000,
+            "mainNetInflowRatio": 1.2,
+            "superLargeNetInflow": None,
+            "largeNetInflow": None,
+            "source": "腾讯证券逐股资金汇总",
+        }
+        service = MarketDataService(eastmoney_client=eastmoney, tencent_client=tencent)
+        with (
+            patch("backend.data_sources.database.get_meta", return_value=None),
+            patch("backend.data_sources.database.set_meta") as set_meta,
+            patch("backend.data_sources.database.now_iso", return_value="2026-08-28T10:00:00+08:00"),
+        ):
+            rows, warning, status = service._fund_flow_history("20260828")
+
+        self.assertEqual(rows[-1]["mainNetInflow"], 1_000_000)
+        self.assertIn("腾讯证券", warning or "")
+        self.assertEqual(status["state"], "fallback")
+        self.assertEqual(status["source"], "腾讯证券逐股资金汇总")
+        set_meta.assert_called_once()
+
+    def test_intraday_comparison_falls_back_to_tencent(self) -> None:
+        eastmoney = EastmoneyClient()
+        tencent = Mock()
+        tencent.index_intraday_turnover_pair.return_value = {
+            "date": "20260828",
+            "previousDate": "20260827",
+            "comparisonTime": "10:00",
+            "currentTurnover": 2_400,
+            "previousTurnover": 1_800,
+        }
+        service = MarketDataService(eastmoney_client=eastmoney, tencent_client=tencent)
+        with (
+            patch.object(eastmoney, "index_intraday_turnover_points", side_effect=RuntimeError("blocked")),
+            patch("backend.data_sources.database.get_meta", return_value=None),
+            patch("backend.data_sources.database.set_meta"),
+            patch("backend.data_sources.database.now_iso", return_value="2026-08-28T10:00:00+08:00"),
+        ):
+            result, warning, status = service._intraday_turnover_comparison(
+                "20260828",
+                [{"tradeDate": "20260828", "quoteTime": "10:00"}],
+            )
+
+        self.assertEqual(result["previousTurnover"], 1_800)
+        self.assertIn("腾讯证券", warning or "")
+        self.assertEqual(status["state"], "fallback")
+
     def test_normalized_spot_keeps_actual_source_and_filters_invalid_rows(self) -> None:
         service = MarketDataService()
         frame = pd.DataFrame(
@@ -236,8 +325,12 @@ class MarketDataServiceTests(unittest.TestCase):
             "date": "20260828", "shClose": 3500.0, "shPctChg": 0.5,
             "szClose": 11000.0, "szPctChg": -0.2, "mainNetInflow": 8_000_000_000,
             "mainNetInflowRatio": 0.7, "superLargeNetInflow": 5_000_000_000,
-            "largeNetInflow": 3_000_000_000,
+            "largeNetInflow": 3_000_000_000, "source": "东方财富大盘资金流",
         }]
+        live_status = {
+            "state": "live", "source": "测试源",
+            "updatedAt": "2026-08-28T10:00:00+08:00", "message": None,
+        }
         with (
             patch.object(service, "market_snapshot", return_value=snapshot),
             patch.object(service, "_index_turnover_history", return_value=([{"date": "20260827", "turnover": 10_000_000_000}], None)),
@@ -249,17 +342,17 @@ class MarketDataServiceTests(unittest.TestCase):
                     "comparisonTime": "10:00",
                     "currentTurnover": 9_000_000_000,
                     "previousTurnover": 8_000_000_000,
-                }, None),
+                }, None, live_status),
             ),
-            patch.object(service, "_fund_flow_history", return_value=(flow, None)),
+            patch.object(service, "_fund_flow_history", return_value=(flow, None, live_status)),
             patch("backend.data_sources.database.set_meta"),
             patch("backend.data_sources.database.now_iso", return_value="2026-08-28T15:10:00+08:00"),
         ):
             result = service.market_overview()
 
         self.assertEqual(result["snapshot"]["turnover"], 11_000_000_000)
-        self.assertEqual(result["snapshot"]["turnoverDelta"], 2_000_000_000)
-        self.assertEqual(result["snapshot"]["turnoverDeltaPct"], 25)
+        self.assertEqual(result["snapshot"]["turnoverDelta"], 1_000_000_000)
+        self.assertEqual(result["snapshot"]["turnoverDeltaPct"], 12.5)
         self.assertEqual(result["snapshot"]["turnoverComparisonDate"], "20260827")
         self.assertEqual(result["snapshot"]["turnoverComparisonTime"], "10:00")
         self.assertEqual(result["turnoverHistory"][-1]["turnover"], 10_000_000_000)
@@ -269,6 +362,7 @@ class MarketDataServiceTests(unittest.TestCase):
         self.assertEqual(result["snapshot"]["limitUp"], 1)
         self.assertEqual(result["snapshot"]["limitDown"], 1)
         self.assertEqual(result["latestFlow"]["mainNetInflow"], 8_000_000_000)
+        self.assertEqual(result["dataStatus"]["fundFlow"]["state"], "live")
 
     def test_sector_overview_merges_strength_fund_flow_and_leaders(self) -> None:
         service = MarketDataService()
