@@ -287,7 +287,7 @@ class MarketDataServiceTests(unittest.TestCase):
     def test_wilder_rsi_handles_monotonic_prices(self) -> None:
         self.assertEqual(wilder_rsi([float(value) for value in range(1, 20)]), 100.0)
 
-    def test_volume_breakout_applies_all_strict_filters(self) -> None:
+    def test_volume_breakout_keeps_high_price_st_and_star_market_stocks(self) -> None:
         eligible = {
             "symbol": "000001", "name": "平安银行", "industry": "银行",
             "previousAmount": 1_100_000_000, "change10d": 31.0,
@@ -295,10 +295,27 @@ class MarketDataServiceTests(unittest.TestCase):
             "volumeRatioMode": "盘中量比", "todayPctChg": 2.0,
             "currentPrice": 12.5, "isSt": False, "isStarMarket": False,
         }
-        rejected = {**eligible, "symbol": "688001", "name": "科创样本", "isStarMarket": True}
-        picks = volume_breakout_picks([eligible, rejected])
+        high_price = {
+            **eligible, "symbol": "600001", "name": "高价样本",
+            "change10d": 32.0, "currentPrice": 120.0,
+        }
+        st_stock = {
+            **eligible, "symbol": "000002", "name": "ST样本",
+            "change10d": 33.0, "isSt": True,
+        }
+        star_market = {
+            **eligible, "symbol": "688001", "name": "科创样本",
+            "change10d": 34.0, "isStarMarket": True,
+        }
+        rejected = {**eligible, "symbol": "600002", "volumeRatio": 1.5}
+        picks = volume_breakout_picks(
+            [eligible, high_price, st_stock, star_market, rejected]
+        )
 
-        self.assertEqual([pick["code"] for pick in picks], ["000001"])
+        self.assertEqual(
+            [pick["code"] for pick in picks],
+            ["688001", "000002", "600001", "000001"],
+        )
 
     def test_history_batch_reuses_one_baostock_session(self) -> None:
         service = MarketDataService()

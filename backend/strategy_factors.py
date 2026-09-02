@@ -176,7 +176,7 @@ def build_factor_row(
 def _matches_volume_breakout(row: FactorRow) -> bool:
     required = (
         row.get("previousAmount"), row.get("change10d"), row.get("averageAmount20"),
-        row.get("volumeRatio"), row.get("todayPctChg"), row.get("currentPrice"),
+        row.get("volumeRatio"), row.get("todayPctChg"),
     )
     if any(value is None for value in required):
         return False
@@ -186,9 +186,6 @@ def _matches_volume_breakout(row: FactorRow) -> bool:
         and float(row["averageAmount20"]) > 1_200_000_000
         and float(row["volumeRatio"]) < 1.5
         and float(row["todayPctChg"]) < 11
-        and float(row["currentPrice"]) < 90
-        and not row.get("isSt")
-        and not row.get("isStarMarket")
     )
 
 
@@ -208,7 +205,7 @@ def volume_breakout_picks(rows: list[FactorRow]) -> list[FactorRow]:
                 f"10日 +{float(row['change10d']):.1f}% · 昨额 {float(row['previousAmount']) / 100_000_000:.1f}亿 · "
                 f"20日均额 {float(row['averageAmount20']) / 100_000_000:.1f}亿 · "
                 f"量比 {float(row['volumeRatio']):.2f}（{row['volumeRatioMode']}） · "
-                f"今日 {float(row['todayPctChg']):+.1f}% · 现价 {float(row['currentPrice']):.2f}"
+                f"今日 {float(row['todayPctChg']):+.1f}%"
             ),
         }
         for row in matched

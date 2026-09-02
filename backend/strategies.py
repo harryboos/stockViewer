@@ -371,7 +371,7 @@ def calculate_public_strategies(force: bool = False) -> dict[str, Any]:
             "name": "强势缩量筛选",
             "runDate": run_date,
             "tradeDate": trade_date,
-            "description": "在当日高流动性候选池中严格筛选：昨额＞10亿、10日涨幅＞30%、20日均额＞12亿、量比＜1.5、今日涨幅＜11%、现价＜90元，并剔除 ST 与科创板。",
+            "description": "在当日高流动性候选池中严格筛选：昨额＞10亿、10日涨幅＞30%、20日均额＞12亿、量比＜1.5、今日涨幅＜11%。",
             "picks": volume_breakout_picks(factors),
         },
         _hot_concept_strategy(concept_snapshot, run_date, trade_date),

@@ -126,7 +126,7 @@ DeepSeek、GLM 5.3、Qwen 3.8 Max 收到完全相同的系统提示语、任务�
 | RSI 超跌回升 | 14 日 Wilder RSI 三日前低于 45、当前回升但低于 60、5 日收益为正、现价高于 MA5 | [QuantConnect LEAN RsiAlphaModel](https://github.com/QuantConnect/Lean/blob/master/Algorithm.Framework/Alphas/RsiAlphaModel.py) |
 | 趋势确认 | 现价＞MA20＞MA60、20/60 日动量为正、低波动、成交流动性 | [创业板动量成长指数方法](https://www.cnindex.com.cn/docs/gz_399296.pdf) |
 | 价值动量 | 正 PE、正 PB、60 日与半年动量、成交流动性 | [国证 AlphaFocus 单因子指数系列](https://www.cnindex.com.cn/zh_information/notices_news/2021/202105/t20210525_17317.html?act_menu=2) |
-| 强势缩量筛选 | 昨额＞10亿、10日涨幅＞30%、20日均额＞12亿、量比＜1.5、今日涨幅＜11%、现价＜90元、非 ST、非科创板 | 用户自定义规则 |
+| 强势缩量筛选 | 昨额＞10亿、10日涨幅＞30%、20日均额＞12亿、量比＜1.5、今日涨幅＜11% | 用户自定义规则 |
 | 热门概念共振 | 当日概念涨幅、上涨家数占比、个股涨幅和成交额；剔除 ST、退市整理、涨幅≥11% 和成交额不足 1 亿元 | [AKShare 概念板块与成份股接口](https://akshare.akfamily.xyz/data/stock/stock.html) |
 
 候选样本数默认是 18，可以在 `.env.local` 通过 `STRATEGY_SAMPLE_SIZE` 调整为 12～40。热门概念默认取强度靠前的 5 个，可以通过 `HOT_CONCEPT_LIMIT` 调整为 3～8。样本越多，第一次计算越慢，也越容易触发免费源限流。
