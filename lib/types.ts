@@ -36,7 +36,7 @@ export type Quote = {
   preClose: number | null;
   change: number | null;
   pctChg: number | null;
-  vol: number | null;
+  vol: number | null; // Shares, normalized across market data providers.
   amount: number | null;
   turnoverRate?: number | null;
   volumeRatio?: number | null;

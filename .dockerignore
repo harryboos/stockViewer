@@ -1,5 +1,9 @@
 .git
 .gitignore
+.env*
+!.env.example
+*.tsbuildinfo
+.next
 .openai/*
 !.openai/hosting.json
 .vinext

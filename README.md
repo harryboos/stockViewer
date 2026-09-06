@@ -176,9 +176,13 @@ npm run daily
 | `npm run build` | 构建前端生产版本 |
 | `npm run start` | 启动构建后的本地产品 |
 | `npm run lint` | 检查前端代码 |
+| `npm run typecheck` | 检查 TypeScript 类型 |
+| `npm run test:frontend` | 运行请求代理、策略共识与自选股统计回归测试 |
 | `npm run check:backend` | 检查 Python 服务语法 |
-| `npm run test:backend` | 运行数据源、交易日和策略因子测试 |
+| `npm run test:backend` | 运行数据源、交易日、策略因子、数据库、AI 并发与接口回归测试 |
 | `npm run daily` | 手动执行当天策略 |
+
+2026-09-07 的代码审阅、修复说明与验证结果见 [代码审阅报告](docs/code-review-2026-09-07.md)。
 
 ## 项目结构
 

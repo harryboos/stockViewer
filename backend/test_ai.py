@@ -93,16 +93,13 @@ class AiProviderTests(unittest.IsolatedAsyncioTestCase):
                 for index in range(1, 4)
             ],
         }
-        previous = {"provider": "deepseek", "status": "failed", "error": "旧错误"}
         saved = {"provider": "deepseek", "status": "succeeded", "result": raw}
         call = AsyncMock(return_value=raw)
 
         with (
             patch.object(ai.database, "china_date", return_value="2026-08-29"),
-            patch.object(ai.database, "read_ai_run", side_effect=[previous, saved]),
-            patch.object(ai.database, "get_meta", return_value=ai.PROMPT_VERSION),
-            patch.object(ai.database, "set_meta"),
-            patch.object(ai.database, "start_ai_run"),
+            patch.object(ai.database, "read_ai_run", return_value=saved),
+            patch.object(ai.database, "start_ai_run", return_value="token"),
             patch.object(ai.database, "finish_ai_run") as finish,
             patch.object(ai, "provider_key", return_value="secret"),
             patch.object(ai, "model_for", return_value="deepseek-chat"),

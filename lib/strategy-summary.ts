@@ -18,7 +18,8 @@ export function buildStrategySummary(
   const signals = new Map<string, Signal>();
   const addSignal = (code: string, name: string, source: string, score: number) => {
     const current = signals.get(code) ?? { code, name, sources: [], scoreTotal: 0, scoreCount: 0 };
-    if (!current.sources.includes(source)) current.sources.push(source);
+    if (current.sources.includes(source)) return;
+    current.sources.push(source);
     current.scoreTotal += score;
     current.scoreCount += 1;
     signals.set(code, current);
@@ -28,6 +29,7 @@ export function buildStrategySummary(
     strategy.picks.forEach((pick) => addSignal(pick.code, pick.name, strategy.name, pick.score));
   });
   aiRuns.forEach((run) => {
+    if (run.status !== 'succeeded') return;
     run.result?.picks.forEach((pick) => addSignal(pick.code, pick.name, AI_META[run.provider].model, pick.score));
   });
 

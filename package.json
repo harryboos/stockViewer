@@ -15,6 +15,8 @@
     "daily": "node --env-file-if-exists=.env.local scripts/run-daily.mjs",
     "check:backend": ".venv/bin/python -m compileall -q backend",
     "test:backend": ".venv/bin/python -m unittest discover backend -p 'test_*.py'",
+    "typecheck": "tsc --noEmit",
+    "test:frontend": "node --test tests/*.test.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next --ignore-pattern .venv"
   },
   "dependencies": {

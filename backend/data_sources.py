@@ -49,6 +49,12 @@ def number_or_none(value: Any) -> float | None:
     return parsed if math.isfinite(parsed) else None
 
 
+def volume_in_shares(value: Any) -> float | None:
+    """AKShare/Eastmoney use lots; BaoStock and our internal data use shares."""
+    lots = number_or_none(value)
+    return lots * 100 if lots is not None else None
+
+
 def market_info(symbol: str) -> tuple[str, str, str]:
     if symbol.startswith("6"):
         return f"{symbol}.SH", "SSE", "科创板" if symbol.startswith("68") else "主板"
@@ -79,10 +85,14 @@ class MarketDataService:
         self._tencent_client = tencent_client or TencentClient()
         self._spot_lock = threading.RLock()
         self._sector_lock = threading.RLock()
+        self._overview_lock = threading.RLock()
+        self._catalog_lock = threading.RLock()
+        self._calendar_lock = threading.RLock()
         self._baostock_lock = threading.RLock()
         self._spot_rows: list[dict[str, Any]] = []
         self._spot_fetched_at: datetime | None = None
         self._trade_date: str | None = None
+        self._trade_date_checked_on: date | None = None
         self._spot_failed_at: datetime | None = None
         self._overview_cache: dict[str, Any] | None = None
         self._overview_fetched_at: datetime | None = None
@@ -114,16 +124,18 @@ class MarketDataService:
                 client.logout()
 
     def latest_trade_date(self) -> str:
-        if self._trade_date:
-            return self._trade_date
         today = datetime.now(database.CHINA_TZ).date()
-        try:
-            calendar = self._akshare().tool_trade_date_hist_sina()
-            dates = [item.date() if hasattr(item, "date") else date.fromisoformat(str(item)[:10]) for item in calendar["trade_date"]]
-            self._trade_date = max(item for item in dates if item <= today).strftime("%Y%m%d")
-        except Exception:
-            self._trade_date = _last_weekday(today).strftime("%Y%m%d")
-        return self._trade_date
+        with self._calendar_lock:
+            if self._trade_date and self._trade_date_checked_on == today:
+                return self._trade_date
+            try:
+                calendar = self._akshare().tool_trade_date_hist_sina()
+                dates = [item.date() if hasattr(item, "date") else date.fromisoformat(str(item)[:10]) for item in calendar["trade_date"]]
+                self._trade_date = max(item for item in dates if item <= today).strftime("%Y%m%d")
+            except Exception:
+                self._trade_date = _last_weekday(today).strftime("%Y%m%d")
+            self._trade_date_checked_on = today
+            return self._trade_date
 
     def _spot_frame(self) -> tuple[Any, str, str]:
         errors: list[str] = []
@@ -150,7 +162,7 @@ class MarketDataService:
             symbol = str(row.get("代码", "")).zfill(6)
             name = str(row.get("名称", "")).strip()
             close = number_or_none(row.get("最新价"))
-            if len(symbol) != 6 or not name or close is None or close <= 0:
+            if len(symbol) != 6 or not symbol.isdigit() or not name or close is None or close <= 0:
                 continue
             quote_timestamp = number_or_none(row.get("行情时间"))
             if quote_timestamp is not None and quote_timestamp >= 1_000_000_000:
@@ -182,7 +194,7 @@ class MarketDataService:
                     "preClose": number_or_none(row.get("昨收")),
                     "change": number_or_none(row.get("涨跌额")),
                     "pctChg": number_or_none(row.get("涨跌幅")),
-                    "vol": number_or_none(row.get("成交量")),
+                    "vol": volume_in_shares(row.get("成交量")),
                     "amount": number_or_none(row.get("成交额")),
                     "turnoverRate": number_or_none(row.get("换手率")),
                     "volumeRatio": number_or_none(row.get("量比")),
@@ -215,11 +227,11 @@ class MarketDataService:
             try:
                 frame, source, transport = self._spot_frame()
                 rows = self._normalize_spot(frame, source)
+                if not rows:
+                    raise RuntimeError("AKShare 暂未返回有效 A 股行情")
             except Exception:
                 self._spot_failed_at = datetime.now(database.CHINA_TZ)
                 raise
-            if not rows:
-                raise RuntimeError("AKShare 暂未返回有效 A 股行情")
             self._spot_rows = rows
             self._spot_fetched_at = datetime.now(database.CHINA_TZ)
             self._spot_failed_at = None
@@ -230,6 +242,10 @@ class MarketDataService:
             return rows
 
     def sync_catalog(self, force: bool = False) -> int:
+        with self._catalog_lock:
+            return self._sync_catalog(force)
+
+    def _sync_catalog(self, force: bool) -> int:
         last_sync = database.get_meta("stock_catalog_synced_at")
         if not force and last_sync:
             try:
@@ -325,6 +341,8 @@ class MarketDataService:
         return None
 
     def refresh_quotes(self, ts_codes: list[str], force: bool = False) -> dict[str, dict[str, Any]]:
+        if not ts_codes:
+            return {}
         cached = database.get_quotes(ts_codes)
         if not force and cached:
             fresh = True
@@ -349,7 +367,12 @@ class MarketDataService:
             selected = [by_code[code] for code in ts_codes if code in by_code]
             database.upsert_stock_basics(selected)
             database.upsert_quotes(selected)
-            self.sync_catalog()
+            # The complete snapshot is already available; catalog failures must
+            # not discard successfully fetched quotes or trigger a daily fallback.
+            try:
+                self.sync_catalog()
+            except Exception:
+                pass
             return database.get_quotes(ts_codes)
         except Exception as primary_error:
             fallback: list[dict[str, Any]] = []
@@ -379,8 +402,6 @@ class MarketDataService:
     def history(self, symbol: str, days: int = 420) -> list[dict[str, Any]]:
         end = datetime.now(database.CHINA_TZ).date()
         start = end - timedelta(days=days)
-        if (database.get_meta("market_data_source") or "").startswith("BaoStock"):
-            return self._baostock_history(symbol, start, end)
         try:
             frame = self._akshare().stock_zh_a_hist(
                 symbol=symbol,
@@ -388,6 +409,7 @@ class MarketDataService:
                 start_date=start.strftime("%Y%m%d"),
                 end_date=end.strftime("%Y%m%d"),
                 adjust="qfq",
+                timeout=20,
             )
             rows: list[dict[str, Any]] = []
             for _, row in frame.iterrows():
@@ -402,7 +424,7 @@ class MarketDataService:
                         "low": number_or_none(row.get("最低")),
                         "close": close,
                         "pctChg": number_or_none(row.get("涨跌幅")),
-                        "vol": number_or_none(row.get("成交量")),
+                        "vol": volume_in_shares(row.get("成交量")),
                         "amount": number_or_none(row.get("成交额")),
                     }
                 )
@@ -431,7 +453,7 @@ class MarketDataService:
         while result.error_code == "0" and result.next():
             raw = dict(zip(fields.split(","), result.get_row_data(), strict=False))
             close = number_or_none(raw.get("close"))
-            if raw.get("tradestatus") != "1" or close is None:
+            if raw.get("tradestatus") != "1" or close is None or close <= 0:
                 continue
             rows.append(
                 {
@@ -454,17 +476,28 @@ class MarketDataService:
         """Fetch strategy history with one BaoStock login for the complete candidate batch."""
         end = datetime.now(database.CHINA_TZ).date()
         start = end - timedelta(days=days)
+        histories: dict[str, list[dict[str, Any]]] = {}
+        if not symbols:
+            return histories
         try:
             with self._baostock_session() as bs:
-                histories: dict[str, list[dict[str, Any]]] = {}
                 for symbol in dict.fromkeys(symbols):
                     try:
                         histories[symbol] = self._query_baostock_history(bs, symbol, start, end)
                     except Exception:
                         histories[symbol] = []
-                return histories
-        except RuntimeError:
-            return {}
+        except Exception:
+            pass
+        missing = [symbol for symbol in dict.fromkeys(symbols) if not histories.get(symbol)]
+        if missing:
+            with ThreadPoolExecutor(max_workers=3) as executor:
+                futures = {executor.submit(self.history, symbol, days): symbol for symbol in missing}
+                for future in as_completed(futures):
+                    try:
+                        histories[futures[future]] = future.result()
+                    except Exception:
+                        histories[futures[future]] = []
+        return histories
 
     def dividend_yield(self, symbol: str) -> float | None:
         if (database.get_meta("market_data_source") or "").startswith("BaoStock"):
@@ -903,7 +936,7 @@ class MarketDataService:
                 for stock in snapshot
                 if len(str(stock.get("tradeDate") or "")) == 8
             ]
-            trade_date = max(trade_dates, default=self.latest_trade_date())
+            trade_date = max(trade_dates) if trade_dates else self.latest_trade_date()
 
             category_rows: dict[str, list[dict[str, Any]]] = {}
             counts: dict[str, int] = {}
@@ -1192,8 +1225,9 @@ class MarketDataService:
         today = datetime.now(database.CHINA_TZ).date()
         start = today - timedelta(days=45)
         try:
-            by_date: dict[str, float] = {}
+            by_index: list[dict[str, float]] = []
             for symbol in ("sh000001", "sz399106"):
+                by_date: dict[str, float] = {}
                 frame = self._akshare().stock_zh_index_daily_em(
                     symbol=symbol,
                     start_date=start.strftime("%Y%m%d"),
@@ -1203,10 +1237,12 @@ class MarketDataService:
                     trade_date = str(row.get("date", "")).replace("-", "")[:8]
                     amount = number_or_none(row.get("amount"))
                     if len(trade_date) == 8 and amount is not None and amount >= 0:
-                        by_date[trade_date] = by_date.get(trade_date, 0.0) + amount
-            if not by_date:
+                        by_date[trade_date] = amount
+                by_index.append(by_date)
+            common_dates = set(by_index[0]) & set(by_index[1])
+            if not common_dates:
                 raise RuntimeError("沪深指数没有返回量能历史")
-            result = [{"date": key, "turnover": by_date[key]} for key in sorted(by_date)][-20:]
+            result = [{"date": key, "turnover": sum(index[key] for index in by_index)} for key in sorted(common_dates)][-20:]
             database.set_meta(cache_key, json.dumps(result, ensure_ascii=False))
             return result, None
         except Exception as error:
@@ -1334,7 +1370,7 @@ class MarketDataService:
                 )
 
     def market_overview(self, force: bool = False) -> dict[str, Any]:
-        with self._spot_lock:
+        with self._overview_lock:
             if (
                 not force
                 and self._overview_cache
@@ -1355,10 +1391,7 @@ class MarketDataService:
                 for row in snapshot
                 if row.get("amount") is not None and float(row["amount"]) >= 0
             ]
-            trade_date = max(
-                (str(row.get("tradeDate") or "") for row in snapshot),
-                default=self.latest_trade_date(),
-            )
+            trade_date = max((str(row.get("tradeDate") or "") for row in snapshot), default="") or self.latest_trade_date()
             advancers = sum(1 for value in pct_values if value > 0)
             decliners = sum(1 for value in pct_values if value < 0)
             flat = len(pct_values) - advancers - decliners
@@ -1493,6 +1526,7 @@ class MarketDataService:
     def status(self) -> dict[str, Any]:
         source = database.get_meta("market_data_source") or "等待首次获取"
         using_fallback = source.startswith("BaoStock")
+        error = database.get_meta("market_data_error") or None
         retry_at: str | None = None
         if self._spot_failed_at:
             candidate = self._spot_failed_at + timedelta(seconds=MARKET.primary_failure_backoff_seconds)
@@ -1504,9 +1538,9 @@ class MarketDataService:
             "source": source,
             "transport": database.get_meta("market_data_transport") or "等待首次获取",
             "updatedAt": database.get_meta("market_data_updated_at"),
-            "error": database.get_meta("market_data_error") or None,
+            "error": error,
             "usingFallback": using_fallback,
-            "health": "degraded" if using_fallback else "waiting" if source == "等待首次获取" else "healthy",
+            "health": "degraded" if using_fallback or error else "waiting" if source == "等待首次获取" else "healthy",
             "retryAt": retry_at,
         }
 

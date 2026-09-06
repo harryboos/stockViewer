@@ -7,6 +7,16 @@ export async function forwardToBackend(
   path: string,
   options: { useServerDailySecret?: boolean } = {},
 ) {
+  if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method)) {
+    const origin = request.headers.get('origin');
+    const fetchSite = request.headers.get('sec-fetch-site');
+    // Browsers set this forbidden header from the public origin, including
+    // deployments where a trusted gateway terminates HTTPS before Vinext.
+    if (fetchSite === 'cross-site'
+      || (origin && origin !== request.nextUrl.origin && fetchSite !== 'same-origin')) {
+      return NextResponse.json({ error: '不允许跨站修改数据或运行策略' }, { status: 403 });
+    }
+  }
   const target = new URL(path, backendBaseUrl);
   request.nextUrl.searchParams.forEach((value, key) => target.searchParams.append(key, value));
   const headers = new Headers();
@@ -22,23 +32,27 @@ export async function forwardToBackend(
       headers,
       body: request.method === 'GET' || request.method === 'HEAD' ? undefined : await request.text(),
       cache: 'no-store',
-      signal: AbortSignal.timeout(120_000),
+      signal: AbortSignal.timeout(180_000),
     });
     const raw = await response.text();
     let payload: unknown;
     try {
       payload = raw ? JSON.parse(raw) : {};
     } catch {
-      payload = { error: raw || '本地数据服务返回了无法解析的内容' };
+      return NextResponse.json(
+        { error: '本地数据服务返回了无法解析的内容' },
+        { status: response.ok ? 502 : response.status },
+      );
     }
     if (payload && typeof payload === 'object' && 'detail' in payload && !('error' in payload)) {
       payload = { ...payload, error: String((payload as { detail: unknown }).detail) };
     }
-    return NextResponse.json(payload, { status: response.status });
+    return NextResponse.json(payload, { status: response.status, headers: { 'Cache-Control': 'no-store' } });
   } catch (error) {
+    const timedOut = error instanceof Error && error.name === 'TimeoutError';
     return NextResponse.json(
-      { error: `本地数据服务未启动：${error instanceof Error ? error.message : '连接失败'}` },
-      { status: 503 },
+      { error: timedOut ? '数据服务响应超时，请稍后检查结果' : '无法连接本地数据服务，请检查服务是否启动' },
+      { status: timedOut ? 504 : 503 },
     );
   }
 }

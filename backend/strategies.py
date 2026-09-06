@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 from typing import Any
 
 from . import database
@@ -15,7 +16,8 @@ from .strategy_factors import (
 )
 
 
-STRATEGY_VERSION = "5"
+STRATEGY_VERSION = "6"
+_strategy_lock = threading.Lock()
 CORE_CANDIDATES = [
     "600519.SH", "300750.SZ", "601318.SH", "000858.SZ", "600036.SH", "688981.SH",
     "600900.SH", "601088.SH", "000333.SZ", "600276.SH", "601899.SH", "300308.SZ",
@@ -150,6 +152,11 @@ def _hot_concept_strategy(snapshot: dict[str, Any], run_date: str, trade_date: s
 
 
 def calculate_public_strategies(force: bool = False) -> dict[str, Any]:
+    with _strategy_lock:
+        return _calculate_public_strategies(force)
+
+
+def _calculate_public_strategies(force: bool) -> dict[str, Any]:
     run_date = database.china_date()
     cache_key = f"{run_date}:v{STRATEGY_VERSION}"
     cached = database.get_strategy_run(cache_key)

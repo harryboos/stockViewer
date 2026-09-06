@@ -1,5 +1,5 @@
-const backendUrl = process.env.STOCK_BACKEND_URL || 'http://127.0.0.1:8000';
-const runSecret = process.env.DAILY_RUN_SECRET || '';
+const backendUrl = (process.env.STOCK_BACKEND_URL?.trim() || `http://127.0.0.1:${process.env.STOCK_BACKEND_PORT || '8000'}`).replace(/\/$/, '');
+const runSecret = process.env.DAILY_RUN_SECRET?.trim() || '';
 
 async function readJson(response) {
   const raw = await response.text();
@@ -14,11 +14,11 @@ async function readJson(response) {
 }
 
 try {
-  const system = await readJson(await fetch(`${backendUrl}/api/system`));
+  const system = await readJson(await fetch(`${backendUrl}/api/system`, { signal: AbortSignal.timeout(10_000) }));
   if (!system.providers.marketData) throw new Error('免费行情服务未就绪，请先运行 npm run setup');
 
   const headers = runSecret ? { 'x-daily-run-secret': runSecret } : {};
-  const result = await readJson(await fetch(`${backendUrl}/api/daily`, { method: 'POST', headers }));
+  const result = await readJson(await fetch(`${backendUrl}/api/daily`, { method: 'POST', headers, signal: AbortSignal.timeout(600_000) }));
   const aiSummary = result.ai.runs.map((run) => `${run.provider}:${run.status}`).join(', ');
   process.stdout.write(`公开策略 ${result.public.strategies.length} 组；AI ${aiSummary}\n`);
 } catch (error) {

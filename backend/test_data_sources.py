@@ -323,7 +323,10 @@ class MarketDataServiceTests(unittest.TestCase):
         query = Mock(error_code="0")
         query.next.return_value = False
         baostock.query_history_k_data_plus.return_value = query
-        with patch.object(service, "_baostock_session", return_value=nullcontext(baostock)) as session:
+        with (
+            patch.object(service, "_baostock_session", return_value=nullcontext(baostock)) as session,
+            patch.object(service, "history", return_value=[]),
+        ):
             histories = service.history_batch(["600519", "000001"])
 
         self.assertEqual(set(histories), {"600519", "000001"})

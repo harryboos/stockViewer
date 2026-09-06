@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import os
+import secrets
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
@@ -32,7 +33,7 @@ def _watchlist_payload(**extra: object) -> dict:
 
 def _authorize_daily(supplied: str | None) -> None:
     expected = os.getenv("DAILY_RUN_SECRET", "").strip()
-    if expected and supplied != expected:
+    if expected and not secrets.compare_digest((supplied or "").encode(), expected.encode()):
         raise HTTPException(status_code=401, detail="运行密钥不正确")
 
 
@@ -86,7 +87,7 @@ app.add_middleware(
 
 
 @app.get("/api/system")
-async def system_status() -> dict:
+def system_status() -> dict:
     packages_ready = bool(importlib.util.find_spec("akshare")) and bool(importlib.util.find_spec("baostock"))
     return {
         "ok": True,
@@ -105,10 +106,10 @@ async def system_status() -> dict:
 
 
 @app.get("/api/watchlist")
-async def get_watchlist(refresh: bool = Query(False)) -> dict:
+def get_watchlist(refresh: bool = Query(False)) -> dict:
     codes = database.list_watch_codes()
     try:
-        await asyncio.to_thread(market_data.refresh_quotes, codes, refresh)
+        market_data.refresh_quotes(codes, refresh)
     except Exception as error:
         if not database.get_quotes(codes):
             raise HTTPException(status_code=503, detail=str(error)) from error
@@ -116,28 +117,32 @@ async def get_watchlist(refresh: bool = Query(False)) -> dict:
 
 
 @app.post("/api/watchlist")
-async def add_watchlist(payload: WatchlistInput) -> dict:
+def add_watchlist(payload: WatchlistInput) -> dict:
     try:
-        await asyncio.to_thread(database.add_watch_stock, payload.tsCode)
-        await asyncio.to_thread(market_data.refresh_quotes, database.list_watch_codes(), False)
+        database.add_watch_stock(payload.tsCode)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+    try:
+        market_data.refresh_quotes([payload.tsCode], False)
+    except Exception as error:
+        # Adding a stock has already committed; unavailable quotes do not undo it.
+        database.set_meta("market_data_error", str(error))
     return _watchlist_payload(ok=True)
 
 
 @app.delete("/api/watchlist")
-async def delete_watchlist(tsCode: str = Query(..., pattern=r"^\d{6}\.(SH|SZ|BJ)$")) -> dict:
-    await asyncio.to_thread(database.remove_watch_stock, tsCode)
+def delete_watchlist(tsCode: str = Query(..., pattern=r"^\d{6}\.(SH|SZ|BJ)$")) -> dict:
+    database.remove_watch_stock(tsCode)
     return _watchlist_payload(ok=True)
 
 
 @app.get("/api/stocks/search")
-async def stock_search(q: str = Query("", max_length=30)) -> dict:
+def stock_search(q: str = Query("", max_length=30)) -> dict:
     normalized = q.strip()
     if not normalized:
         return {"stocks": []}
     try:
-        await asyncio.to_thread(market_data.sync_catalog, False)
+        market_data.sync_catalog(False)
     except Exception:
         pass
     return {"stocks": database.search_stocks(normalized)}
@@ -168,7 +173,7 @@ async def public_strategies(force: bool = Query(False)) -> dict:
 
 
 @app.get("/api/strategies/ai")
-async def ai_strategies() -> dict:
+def ai_strategies() -> dict:
     return get_daily_ai_runs()
 
 

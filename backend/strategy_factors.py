@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import statistics
+from bisect import bisect_left, bisect_right
 from typing import Any, Callable
 
 from .data_sources import market_data
@@ -221,9 +222,13 @@ def percentile(rows: list[FactorRow], key: str, higher_is_better: bool = True) -
 
     def score(row: FactorRow) -> float:
         value = row.get(key)
-        if value is None or len(values) < 2:
+        if value is None or not math.isfinite(float(value)) or not values:
             return 40.0
-        rank = max(index for index, item in enumerate(values) if item <= float(value))
+        if len(values) == 1:
+            return 50.0
+        # Midranks give tied factors the same neutral treatment in either direction.
+        left, right = bisect_left(values, float(value)), bisect_right(values, float(value))
+        rank = max(0.0, min((left + right - 1) / 2, len(values) - 1))
         result = rank / (len(values) - 1) * 100
         return result if higher_is_better else 100 - result
 
@@ -236,16 +241,15 @@ def top_picks(
     reason: Callable[[FactorRow], str],
 ) -> list[FactorRow]:
     ranked = sorted(
-        ((row, round(scorer(row))) for row in rows),
-        key=lambda item: item[1],
-        reverse=True,
+        ((row, scorer(row)) for row in rows),
+        key=lambda item: (-item[1], item[0]["symbol"]),
     )[:4]
     return [
         {
             "code": row["symbol"],
             "name": row["name"],
             "industry": row["industry"],
-            "score": score,
+            "score": round(score),
             "reason": reason(row),
         }
         for row, score in ranked

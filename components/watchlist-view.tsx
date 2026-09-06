@@ -2,9 +2,8 @@ import { useMemo } from 'react';
 
 import { marketLabel, shortTradeDate } from '@/lib/format';
 import type { WatchlistStock } from '@/lib/types';
+import { summarizeWatchlist } from '@/lib/watchlist-summary';
 
-
-const MICRO_CHART = [30, 42, 36, 58, 51, 72, 85, 78];
 
 type WatchlistViewProps = {
   today: string;
@@ -39,12 +38,7 @@ export function WatchlistView({
     )),
     [query, stocks],
   );
-  const quotedStocks = stocks.filter((stock) => stock.quote);
-  const averageChange = quotedStocks.length
-    ? quotedStocks.reduce((sum, stock) => sum + (stock.quote?.pctChg ?? 0), 0) / quotedStocks.length
-    : null;
-  const upCount = quotedStocks.filter((stock) => (stock.quote?.pctChg ?? 0) >= 0).length;
-  const tradeDate = quotedStocks[0]?.quote?.tradeDate ?? null;
+  const { averageChange, upCount, downCount, flatCount, tradeDate } = summarizeWatchlist(stocks);
   const industryCount = new Set(stocks.map((stock) => stock.industry).filter(Boolean)).size;
 
   return (
@@ -68,7 +62,7 @@ export function WatchlistView({
         </div>
         <div className="hero-actions">
           <button className="refresh-button" onClick={onRefresh} disabled={loading}>{loading ? '更新中…' : '↻ 更新行情'}</button>
-          <button className="add-button" onClick={onOpenAdd}><span>＋</span> 添加股票</button>
+          <button className="add-button" onClick={onOpenAdd} disabled={loading}><span>＋</span> 添加股票</button>
         </div>
       </div>
 
@@ -76,12 +70,11 @@ export function WatchlistView({
         <article className="summary-card dark-card">
           <div className="card-topline"><span>自选组合今日均值</span><span className="status-pill">{tradeDate ? shortTradeDate(tradeDate) : '无行情'}</span></div>
           <strong className="metric-large">{averageChange === null ? '—' : `${averageChange >= 0 ? '+' : ''}${averageChange.toFixed(2)}%`}</strong>
-          <div className="micro-chart" aria-hidden="true">{MICRO_CHART.map((height) => <i key={height} style={{ height: `${height}%` }} />)}</div>
         </article>
         <article className="summary-card">
           <span className="card-label">上涨 / 下跌</span>
-          <strong className="metric"><b>{upCount}</b><small> / {Math.max(quotedStocks.length - upCount, 0)}</small></strong>
-          <p className="card-note positive">按最新交易日收盘</p>
+          <strong className="metric"><b>{upCount}</b><small> / {downCount}</small></strong>
+          <p className="card-note positive">最新交易日 · 平盘 {flatCount} 只 · 缺失数据不计入</p>
         </article>
         <article className="summary-card">
           <span className="card-label">关注行业</span>
@@ -122,7 +115,7 @@ export function WatchlistView({
                 </span>
                 <span className="industry">{stock.industry ?? '未分类'}</span>
                 <span className="trade-date-cell">{shortTradeDate(stock.quote?.tradeDate)}</span>
-                <button className="remove-button" onClick={() => onRemove(stock)} aria-label={`移除${stock.name}`}>×</button>
+                <button className="remove-button" onClick={() => onRemove(stock)} disabled={loading} aria-label={`移除${stock.name}`}>×</button>
               </div>
             ))}
           </div>

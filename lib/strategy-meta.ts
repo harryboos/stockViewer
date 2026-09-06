@@ -25,7 +25,7 @@ export const PUBLIC_STRATEGY_META = {
   },
   lowvol: {
     fallbackName: '小盘低波', index: '公开策略 03', color: 'indigo',
-    tags: ['小盘暴露', '一年波动率', '流动性筛选'],
+    tags: ['小盘暴露', '120日波动率', '流动性筛选'],
     source: '国证指数 · 巨潮小盘低波指数方法',
     url: 'https://www.cnindex.com.cn/docs/gz_399408.pdf',
   },

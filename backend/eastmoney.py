@@ -128,7 +128,11 @@ class EastmoneyClient:
         url, session = active
         try:
             rows = list(first_payload["diff"])
+            if not rows:
+                raise RuntimeError("东方财富备用线路没有返回行情")
             total = int(first_payload.get("total") or len(rows))
+            if total > 20_000 or total < 0:
+                raise RuntimeError("东方财富备用线路分页总数异常")
             page_count = max(1, math.ceil(total / max(len(rows), 1)))
             for page in range(2, page_count + 1):
                 if self.settings.eastmoney_page_delay_seconds:
@@ -141,6 +145,8 @@ class EastmoneyClient:
                 for attempt in range(3):
                     try:
                         payload = self._request_page(url, session, params, page)
+                        if not payload["diff"]:
+                            raise RuntimeError("分页提前结束，行情数据不完整")
                         rows.extend(payload["diff"])
                         page_error = None
                         break
@@ -151,8 +157,8 @@ class EastmoneyClient:
                     raise RuntimeError(
                         f"东方财富备用线路第 {page} 页获取失败：{page_error}"
                     ) from page_error
-            if not rows:
-                raise RuntimeError("东方财富备用线路没有返回行情")
+            if len(rows) < total:
+                raise RuntimeError("东方财富备用线路返回了不完整行情")
             return rows
         finally:
             session.close()
@@ -298,16 +304,15 @@ class EastmoneyClient:
         if previous_date is None:
             raise RuntimeError("沪深指数分时历史缺少前一交易日")
 
-        latest_times: list[str] = []
+        available_times: list[set[str]] = []
         for points in points_by_index.values():
-            available = [
-                minute for date_key, minute, _ in points
-                if date_key == normalized_date and minute <= cutoff_time
-            ]
-            if not available:
-                raise RuntimeError("沪深指数分时历史在指定时点没有当前交易日数据")
-            latest_times.append(max(available))
-        effective_time = min(latest_times)
+            for comparison_date in (normalized_date, previous_date):
+                available_times.append({minute for date_key, minute, _ in points
+                                        if date_key == comparison_date and minute <= cutoff_time})
+        common_times = set.intersection(*available_times)
+        if not common_times:
+            raise RuntimeError("沪深指数分时历史没有共同对比时点")
+        effective_time = max(common_times)
 
         current_turnover = 0.0
         previous_turnover = 0.0

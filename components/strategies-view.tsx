@@ -209,7 +209,7 @@ export function StrategiesView({
                 </div>
                 <div className="ai-footer">
                   <span>真实 API 结果</span>
-                  <span>{run.finishedAt ? new Date(run.finishedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '每日一次'}</span>
+                  <span>{run.finishedAt ? new Date(run.finishedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Shanghai' }) : '每日一次'}</span>
                 </div>
               </article>
             );

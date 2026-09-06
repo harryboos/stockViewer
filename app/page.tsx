@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { AddStockModal } from '@/components/add-stock-modal';
 import { AppHeader } from '@/components/app-header';
@@ -45,7 +45,10 @@ export default function Home() {
   const [searching, setSearching] = useState(false);
   const [toast, setToast] = useState('');
   const [error, setError] = useState('');
-  const today = useMemo(() => formatChinaDate(), []);
+  const [watchlistBusy, setWatchlistBusy] = useState(false);
+  const watchlistLock = useRef(false);
+  const strategyLock = useRef(false);
+  const today = formatChinaDate();
 
   const applyWatchlist = useCallback((data: WatchlistResponse) => {
     setStocks(data.stocks);
@@ -53,14 +56,24 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    Promise.all([
-      jsonFetch<SystemStatus>('/api/system'),
-      jsonFetch<WatchlistResponse>('/api/watchlist'),
-    ]).then(([system, watchlist]) => {
-      setStatus({ ...system, dataSource: watchlist.dataSource ?? system.dataSource });
-      setStocks(watchlist.stocks);
-    }).catch((reason) => setError(errorMessage(reason, '应用初始化失败')))
-      .finally(() => setLoading(false));
+    const controller = new AbortController();
+    const options = { signal: controller.signal };
+    Promise.allSettled([
+      jsonFetch<SystemStatus>('/api/system', options),
+      jsonFetch<WatchlistResponse>('/api/watchlist', options),
+      jsonFetch<{ runs: AiRunView[] }>('/api/strategies/ai', options),
+    ]).then(([system, watchlist, ai]) => {
+      if (controller.signal.aborted) return;
+      if (system.status === 'fulfilled') {
+        setStatus({ ...system.value, dataSource: watchlist.status === 'fulfilled' ? watchlist.value.dataSource : system.value.dataSource });
+      }
+      if (watchlist.status === 'fulfilled') setStocks(watchlist.value.stocks);
+      if (ai.status === 'fulfilled') setAiRuns(ai.value.runs);
+      const failed = [system, watchlist].find((result) => result.status === 'rejected');
+      if (failed?.status === 'rejected') setError(errorMessage(failed.reason, '应用初始化失败'));
+      setLoading(false);
+    });
+    return () => controller.abort();
   }, []);
 
   useEffect(() => {
@@ -78,12 +91,15 @@ export default function Home() {
         `/api/stocks/search?q=${encodeURIComponent(addQuery)}`,
         { signal: controller.signal },
       ).then((data) => {
+        if (controller.signal.aborted) return;
         setSearchResults(data.stocks.filter(
           (item) => !stocks.some((stock) => stock.tsCode === item.tsCode),
         ));
       }).catch((reason) => {
-        if (!isAbortError(reason)) setToast(errorMessage(reason, '搜索失败'));
-      }).finally(() => setSearching(false));
+        if (!controller.signal.aborted && !isAbortError(reason)) setToast(errorMessage(reason, '搜索失败'));
+      }).finally(() => {
+        if (!controller.signal.aborted) setSearching(false);
+      });
     }, 320);
     return () => {
       window.clearTimeout(timer);
@@ -92,47 +108,68 @@ export default function Home() {
   }, [addQuery, modalOpen, stocks]);
 
   const loadStrategies = useCallback(async (force = false) => {
+    if (strategyLock.current) return;
+    strategyLock.current = true;
     setStrategyLoading(true);
     setError('');
-    try {
-      if (force) {
-        setAiRuns((runs) => runs.map((run) => (
-          run.status === 'not_configured'
-            ? run
-            : { ...run, status: 'running', error: null }
-        )));
-        const [publicData, aiData] = await Promise.all([
-          jsonFetch<{ status: string; strategies: PublicStrategyResult[] }>('/api/strategies/public?force=true'),
-          jsonFetch<{ runs: AiRunView[] }>('/api/strategies/ai?force=true', { method: 'POST' }),
-        ]);
-        setPublicStrategies(publicData.strategies);
-        setAiRuns(aiData.runs);
-        const succeeded = aiData.runs.filter((run) => run.status === 'succeeded').length;
-        setToast(`手动重跑完成，AI ${succeeded}/3 已完成`);
-        return;
-      }
-
-      const [publicData, aiData] = await Promise.all([
-        jsonFetch<{ status: string; strategies: PublicStrategyResult[] }>('/api/strategies/public'),
-        jsonFetch<{ runs: AiRunView[] }>('/api/strategies/ai'),
-      ]);
-      setPublicStrategies(publicData.strategies);
+    const loadRules = async () => {
+      const data = await jsonFetch<{ strategies: PublicStrategyResult[] }>(`/api/strategies/public${force ? '?force=true' : ''}`);
+      setPublicStrategies(data.strategies);
+    };
+    const loadAi = async () => {
+      const aiData = await jsonFetch<{ runs: AiRunView[] }>('/api/strategies/ai');
       setAiRuns(aiData.runs);
-      if (aiData.runs.some((run) => run.status === 'pending' || run.status === 'failed')) {
+      if (force || aiData.runs.some((run) => run.status === 'pending' || run.status === 'failed')) {
         setAiRuns((runs) => runs.map((run) => (
-          run.status === 'pending' || run.status === 'failed'
-            ? { ...run, status: 'running', error: null }
+          run.status === 'pending' || run.status === 'failed' || (force && run.status === 'succeeded')
+            ? { ...run, status: 'running', error: null, result: null, finishedAt: null }
             : run
         )));
-        const completed = await jsonFetch<{ runs: AiRunView[] }>('/api/strategies/ai', { method: 'POST' });
-        setAiRuns(completed.runs);
+        try {
+          const completed = await jsonFetch<{ runs: AiRunView[] }>(`/api/strategies/ai${force ? '?force=true' : ''}`, { method: 'POST' });
+          setAiRuns(completed.runs);
+        } catch (reason) {
+          try {
+            const current = await jsonFetch<{ runs: AiRunView[] }>('/api/strategies/ai');
+            setAiRuns(current.runs);
+          } catch {
+            setAiRuns((runs) => runs.map((run) => run.status === 'running'
+              ? { ...run, status: 'failed', error: '暂时无法确认运行结果，请检查今日策略状态', result: null }
+              : run));
+          }
+          throw reason;
+        }
       }
-    } catch (reason) {
-      setError(errorMessage(reason, '策略加载失败'));
+    };
+    try {
+      const results = await Promise.allSettled([loadRules(), loadAi()]);
+      const failures = results.filter((result) => result.status === 'rejected');
+      if (failures.length) setError(failures.map((result) => errorMessage(result.reason, '策略加载失败')).join('；'));
+      else if (force) setToast('手动重跑请求已完成，请查看各模型状态');
     } finally {
+      strategyLock.current = false;
       setStrategyLoading(false);
     }
   }, []);
+
+  const hasRunningAi = aiRuns.some((run) => run.status === 'running');
+  useEffect(() => {
+    if (!hasRunningAi || strategyLoading) return;
+    const controller = new AbortController();
+    let timer: number;
+    const poll = async () => {
+      try {
+        const data = await jsonFetch<{ runs: AiRunView[] }>('/api/strategies/ai', { signal: controller.signal });
+        if (!controller.signal.aborted) setAiRuns(data.runs);
+      } catch {
+        // A temporary connection failure should not trigger another paid run.
+      } finally {
+        if (!controller.signal.aborted) timer = window.setTimeout(poll, 5000);
+      }
+    };
+    timer = window.setTimeout(poll, 3000);
+    return () => { controller.abort(); window.clearTimeout(timer); };
+  }, [hasRunningAi, strategyLoading]);
 
   const rerunStrategies = useCallback(() => {
     const confirmed = window.confirm(
@@ -143,8 +180,8 @@ export default function Home() {
 
   const openStrategies = useCallback(() => {
     setActiveTab('strategies');
-    if (!strategyLoading && !publicStrategies.length && !aiRuns.length) void loadStrategies();
-  }, [aiRuns.length, loadStrategies, publicStrategies.length, strategyLoading]);
+    if (!strategyLoading && !publicStrategies.length) void loadStrategies();
+  }, [loadStrategies, publicStrategies.length, strategyLoading]);
 
   const loadMarketOverview = useCallback(async (force = false) => {
     setMarketLoading(true);
@@ -183,6 +220,9 @@ export default function Home() {
   }, [loadSectorOverview, sectorLoading, sectorOverview]);
 
   async function addStock(stock: StockBasic) {
+    if (watchlistLock.current || loading) return;
+    watchlistLock.current = true;
+    setWatchlistBusy(true);
     try {
       const data = await jsonFetch<WatchlistResponse>('/api/watchlist', {
         method: 'POST',
@@ -195,10 +235,16 @@ export default function Home() {
       setSearchResults([]);
     } catch (reason) {
       setToast(errorMessage(reason, '添加失败'));
+    } finally {
+      watchlistLock.current = false;
+      setWatchlistBusy(false);
     }
   }
 
   async function removeStock(stock: WatchlistStock) {
+    if (watchlistLock.current || loading) return;
+    watchlistLock.current = true;
+    setWatchlistBusy(true);
     try {
       const data = await jsonFetch<WatchlistResponse>(
         `/api/watchlist?tsCode=${encodeURIComponent(stock.tsCode)}`,
@@ -208,10 +254,15 @@ export default function Home() {
       setToast(`已将 ${stock.name} 移出自选`);
     } catch (reason) {
       setToast(errorMessage(reason, '移除失败'));
+    } finally {
+      watchlistLock.current = false;
+      setWatchlistBusy(false);
     }
   }
 
   async function refreshData() {
+    if (watchlistLock.current || loading) return;
+    watchlistLock.current = true;
     setLoading(true);
     setError('');
     try {
@@ -220,16 +271,24 @@ export default function Home() {
     } catch (reason) {
       setError(errorMessage(reason, '刷新失败'));
     } finally {
+      watchlistLock.current = false;
       setLoading(false);
     }
   }
 
   function updateAddQuery(value: string) {
     setAddQuery(value);
-    if (!value.trim()) setSearchResults([]);
+    setSearchResults([]);
+    setSearching(Boolean(value.trim()));
   }
 
-  const tradeDate = stocks.find((stock) => stock.quote)?.quote?.tradeDate ?? marketOverview?.tradeDate ?? sectorOverview?.tradeDate ?? null;
+  const tradeDate = activeTab === 'market' ? marketOverview?.tradeDate
+    : activeTab === 'sectors' ? sectorOverview?.tradeDate
+      : activeTab === 'strategies' ? publicStrategies[0]?.tradeDate
+        : stocks.reduce<string | null>((latest, stock) => {
+          const date = stock.quote?.tradeDate;
+          return date && (!latest || date > latest) ? date : latest;
+        }, null);
   const completedAiCount = aiRuns.filter((run) => run.status === 'succeeded').length;
   const missingAiCount = status
     ? AI_PROVIDERS.filter((provider) => !status.providers[provider]).length
@@ -244,7 +303,7 @@ export default function Home() {
       <AppHeader
         activeTab={activeTab}
         status={status}
-        tradeDate={tradeDate}
+        tradeDate={tradeDate ?? null}
         onOpenWatchlist={() => setActiveTab('watchlist')}
         onOpenStrategies={openStrategies}
         onOpenMarket={openMarket}
@@ -260,7 +319,7 @@ export default function Home() {
           today={today}
           stocks={stocks}
           query={query}
-          loading={loading}
+          loading={loading || watchlistBusy}
           missingAiCount={missingAiCount}
           completedAiCount={completedAiCount}
           onQueryChange={setQuery}
@@ -300,10 +359,11 @@ export default function Home() {
         <AddStockModal
           query={addQuery}
           searching={searching}
+          adding={watchlistBusy}
           results={searchResults}
           onQueryChange={updateAddQuery}
           onAdd={(stock) => void addStock(stock)}
-          onClose={() => setModalOpen(false)}
+          onClose={() => { setModalOpen(false); updateAddQuery(''); }}
         />
       )}
 

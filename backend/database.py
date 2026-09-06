@@ -4,8 +4,9 @@ import json
 import sqlite3
 import threading
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Iterator
+from uuid import uuid4
 
 from .config import CHINA_TZ, DATABASE_PATH
 
@@ -104,6 +105,7 @@ SCHEMA = [
 ]
 
 _write_lock = threading.RLock()
+AI_RUN_LEASE_SECONDS = 180
 
 
 def now_iso() -> str:
@@ -131,28 +133,49 @@ def connection() -> Iterator[sqlite3.Connection]:
 def initialize() -> None:
     with _write_lock, connection() as db:
         db.execute("PRAGMA journal_mode = WAL")
+        db.execute("BEGIN IMMEDIATE")
+        new_watchlist = not db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'watchlist'"
+        ).fetchone()
         for statement in SCHEMA:
             db.execute(statement)
         quote_columns = {str(row["name"]) for row in db.execute("PRAGMA table_info(quote_snapshots)").fetchall()}
         if "volume_ratio" not in quote_columns:
             db.execute("ALTER TABLE quote_snapshots ADD COLUMN volume_ratio REAL")
+        ai_columns = {str(row["name"]) for row in db.execute("PRAGMA table_info(ai_runs)")}
+        for column in ("prompt_version", "run_token"):
+            if column not in ai_columns:
+                db.execute(f"ALTER TABLE ai_runs ADD COLUMN {column} TEXT")
+        db.execute(
+            """UPDATE ai_runs SET prompt_version = (
+                SELECT value FROM app_meta
+                WHERE key LIKE 'ai_prompt:' || ai_runs.provider || ':' || ai_runs.run_date || ':v%'
+                ORDER BY updated_at DESC LIMIT 1
+            ) WHERE prompt_version IS NULL"""
+        )
         timestamp = now_iso()
+        if not db.execute("SELECT 1 FROM app_meta WHERE key = 'quote_volume_unit'").fetchone():
+            db.execute("UPDATE quote_snapshots SET vol = vol * 100 WHERE source LIKE 'AKShare%'")
+            db.execute(
+                "INSERT INTO app_meta (key, value, updated_at) VALUES ('quote_volume_unit', 'shares', ?)",
+                (timestamp,),
+            )
         db.executemany(
             """INSERT INTO stock_basics
             (ts_code, symbol, name, area, industry, market, exchange, list_date, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)
             ON CONFLICT(ts_code) DO UPDATE SET
-              name = excluded.name,
               area = COALESCE(stock_basics.area, excluded.area),
               industry = COALESCE(stock_basics.industry, excluded.industry),
               market = COALESCE(stock_basics.market, excluded.market),
               updated_at = excluded.updated_at""",
             [(*row, timestamp) for row in SEED_STOCKS],
         )
-        db.executemany(
-            "INSERT OR IGNORE INTO watchlist (ts_code, position_weight, added_at) VALUES (?, 0, ?)",
-            [(code, timestamp) for code in DEFAULT_WATCHLIST],
-        )
+        if new_watchlist:
+            db.executemany(
+                "INSERT INTO watchlist (ts_code, position_weight, added_at) VALUES (?, 0, ?)",
+                [(code, timestamp) for code in DEFAULT_WATCHLIST],
+            )
         db.execute("PRAGMA optimize")
 
 
@@ -227,7 +250,11 @@ def upsert_quotes(quotes: list[dict[str, Any]]) -> None:
               volume_ratio = excluded.volume_ratio, amplitude = excluded.amplitude,
               pe_ttm = excluded.pe_ttm, pb = excluded.pb,
               total_mv = excluded.total_mv, float_mv = excluded.float_mv,
-              source = excluded.source, fetched_at = excluded.fetched_at""",
+              source = excluded.source, fetched_at = excluded.fetched_at
+            WHERE excluded.trade_date > quote_snapshots.trade_date
+               OR (excluded.trade_date = quote_snapshots.trade_date
+                   AND excluded.fetched_at >= quote_snapshots.fetched_at
+                   AND NOT (excluded.source = 'BaoStock' AND quote_snapshots.source != 'BaoStock'))""",
             rows,
         )
 
@@ -341,7 +368,8 @@ def save_strategy_run(run_date: str, trade_date: str, result: list[dict[str, Any
 def read_ai_run(provider: str, run_date: str) -> dict[str, Any] | None:
     with connection() as db:
         row = db.execute(
-            """SELECT provider, model, status, result_json AS resultJson, error,
+            """SELECT provider, model, status, prompt_version AS promptVersion, started_at AS startedAt,
+            result_json AS resultJson, error,
             finished_at AS finishedAt FROM ai_runs WHERE run_date = ? AND provider = ?""",
             (run_date, provider),
         ).fetchone()
@@ -349,25 +377,45 @@ def read_ai_run(provider: str, run_date: str) -> dict[str, Any] | None:
         return None
     result = dict(row)
     result["result"] = json.loads(result.pop("resultJson")) if result["resultJson"] else None
+    if result["status"] == "running" and result["startedAt"] <= _ai_lease_cutoff():
+        result.update(status="failed", error="上次模型运行已中断或超时，请重试", result=None)
     return result
 
 
-def start_ai_run(provider: str, model: str, run_date: str) -> None:
+def _ai_lease_cutoff() -> str:
+    return (datetime.now(CHINA_TZ) - timedelta(seconds=AI_RUN_LEASE_SECONDS)).isoformat(timespec="seconds")
+
+
+def start_ai_run(provider: str, model: str, run_date: str, prompt_version: str, force: bool = False) -> str | None:
+    """Atomically claim a run across requests/processes; never replace an active lease."""
+    token = uuid4().hex
     with _write_lock, connection() as db:
+        db.execute("BEGIN IMMEDIATE")
+        existing = db.execute(
+            "SELECT * FROM ai_runs WHERE run_date = ? AND provider = ?", (run_date, provider)
+        ).fetchone()
+        if existing:
+            if existing["status"] == "running" and existing["started_at"] > _ai_lease_cutoff():
+                return None
+            if (not force and existing["status"] == "succeeded"
+                    and existing["model"] == model and existing["prompt_version"] == prompt_version):
+                return None
         db.execute(
-            """INSERT INTO ai_runs (run_date, provider, model, status, started_at)
-            VALUES (?, ?, ?, 'running', ?)
+            """INSERT INTO ai_runs (run_date, provider, model, status, started_at, prompt_version, run_token)
+            VALUES (?, ?, ?, 'running', ?, ?, ?)
             ON CONFLICT(run_date, provider) DO UPDATE SET model = excluded.model, status = 'running',
-            result_json = NULL, error = NULL, started_at = excluded.started_at, finished_at = NULL""",
-            (run_date, provider, model, now_iso()),
+            result_json = NULL, error = NULL, started_at = excluded.started_at, finished_at = NULL,
+            prompt_version = excluded.prompt_version, run_token = excluded.run_token""",
+            (run_date, provider, model, now_iso(), prompt_version, token),
         )
+    return token
 
 
-def finish_ai_run(provider: str, run_date: str, result: dict[str, Any] | None, error: str | None) -> None:
+def finish_ai_run(provider: str, run_date: str, result: dict[str, Any] | None, error: str | None, token: str) -> None:
     with _write_lock, connection() as db:
         db.execute(
             """UPDATE ai_runs SET status = ?, result_json = ?, error = ?, finished_at = ?
-            WHERE run_date = ? AND provider = ?""",
+            WHERE run_date = ? AND provider = ? AND run_token = ?""",
             (
                 "succeeded" if result else "failed",
                 json.dumps(result, ensure_ascii=False) if result else None,
@@ -375,5 +423,6 @@ def finish_ai_run(provider: str, run_date: str, result: dict[str, Any] | None, e
                 now_iso(),
                 run_date,
                 provider,
+                token,
             ),
         )

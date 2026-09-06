@@ -21,10 +21,10 @@ function findPython() {
     'python3',
   ].filter(Boolean);
   for (const candidate of candidates) {
-    const result = spawnSync(candidate, ['--version'], { encoding: 'utf8' });
+    const result = spawnSync(candidate, ['-c', 'import sys; sys.exit(not ((3, 11) <= sys.version_info[:2] <= (3, 13)))']);
     if (result.status === 0) return candidate;
   }
-  throw new Error('没有找到 Python 3.11 或更高版本');
+  throw new Error('没有找到兼容的 Python 3.11～3.13，请设置 STOCK_PYTHON');
 }
 
 if (!existsSync(venvPython)) {

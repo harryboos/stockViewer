@@ -129,6 +129,8 @@ class TencentClient:
             time.sleep(0.06)
         if not rows:
             raise RuntimeError("腾讯 A 股排行没有返回有效数据")
+        if total is not None and len(rows) < total:
+            raise RuntimeError("腾讯 A 股排行返回了不完整数据，无法汇总全市场资金流")
         return rows[:total] if total is not None else rows
 
     @staticmethod
@@ -196,7 +198,7 @@ class TencentClient:
             amount = TencentClient._number(values[3])
             if amount is not None and amount >= 0:
                 result.append((f"{values[0][:2]}:{values[0][2:]}", amount))
-        return result
+        return sorted(result, key=lambda point: point[0])
 
     def _index_days(self, code: str) -> list[dict[str, Any]]:
         payload = self._request_json(
@@ -228,13 +230,14 @@ class TencentClient:
         if previous_date is None:
             raise RuntimeError("腾讯沪深指数分时历史缺少前一交易日")
 
-        latest_times: list[str] = []
+        available_times: list[set[str]] = []
         for days in by_index.values():
-            available = [minute for minute, _ in days[trade_date] if minute <= cutoff_time]
-            if not available:
-                raise RuntimeError("腾讯沪深指数在指定时点没有当前交易日数据")
-            latest_times.append(max(available))
-        effective_time = min(latest_times)
+            for comparison_date in (trade_date, previous_date):
+                available_times.append({minute for minute, _ in days[comparison_date] if minute <= cutoff_time})
+        common_times = set.intersection(*available_times)
+        if not common_times:
+            raise RuntimeError("腾讯沪深指数没有共同对比时点")
+        effective_time = max(common_times)
 
         current_turnover = 0.0
         previous_turnover = 0.0

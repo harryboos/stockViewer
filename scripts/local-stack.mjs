@@ -13,12 +13,13 @@ if (!existsSync(python)) {
 }
 
 const backendPort = process.env.STOCK_BACKEND_PORT || '8000';
+const stackEnv = { ...process.env, STOCK_BACKEND_URL: process.env.STOCK_BACKEND_URL?.trim() || `http://127.0.0.1:${backendPort}` };
 const backend = spawn(
   python,
   ['-m', 'uvicorn', 'backend.main:app', '--host', '127.0.0.1', '--port', backendPort],
   { cwd: root, stdio: 'inherit', env: { ...process.env, PYTHONUNBUFFERED: '1' } },
 );
-const frontend = spawn(vinext, [mode], { cwd: root, stdio: 'inherit', env: process.env });
+const frontend = spawn(vinext, [mode], { cwd: root, stdio: 'inherit', env: stackEnv });
 const children = [backend, frontend];
 let stopping = false;
 
@@ -31,6 +32,11 @@ function stop(signal = 'SIGTERM') {
 }
 
 for (const child of children) {
+  child.on('error', (error) => {
+    process.stderr.write(`启动失败：${error.message}\n`);
+    process.exitCode = 1;
+    stop();
+  });
   child.on('exit', (code, signal) => {
     if (!stopping) {
       stop();
