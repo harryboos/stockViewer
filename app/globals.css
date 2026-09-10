@@ -10,6 +10,69 @@
   --orange: #e96642;
 }
 
+/* Concept research shares the market page palette while keeping source text readable. */
+.concept-ai-section { margin: 24px 0; padding: 26px; border: 1px solid #cbded1; border-radius: 20px; background: #edf4ee; }
+.concept-ai-heading { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+.concept-ai-heading h2 { margin: 0; font-size: clamp(22px, 2.5vw, 28px); letter-spacing: -.03em; }
+.concept-ai-heading > div > p:last-child { margin: 8px 0 0; color: #586c5e; font-size: 14px; line-height: 1.7; }
+.concept-ai-generate { flex-shrink: 0; border: 0; border-radius: 10px; padding: 13px 18px; background: var(--green); color: #fff; font-size: 14px; font-weight: 650; cursor: pointer; }
+.concept-ai-generate:hover { background: #145c3c; }
+.concept-ai-generate:disabled { opacity: .55; cursor: default; }
+.concept-ai-section button:focus-visible, .concept-ai-section a:focus-visible { outline: 3px solid #b27d2f; outline-offset: 3px; }
+.concept-ai-state { margin: 22px 0 0; padding: 22px; border: 1px dashed #b8cfbf; border-radius: 12px; background: #f8fbf8; font-size: 14px; line-height: 1.8; color: #536559; }
+.concept-ai-state strong { color: var(--ink); font-size: 16px; }
+.concept-ai-state p { margin: 6px 0 0; max-width: 720px; }
+.concept-ai-state button { margin-top: 12px; }
+.concept-ai-progress { display: flex; align-items: center; gap: 18px; }
+.concept-ai-progress .loading-ring { flex: 0 0 26px; width: 26px; height: 26px; margin: 0; }
+.concept-ai-error { padding: 14px 16px; border-radius: 10px; background: #fff0e8; color: #984930; font-size: 14px; line-height: 1.7; }
+.concept-ai-error button { border: 0; background: none; color: inherit; text-decoration: underline; cursor: pointer; }
+.concept-ai-summary { margin: 22px 0 18px; border-left: 3px solid #568c67; padding-left: 15px; }
+.concept-ai-summary p { font-size: 15px; line-height: 1.85; margin: 0 0 8px; }
+.concept-ai-summary > span { color: #5c7062; font-size: 12px; line-height: 1.8; }
+.concept-ai-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: start; gap: 14px; }
+.concept-ai-card { min-width: 0; padding: 20px; border: 1px solid #dae5dc; border-radius: 14px; background: #fff; overflow-wrap: anywhere; }
+.concept-ai-card-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.concept-ai-rank { color: #71907b; font: 500 24px/1 Georgia, serif; }
+.concept-ai-card-heading h3 { margin: 4px 0 0; font-size: 21px; }
+.concept-ai-card-heading small { display: block; color: #708075; font-size: 11px; }
+.concept-ai-move { margin-left: auto; text-align: right; }
+.concept-ai-move strong { display: block; margin-top: 3px; font-size: 18px; font-variant-numeric: tabular-nums; }
+.concept-ai-reason { margin: 17px 0; color: #4d5d52; font-size: 14px; line-height: 1.85; }
+.concept-ai-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 0; padding: 14px; gap: 15px 12px; border-radius: 10px; background: #f5f8f4; }
+.concept-ai-metrics dt { margin: 0 0 5px; font-size: 12px; color: #68796c; }
+.concept-ai-metrics dd { margin: 0; font-size: 16px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.concept-ai-card h4 { font-size: 16px; margin: 22px 0 8px; }
+.concept-ai-card h4 > span { color: #7b887e; font-size: 11px; font-weight: 400; margin-left: 5px; }
+.concept-ai-stock { border-bottom: 1px solid #edf0eb; padding: 12px 0; }
+.concept-ai-stock-quote { display: flex; justify-content: space-between; gap: 10px; align-items: center; font-size: 15px; }
+.concept-ai-stock-quote small { display: block; margin-top: 4px; color: #718078; font-size: 12px; }
+.concept-ai-stock > span { display: block; color: #718078; font-size: 12px; line-height: 1.7; margin: 7px 0 4px; }
+.concept-ai-stock p { margin: 0; color: #526258; font-size: 13px; line-height: 1.8; }
+.concept-ai-driver { padding: 12px 0; }
+.concept-ai-driver > div { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; }
+.concept-ai-driver strong { font-size: 14px; }
+.concept-ai-evidence { flex-shrink: 0; padding: 3px 6px; border-radius: 4px; color: #276047; background: #eaf3ed; font-size: 11px; }
+.concept-ai-evidence.news { color: #456382; background: #eef3f9; }
+.concept-ai-evidence.hypothesis { color: #94642b; background: #faf0df; }
+.concept-ai-driver p { color: #53645a; margin: 8px 0; font-size: 14px; line-height: 1.85; }
+.concept-ai-driver a { display: block; margin-top: 9px; color: #286a48; font-size: 12px; line-height: 1.8; text-underline-offset: 3px; }
+.concept-ai-driver a small { display: block; color: #7c887f; font-size: 11px; }
+.concept-ai-risk { margin: 14px 0 0; padding: 13px; border-radius: 8px; background: #faf5ee; color: #806249; font-size: 13px; line-height: 1.8; }
+.concept-ai-risk strong { display: block; margin-bottom: 4px; }
+.concept-ai-scope, .concept-ai-data-note { color: #6e7b71; font-size: 12px; line-height: 1.85; margin: 16px 0 0; }
+.concept-ai-data-note { color: #8a704c; }
+.concept-ai-provider { margin: 16px 0 0; color: #6e7b71; font-size: 12px; line-height: 1.8; }
+@media (max-width: 1100px) { .concept-ai-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 740px) {
+  .concept-ai-section { padding: 18px 14px; border-radius: 14px; }
+  .concept-ai-heading { align-items: stretch; flex-direction: column; gap: 14px; }
+  .concept-ai-generate { align-self: flex-start; }
+  .concept-ai-grid { grid-template-columns: minmax(0, 1fr); }
+  .concept-ai-card { padding: 18px; }
+  .concept-ai-state { padding: 16px; }
+}
+
 * { box-sizing: border-box; }
 html { background: var(--paper); }
 body { margin: 0; background: var(--paper); color: var(--ink); font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; }

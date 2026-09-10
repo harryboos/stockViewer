@@ -197,11 +197,14 @@ async def _post_json(url: str, headers: dict[str, str], payload: dict[str, Any])
         raise RuntimeError("模型接口返回了无法解析的数据") from error
 
 
-async def _call_compatible(provider: Provider, prompt: str, model: str, key: str) -> dict[str, Any]:
+async def _call_compatible(
+    provider: Provider, prompt: str, model: str, key: str,
+    *, system_instruction: str = SHARED_SYSTEM_INSTRUCTION,
+) -> dict[str, Any]:
     request: dict[str, Any] = {
         "model": model,
         "messages": [
-            {"role": "system", "content": SHARED_SYSTEM_INSTRUCTION},
+            {"role": "system", "content": system_instruction},
             {"role": "user", "content": prompt},
         ],
         "response_format": {"type": "json_object"},

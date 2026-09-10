@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from . import database
 from .ai import get_daily_ai_runs, provider_status, run_daily_ai
 from .config import SCHEDULER
+from .concept_ai import get_concept_run, start_concept_run
 from .data_sources import market_data
 from .strategies import calculate_public_strategies
 
@@ -175,6 +176,20 @@ async def public_strategies(force: bool = Query(False)) -> dict:
 @app.get("/api/strategies/ai")
 def ai_strategies() -> dict:
     return get_daily_ai_runs()
+
+
+@app.get("/api/market/concepts/ai")
+def concept_recommendations() -> dict:
+    return get_concept_run()
+
+
+@app.post("/api/market/concepts/ai")
+async def generate_concept_recommendations(
+    force: bool = Query(False),
+    x_daily_run_secret: str | None = Header(None),
+) -> dict:
+    _authorize_daily(x_daily_run_secret)
+    return await start_concept_run(force)
 
 
 @app.post("/api/strategies/ai")

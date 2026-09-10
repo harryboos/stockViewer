@@ -2,6 +2,8 @@
 
 import { useState } from 'react';
 
+import { ConceptRecommendations } from '@/components/concept-recommendations';
+
 import { shortTradeDate } from '@/lib/format';
 import type { SectorBoard, SectorOverview } from '@/lib/types';
 
@@ -139,6 +141,7 @@ export function SectorConceptView({ today, data, loading, onRefresh }: SectorCon
   if (!data && loading) {
     return (
       <section className="content market-page page-enter">
+        <ConceptRecommendations />
         <div className="market-loading"><span className="loading-ring" /><strong>正在扫描行业与概念板块</strong><p>合并板块强度、成交额、涨跌广度、资金流和龙头股</p></div>
       </section>
     );
@@ -147,6 +150,7 @@ export function SectorConceptView({ today, data, loading, onRefresh }: SectorCon
   if (!data) {
     return (
       <section className="content market-page page-enter">
+        <ConceptRecommendations />
         <div className="market-loading"><strong>板块概念数据暂未加载</strong><button className="refresh-button" onClick={onRefresh}>重新加载</button></div>
       </section>
     );
@@ -173,6 +177,8 @@ export function SectorConceptView({ today, data, loading, onRefresh }: SectorCon
         <article className="market-kpi"><span className="market-kpi-icon">强</span><div><small>强度冠军</small><strong className="up-text">{topBoard?.name ?? '—'}</strong><p>{topBoard ? `${topBoard.kind === 'industry' ? '行业' : '概念'} · ${formatPct(topBoard.pctChg)}` : '板块强度暂缺'}</p></div></article>
         <article className="market-kpi"><span className="market-kpi-icon">资</span><div><small>资金冠军</small><strong className={(topFundBoard?.mainNetInflow ?? 0) >= 0 ? 'up-text' : 'down-text'}>{topFundBoard?.name ?? '—'}</strong><p>{topFundBoard ? `主力净流入 ${formatAmount(topFundBoard.mainNetInflow)}` : '板块资金流暂缺'}</p></div></article>
       </div>
+
+      <ConceptRecommendations />
 
       <div className="sector-ranking-grid">
         <BoardRanking title="今日行业强度榜" eyebrow="行业轮动" boards={data.industryBoards} />

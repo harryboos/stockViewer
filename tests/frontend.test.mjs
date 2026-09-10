@@ -3,12 +3,15 @@ import { after, before, test } from 'node:test';
 import { resolve } from 'node:path';
 import { createServer } from 'vite';
 import { NextRequest } from 'next/server.js';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 
 let server;
 let summary;
 let watchlist;
 let client;
 let backend;
+let concepts;
 
 before(async () => {
   server = await createServer({
@@ -17,12 +20,14 @@ before(async () => {
     resolve: { alias: { '@': resolve(import.meta.dirname, '..') } },
     appType: 'custom',
     logLevel: 'error',
+    oxc: { jsx: { runtime: 'automatic' } },
   });
-  [summary, watchlist, client, backend] = await Promise.all([
+  [summary, watchlist, client, backend, concepts] = await Promise.all([
     server.ssrLoadModule('/lib/strategy-summary.ts'),
     server.ssrLoadModule('/lib/watchlist-summary.ts'),
     server.ssrLoadModule('/lib/client-api.ts'),
     server.ssrLoadModule('/lib/backend.ts'),
+    server.ssrLoadModule('/components/concept-recommendations.tsx'),
   ]);
 });
 
@@ -115,4 +120,46 @@ test('proxy treats a malformed successful upstream response as an error', async 
   t.mock.method(globalThis, 'fetch', async () => new Response('<html>failure</html>'));
   const response = await backend.forwardToBackend(new NextRequest('http://localhost:3000/api/system'), '/api/system');
   assert.equal(response.status, 502);
+});
+
+const conceptResearch = {
+  summary: '测试概念近期走势保持相对强势。', tradeDate: '20260911', dataAsOf: '2026-09-11T14:00:00+08:00',
+  scope: '最多8个活跃概念候选', warnings: [], concepts: [{
+    code: 'BK1001', name: '测试概念', pctChg: 2.5, change5d: 6.2, change10d: null, amount: 120000000,
+    mainNetInflow: null, breadth: 75, upCount: 3, downCount: 1, reason: '广度与动量共同走强。', risk: '持续性待观察。',
+    warnings: ['近10个交易日历史不足'], stocks: [{
+      code: '600001', name: '测试强势股', price: 12.5, pctChg: 5, amount: 100000000, turnoverRate: null, reason: '成交活跃。',
+    }], drivers: [{ kind: 'news', title: '产业资讯', explanation: '仅作资讯线索。', sources: [{
+      id: 'news:1', title: '产业新进展', url: 'https://finance.eastmoney.com/a/123.html', source: '东方财富',
+      publishedAt: '2026-09-11T10:00:00+08:00', excerpt: '资讯摘要',
+    }] }, { kind: 'hypothesis', title: '待验证因素', explanation: '缺少明确证据。', sources: [] }],
+  }],
+};
+
+test('concept cards render sourced data, missing values and labelled hypotheses', () => {
+  const html = renderToStaticMarkup(createElement(concepts.ConceptResearchCards, { research: conceptResearch, today: '2026-09-11' }));
+  for (const value of ['今日行情', '+6.20%', '测试强势股', '¥12.50', '1.20 亿', '资讯线索', '待验证推测', '产业新进展']) {
+    assert.ok(html.includes(value), value);
+  }
+  assert.match(html, /近 10 日<\/dt><dd class="">—/);
+  assert.match(html, /主力净流入<\/dt><dd class="">—/);
+  assert.match(html, /href="https:\/\/finance.eastmoney.com\/a\/123.html"/);
+});
+
+test('concept cards label an earlier session explicitly instead of calling it today', () => {
+  const html = renderToStaticMarkup(createElement(concepts.ConceptResearchCards, { research: conceptResearch, today: '2026-09-12' }));
+  assert.ok(html.includes('最近交易日行情'));
+  assert.ok(html.includes('2026-09-11'));
+  assert.ok(!html.includes('今日行情'));
+  assert.ok(!html.includes('今日成交额'));
+});
+
+test('concept route blocks cross-site generation before contacting the backend', async (t) => {
+  const fetch = t.mock.method(globalThis, 'fetch', async () => { throw new Error('must not run'); });
+  const route = await server.ssrLoadModule('/app/api/market/concepts/ai/route.ts');
+  const response = await route.POST(new NextRequest('http://localhost:3000/api/market/concepts/ai?force=true', {
+    method: 'POST', headers: { origin: 'https://untrusted.test', 'sec-fetch-site': 'cross-site' },
+  }));
+  assert.equal(response.status, 403);
+  assert.equal(fetch.mock.callCount(), 0);
 });
