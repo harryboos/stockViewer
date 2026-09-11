@@ -19,8 +19,10 @@ export type RecommendedConcept = {
   upCount: number;
   downCount: number;
   mainNetInflow: number | null;
-  change5d: number;
+  change5d: number | null;
   change10d: number | null;
+  historyAsOf: string | null;
+  strengthStatus: 'recent_strength' | 'today_active';
   reason: string;
   risk: string;
   warnings: string[];
@@ -30,6 +32,10 @@ export type RecommendedConcept = {
   }[];
   drivers: {
     kind: 'data' | 'news' | 'hypothesis'; title: string; explanation: string; sources: ConceptSource[];
+  }[];
+  catalysts: {
+    title: string; event: string; transmission: string; impact: string;
+    status: 'reported' | 'hypothesis'; sources: ConceptSource[];
   }[];
 };
 

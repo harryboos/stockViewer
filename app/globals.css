@@ -58,6 +58,18 @@
 .concept-ai-driver p { color: #53645a; margin: 8px 0; font-size: 14px; line-height: 1.85; }
 .concept-ai-driver a { display: block; margin-top: 9px; color: #286a48; font-size: 12px; line-height: 1.8; text-underline-offset: 3px; }
 .concept-ai-driver a small { display: block; color: #7c887f; font-size: 11px; }
+.concept-ai-trend-note { margin: -5px 0 15px; font-size: 12px; color: #8b6535; }
+.concept-ai-catalyst { padding: 15px 0; border-bottom: 1px solid var(--line); }
+.concept-ai-catalyst-title { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px; font-size: 15px; }
+.concept-ai-catalyst p { margin: 10px 0; color: #4c5e52; font-size: 14px; line-height: 1.85; }
+.concept-ai-transmission { margin: 12px 0; border-left: 3px solid #a1bea8; padding: 10px 13px; background: #f2f7f2; }
+.concept-ai-transmission small { color: #497458; font-size: 12px; font-weight: 650; }
+.concept-ai-transmission p { margin: 4px 0 0; }
+.concept-ai-source a { display: block; margin-top: 9px; color: #286a48; font-size: 12px; line-height: 1.8; text-underline-offset: 3px; }
+.concept-ai-source a small { display: block; color: #7c887f; font-size: 11px; }
+.concept-ai-source details { margin-top: 4px; color: #6b7c70; font-size: 12px; line-height: 1.8; }
+.concept-ai-source summary { cursor: pointer; }
+.concept-ai-source details p { padding: 10px; background: #f6f8f4; font-size: 12px; max-height: 240px; overflow: auto; }
 .concept-ai-risk { margin: 14px 0 0; padding: 13px; border-radius: 8px; background: #faf5ee; color: #806249; font-size: 13px; line-height: 1.8; }
 .concept-ai-risk strong { display: block; margin-bottom: 4px; }
 .concept-ai-scope, .concept-ai-data-note { color: #6e7b71; font-size: 12px; line-height: 1.85; margin: 16px 0 0; }

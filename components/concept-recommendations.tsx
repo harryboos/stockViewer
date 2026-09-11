@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 
 import { errorMessage, jsonFetch } from '@/lib/client-api';
-import type { ConceptResearch, ConceptRun } from '@/lib/concept-types';
+import type { ConceptResearch, ConceptRun, ConceptSource } from '@/lib/concept-types';
 import { shortTradeDate } from '@/lib/format';
 
 const endpoint = '/api/market/concepts/ai';
@@ -33,6 +33,17 @@ function timestamp(value: string) {
   }).format(date);
 }
 
+function SourceLinks({ sources }: { sources: ConceptSource[] }) {
+  return sources.map((source) => (
+    <div className="concept-ai-source" key={source.id}>
+      <a href={source.url} target="_blank" rel="noopener noreferrer">
+        {source.title} ↗<small>{source.source} · {timestamp(source.publishedAt)}</small>
+      </a>
+      {source.kind === 'news' && <details><summary>查看报道摘录</summary><p>{source.excerpt}</p></details>}
+    </div>
+  ));
+}
+
 export function ConceptResearchCards({ research, today }: { research: ConceptResearch; today: string }) {
   const isToday = shortTradeDate(research.tradeDate) === today;
   const sessionLabel = isToday ? '今日' : '最近交易日';
@@ -47,10 +58,11 @@ export function ConceptResearchCards({ research, today }: { research: ConceptRes
           <article className="concept-ai-card" key={concept.code}>
             <header className="concept-ai-card-heading">
               <span className="concept-ai-rank">{String(index + 1).padStart(2, '0')}</span>
-              <div><small>近期强势概念 · {concept.code}</small><h3>{concept.name}</h3></div>
+              <div><small>{concept.strengthStatus === 'recent_strength' ? '近期强势' : '当日活跃观察'} · {concept.code}</small><h3>{concept.name}</h3></div>
               <div className="concept-ai-move"><small>{sessionLabel}</small><strong className={tone(concept.pctChg)}>{percent(concept.pctChg)}</strong></div>
             </header>
             <p className="concept-ai-reason">{concept.reason}</p>
+            {concept.strengthStatus === 'today_active' && <p className="concept-ai-trend-note">近期趋势待确认 · 不等同于持续强势</p>}
             <dl className="concept-ai-metrics">
               <div><dt>近 5 日</dt><dd className={tone(concept.change5d)}>{percent(concept.change5d)}</dd></div>
               <div><dt>近 10 日</dt><dd className={tone(concept.change10d)}>{percent(concept.change10d)}</dd></div>
@@ -59,8 +71,22 @@ export function ConceptResearchCards({ research, today }: { research: ConceptRes
               <div><dt>上涨广度</dt><dd>{concept.breadth.toFixed(1)}%</dd></div>
               <div><dt>上涨 / 下跌家数</dt><dd>{concept.upCount} / {concept.downCount}</dd></div>
             </dl>
+            {concept.historyAsOf && concept.historyAsOf !== research.tradeDate && <p className="concept-ai-data-note">历史行情截至 {shortTradeDate(concept.historyAsOf)}，缺失的近期涨幅暂不展示。</p>}
+            <section className="concept-ai-catalysts" aria-label={`${concept.name}现实催化`}>
+              <h4>现实催化 · 为什么走强</h4>
+              {concept.catalysts.map((catalyst, catalystIndex) => (
+                <div className="concept-ai-catalyst" key={catalystIndex}>
+                  <div className="concept-ai-catalyst-title"><span className={`concept-ai-evidence ${catalyst.status === 'reported' ? 'news' : 'hypothesis'}`}>{catalyst.status === 'reported' ? '有报道支持' : '待验证机制'}</span><strong>{catalyst.title}</strong></div>
+                  <p>{catalyst.event}</p>
+                  <div className="concept-ai-transmission"><small>影响传导</small><p>{catalyst.transmission}</p></div>
+                  <p><b>对该概念的意义：</b>{catalyst.impact}</p>
+                  <SourceLinks sources={catalyst.sources} />
+                </div>
+              ))}
+            </section>
             <section className="concept-ai-stocks" aria-label={`${concept.name}强势股票`}>
               <h4>强势股票 <span>{sessionLabel}表现</span></h4>
+              {concept.stocks.length === 0 && <p className="concept-ai-data-note">暂无可核对的同一交易日强势股行情。</p>}
               {concept.stocks.map((stock) => (
                 <div className="concept-ai-stock" key={stock.code}>
                   <div className="concept-ai-stock-quote">
@@ -73,16 +99,12 @@ export function ConceptResearchCards({ research, today }: { research: ConceptRes
               ))}
             </section>
             <section className="concept-ai-drivers" aria-label={`${concept.name}影响因素`}>
-              <h4>为什么走强</h4>
+              <h4>行情如何验证</h4>
               {concept.drivers.map((driver, driverIndex) => (
                 <div className="concept-ai-driver" key={`${driver.kind}-${driverIndex}`}>
                   <div><span className={`concept-ai-evidence ${driver.kind}`}>{driverLabels[driver.kind]}</span><strong>{driver.title}</strong></div>
                   <p>{driver.explanation}</p>
-                  {driver.sources.map((source) => (
-                    <a key={source.id} href={source.url} target="_blank" rel="noopener noreferrer" title={source.excerpt}>
-                      {source.title} ↗<small>{source.source} · {timestamp(source.publishedAt)}</small>
-                    </a>
-                  ))}
+                  <SourceLinks sources={driver.sources} />
                 </div>
               ))}
             </section>
@@ -91,7 +113,7 @@ export function ConceptResearchCards({ research, today }: { research: ConceptRes
           </article>
         ))}
       </div>
-      <p className="concept-ai-scope">{research.scope} 近 5/10 日为交易日累计涨幅，盘中数据随行情变化；资讯线索不代表已证实的上涨原因。仅供研究参考。</p>
+      <p className="concept-ai-scope">{research.scope} 近 5/10 日为交易日累计涨幅，缺失项显示“—”。现实催化检索近 30 天新闻，事件报道与股价因果分开判断；盘后新信息不作为前一交易日上涨的原因。仅供研究参考。</p>
       {research.warnings.length > 0 && <p className="concept-ai-data-note">行情提示：{research.warnings.join('；')}</p>}
     </>
   );
@@ -167,14 +189,14 @@ export function ConceptRecommendations() {
       </div>
       <div aria-live="polite">
         {!current && !requestError && <p className="concept-ai-state">正在读取当天推荐…</p>}
-        {current?.status === 'idle' && !submitting && <div className="concept-ai-state"><strong>发现近期持续走强的方向</strong><p>点击生成，AI 将比较近 5/10 个交易日趋势，结合当日行情与近 7 天资讯，选出最多 3 个概念。当天结果会保存供再次查看。</p></div>}
-        {current?.status === 'not_configured' && <div className="concept-ai-state"><strong>尚未配置 GLM 5.3</strong><p>请在服务配置中填写 GLM 的密钥，重启服务后即可生成推荐。</p><button className="refresh-button" onClick={() => setRevision((value) => value + 1)}>重新检查</button></div>}
-        {busy && <div className="concept-ai-state concept-ai-progress"><span className="loading-ring" /><div><strong>正在核对行情、强势股与近期资讯</strong><p>分析通常需要 1–2 分钟。可以先查看下方板块榜单，返回此页会继续读取结果。</p></div></div>}
+        {current?.status === 'idle' && !submitting && <div className="concept-ai-state"><strong>发现近期走强的方向与现实原因</strong><p>点击生成，GLM 5.3 MAX 将比较可用的近 5/10 日趋势与当日行情，检索近 30 天产业、政策、天气和供需事件，选出最多 3 个概念。当天结果会保存供再次查看。</p></div>}
+        {current?.status === 'not_configured' && <div className="concept-ai-state"><strong>尚未配置 GLM 5.3 MAX</strong><p>请在服务配置中填写 GLM 的密钥，重启服务后即可生成推荐。</p><button className="refresh-button" onClick={() => setRevision((value) => value + 1)}>重新检查</button></div>}
+        {busy && <div className="concept-ai-state concept-ai-progress"><span className="loading-ring" /><div><strong>正在进行 MAX 深度分析</strong><p>正在检索相关新闻并分析影响传导，可能需要数分钟，最多等待 10 分钟。可以先查看下方板块榜单，返回此页会继续读取结果。</p></div></div>}
         {current?.status === 'failed' && <p className="concept-ai-error" role="alert">{current.error || '分析未完成，请重新生成。'}</p>}
         {requestError && <p className="concept-ai-error" role="alert">{requestError} <button onClick={() => setRevision((value) => value + 1)}>重新读取</button></p>}
       </div>
       {result && <ConceptResearchCards research={result} today={today} />}
-      <p className="concept-ai-provider">使用 GLM 5.3 分析{current?.finishedAt ? ` · 生成于 ${timestamp(current.finishedAt)}` : ''} · 点击生成才会调用 AI</p>
+      <p className="concept-ai-provider">使用 GLM 5.3 MAX 深度分析{current?.finishedAt ? ` · 完成于 ${timestamp(current.finishedAt)}` : ''} · 点击生成才会调用 AI 与联网检索</p>
     </section>
   );
 }

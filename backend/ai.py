@@ -182,8 +182,10 @@ def _normalize_result_text(raw: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
-async def _post_json(url: str, headers: dict[str, str], payload: dict[str, Any]) -> dict[str, Any]:
-    timeout = httpx.Timeout(90.0, connect=20.0)
+async def _post_json(
+    url: str, headers: dict[str, str], payload: dict[str, Any], *, timeout_seconds: float = 90.0,
+) -> dict[str, Any]:
+    timeout = httpx.Timeout(timeout_seconds, connect=20.0)
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(url, headers=headers, json=payload)
@@ -200,6 +202,8 @@ async def _post_json(url: str, headers: dict[str, str], payload: dict[str, Any])
 async def _call_compatible(
     provider: Provider, prompt: str, model: str, key: str,
     *, system_instruction: str = SHARED_SYSTEM_INSTRUCTION,
+    reasoning_effort: Literal["low", "high", "max"] | None = None,
+    timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
     request: dict[str, Any] = {
         "model": model,
@@ -212,10 +216,13 @@ async def _call_compatible(
     }
     if provider == "qwen":
         request["enable_thinking"] = False
+    if provider == "glm" and reasoning_effort:
+        request.update(thinking={"type": "enabled"}, reasoning_effort=reasoning_effort)
     payload = await _post_json(
         f"{base_url_for(provider)}/chat/completions",
         {"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
         request,
+        **({"timeout_seconds": timeout_seconds} if timeout_seconds is not None else {}),
     )
     try:
         content = payload["choices"][0]["message"]["content"]

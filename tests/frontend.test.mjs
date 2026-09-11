@@ -127,6 +127,10 @@ const conceptResearch = {
   scope: '最多8个活跃概念候选', warnings: [], concepts: [{
     code: 'BK1001', name: '测试概念', pctChg: 2.5, change5d: 6.2, change10d: null, amount: 120000000,
     mainNetInflow: null, breadth: 75, upCount: 3, downCount: 1, reason: '广度与动量共同走强。', risk: '持续性待观察。',
+    strengthStatus: 'recent_strength', historyAsOf: '20260911',
+    catalysts: [{ title: '产区天气变化', event: '气象报道出现产区天气风险。', transmission: '天气风险 → 产量预期 → 糖价 → 企业盈利',
+      impact: '需要跟踪真实减产幅度。', status: 'reported', sources: [{ id: 'weather:1', kind: 'news', title: '产区天气报道',
+        excerpt: '供核对的天气报道摘要', url: 'https://example.org/weather', source: '气象来源', publishedAt: '2026-09-10T10:00:00+08:00' }] }],
     warnings: ['近10个交易日历史不足'], stocks: [{
       code: '600001', name: '测试强势股', price: 12.5, pctChg: 5, amount: 100000000, turnoverRate: null, reason: '成交活跃。',
     }], drivers: [{ kind: 'news', title: '产业资讯', explanation: '仅作资讯线索。', sources: [{
@@ -144,6 +148,17 @@ test('concept cards render sourced data, missing values and labelled hypotheses'
   assert.match(html, /近 10 日<\/dt><dd class="">—/);
   assert.match(html, /主力净流入<\/dt><dd class="">—/);
   assert.match(html, /href="https:\/\/finance.eastmoney.com\/a\/123.html"/);
+  for (const value of ['现实催化', '影响传导', '产区天气报道', '对该概念的意义', '供核对的天气报道摘要']) assert.ok(html.includes(value));
+});
+
+test('history outages render active observation with missing returns and an empty-stock explanation', () => {
+  const research = structuredClone(conceptResearch);
+  Object.assign(research.concepts[0], { strengthStatus: 'today_active', change5d: null, change10d: null, stocks: [] });
+  const html = renderToStaticMarkup(createElement(concepts.ConceptResearchCards, { research, today: '2026-09-11' }));
+  assert.ok(html.includes('当日活跃观察'));
+  assert.ok(html.includes('近期趋势待确认'));
+  assert.ok(html.includes('暂无可核对的同一交易日强势股行情'));
+  assert.match(html, /近 5 日<\/dt><dd class="">—/);
 });
 
 test('concept cards label an earlier session explicitly instead of calling it today', () => {

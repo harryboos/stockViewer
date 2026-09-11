@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import json
 import os
 import tempfile
 import unittest
@@ -9,9 +10,11 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+import httpx
+
 from fastapi.testclient import TestClient
 
-from backend import ai, concept_ai, concept_data, database
+from backend import ai, concept_ai, concept_data, concept_news, database
 from backend.main import app
 
 
@@ -21,6 +24,7 @@ def evidence_fixture() -> dict:
                 "code": "BK1001", "name": "测试概念", "tradeDate": "20260911", "pctChg": 2.5,
                 "change5d": 7.2, "change10d": None, "amount": 120_000_000, "mainNetInflow": None,
                 "breadth": 75.0, "upCount": 3, "downCount": 1, "warnings": [],
+                "strengthStatus": "recent_strength", "historyAsOf": "20260911",
                 "stocks": [{"code": "600001", "name": "真实名称", "price": 12.5, "pctChg": 5.0,
                             "amount": 100_000_000, "turnoverRate": None, "tradeDate": "20260911"}],
                 "evidence": [{"id": "BK1001:market", "kind": "data", "title": "行情", "source": "行情源",
@@ -33,6 +37,9 @@ def result_fixture() -> dict:
     return {"summary": "根据近期动量与当日广度，候选概念保持相对强势。", "concepts": [{
         "code": "BK1001", "reason": "近期涨幅与当日广度共同支持相对强度。", "risk": "量价持续性仍需跟踪。",
         "stocks": [{"code": "600001", "reason": "当日涨幅靠前且成交活跃。"}],
+        "catalysts": [{"title": "现实催化尚待核实", "event": "尚未找到已证实的现实事件催化。",
+                       "transmission": "需核对产业订单变化是否改善收入和盈利预期。", "impact": "关注后续公告能否验证需求增长。",
+                       "status": "hypothesis", "evidenceIds": []}],
         "drivers": [{"kind": "data", "title": "广度与动量", "explanation": "多数成份股上涨，近期趋势保持正收益。",
                      "evidenceIds": ["BK1001:market"]},
                     {"kind": "hypothesis", "title": "催化待验证", "explanation": "没有足够资讯判断具体事件催化。", "evidenceIds": []}],
@@ -40,6 +47,23 @@ def result_fixture() -> dict:
 
 
 class ConceptEvidenceTests(unittest.TestCase):
+    def test_closed_history_cache_survives_outage_but_intraday_cache_does_not_become_a_close(self) -> None:
+        client = concept_data.ConceptResearchClient()
+        rows = [{"date": "20260910", "close": 100}]
+        saved = {"closed": True, "fetchedAt": "2000-01-01T12:00:00+08:00", "rows": rows}
+        with (patch.object(database, "get_meta", return_value=json.dumps(saved)),
+              patch.object(database, "china_date", return_value="2026-09-11"),
+              patch.object(client, "_json", side_effect=RuntimeError("unavailable")) as request):
+            self.assertEqual(client.daily_history("BK1001", "20260910"), rows)
+            request.assert_not_called()
+        saved["closed"] = False
+        with (patch.object(database, "get_meta", return_value=json.dumps(saved)),
+              patch.object(database, "china_date", return_value="2026-09-11"),
+              patch.object(client, "_json", side_effect=RuntimeError("unavailable")) as request):
+            with self.assertRaises(RuntimeError):
+                client.daily_history("BK1001", "20260910")
+            request.assert_called_once()
+
     def test_returns_use_trading_bars_and_never_synthesize_stale_history(self) -> None:
         dates = ["20260828", "20260831", "20260901", "20260902", "20260903", "20260904",
                  "20260907", "20260908", "20260909", "20260910", "20260911"]
@@ -64,7 +88,7 @@ class ConceptEvidenceTests(unittest.TestCase):
     def test_news_filters_irrelevant_old_and_future_articles_and_strips_markup(self) -> None:
         now = datetime.now(database.CHINA_TZ)
         good = {"code": "123", "title": "<em>机器人</em>产业新进展", "content": "&amp; 新产品", "date": now.isoformat()}
-        rows = [good, {**good, "code": "124", "date": (now - timedelta(days=8)).isoformat()},
+        rows = [good, {**good, "code": "124", "date": (now - timedelta(days=31)).isoformat()},
                 {**good, "code": "125", "date": (now + timedelta(days=1)).isoformat()},
                 {**good, "code": "126", "title": "无关新闻"}, {**good, "code": "malicious/path"}]
         client = concept_data.ConceptResearchClient()
@@ -80,6 +104,46 @@ class ConceptEvidenceTests(unittest.TestCase):
         }):
             with self.assertRaisesRegex(RuntimeError, "旧缓存"):
                 concept_data.collect_concept_evidence()
+
+    def test_history_outage_keeps_today_active_concepts_and_real_stocks(self) -> None:
+        board = {**evidence_fixture()["candidates"][0], "kind": "concept"}
+        overview = {"tradeDate": "20260911", "updatedAt": database.now_iso(), "conceptBoards": [board]}
+        with (patch.object(concept_data.market_data, "sector_overview", return_value=overview),
+              patch.object(concept_data.ConceptResearchClient, "daily_history", side_effect=RuntimeError("历史接口不可用")),
+              patch.object(concept_data.ConceptResearchClient, "strong_stocks", return_value=board["stocks"])):
+            evidence = concept_data.collect_concept_evidence()
+        self.assertEqual(len(evidence["candidates"]), 1)
+        candidate = evidence["candidates"][0]
+        self.assertEqual(candidate["strengthStatus"], "today_active")
+        self.assertIsNone(candidate["change5d"])
+        self.assertEqual(candidate["stocks"], board["stocks"])
+        self.assertIn("历史行情接口暂不可用", candidate["warnings"])
+
+    def test_negative_five_day_return_does_not_hide_positive_ten_day_trend(self) -> None:
+        board = {**evidence_fixture()["candidates"][0], "pctChg": -1}
+        bars = [{"date": f"202609{i + 1:02}", "close": close} for i, close in enumerate([100, 103, 106, 109, 111, 112, 111, 110, 110, 110, 110])]
+        with (patch.object(concept_data.market_data, "sector_overview", return_value={
+            "tradeDate": "20260911", "updatedAt": database.now_iso(), "conceptBoards": [board],
+        }), patch.object(concept_data.ConceptResearchClient, "daily_history", return_value=bars),
+              patch.object(concept_data.ConceptResearchClient, "strong_stocks", return_value=[])):
+            evidence = concept_data.collect_concept_evidence()
+        self.assertEqual(evidence["candidates"][0]["strengthStatus"], "recent_strength")
+        self.assertLess(evidence["candidates"][0]["change5d"], 0)
+        self.assertEqual(evidence["candidates"][0]["change10d"], 10)
+        raw = result_fixture()
+        raw["concepts"][0]["stocks"] = []
+        self.assertEqual(concept_ai.assemble_result(raw, evidence)["concepts"][0]["stocks"], [])
+
+    def test_reported_catalysts_require_news_not_market_or_invented_evidence(self) -> None:
+        for ids in ([], ["BK1001:market"], ["BK1001:invented"]):
+            raw = result_fixture()
+            raw["concepts"][0]["catalysts"][0].update(status="reported", evidenceIds=ids)
+            with self.subTest(ids=ids), self.assertRaisesRegex(ValueError, "现实催化"):
+                concept_ai.assemble_result(raw, evidence_fixture())
+        evidence = evidence_fixture()
+        evidence["candidates"][0]["evidence"].append({"id": "BK1001:news:1", "kind": "news", "title": "产业订单公告"})
+        raw["concepts"][0]["catalysts"][0].update(evidenceIds=["BK1001:news:1"])
+        self.assertEqual(concept_ai.assemble_result(raw, evidence)["concepts"][0]["catalysts"][0]["sources"][0]["title"], "产业订单公告")
 
     def test_assembly_uses_authoritative_prices_names_and_sources(self) -> None:
         result = concept_ai.assemble_result(result_fixture(), evidence_fixture())
@@ -123,6 +187,9 @@ class ConceptRunTests(unittest.IsolatedAsyncioTestCase):
             target.start()
             self.addCleanup(target.stop)
         database.initialize()
+        news = patch.object(concept_ai, "enrich_world_news", new_callable=AsyncMock, side_effect=lambda evidence, key: evidence)
+        news.start()
+        self.addCleanup(news.stop)
 
     async def test_read_only_and_missing_configuration_never_generate(self) -> None:
         with patch.object(ai, "_call_compatible", new_callable=AsyncMock) as call:
@@ -148,6 +215,8 @@ class ConceptRunTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(call.await_count, 1)
             self.assertEqual(call.await_args.args[0], "glm")
             self.assertEqual(call.await_args.args[2:4], ("glm-5.3", "glm-test-key"))
+            self.assertEqual(call.await_args.kwargs["reasoning_effort"], "max")
+            self.assertEqual(call.await_args.kwargs["timeout_seconds"], concept_ai.MODEL_TIMEOUT_SECONDS)
             self.assertEqual(concept_ai.get_concept_run()["model"], "glm-5.3")
             await concept_ai.start_concept_run(True)
             await asyncio.gather(*list(concept_ai._tasks))
@@ -164,6 +233,36 @@ class ConceptRunTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(run["model"], "glm-5.3")
         self.assertEqual(run["status"], "idle")
         self.assertIsNone(run["result"])
+
+    def test_previous_reasoning_cache_is_invalidated_and_max_run_keeps_its_lease(self) -> None:
+        date = database.china_date()
+        token = database.start_ai_run("concept:glm", "glm-5.3", date, "concept-v2-real-world")
+        database.finish_ai_run("concept:glm", date, {"summary": "之前的低推理档位结果"}, None, token)
+        self.assertEqual(concept_ai.get_concept_run()["status"], "idle")
+        token = database.start_ai_run("concept:glm", "glm-5.3", date, concept_ai.PROMPT_VERSION)
+        self.assertIsNotNone(token)
+        started = (datetime.now(database.CHINA_TZ) - timedelta(minutes=5)).isoformat(timespec="seconds")
+        with database.connection() as db:
+            db.execute("UPDATE ai_runs SET started_at = ? WHERE provider = 'concept:glm'", (started,))
+        self.assertEqual(concept_ai.get_concept_run()["status"], "running")
+        self.assertIsNone(database.start_ai_run("concept:glm", "glm-5.3", date, concept_ai.PROMPT_VERSION, True))
+        self.assertLess(concept_ai.MODEL_TIMEOUT_SECONDS, concept_ai.RUN_TIMEOUT_SECONDS)
+        self.assertLess(concept_ai.RUN_TIMEOUT_SECONDS, database.CONCEPT_AI_RUN_LEASE_SECONDS)
+        expired = (datetime.now(database.CHINA_TZ) - timedelta(minutes=12)).isoformat(timespec="seconds")
+        with database.connection() as db:
+            db.execute("UPDATE ai_runs SET started_at = ? WHERE provider = 'concept:glm'", (expired,))
+        self.assertEqual(concept_ai.get_concept_run()["status"], "failed")
+        self.assertIsNotNone(database.start_ai_run("concept:glm", "glm-5.3", date, concept_ai.PROMPT_VERSION))
+
+    async def test_weak_market_produces_empty_recommendations_without_a_paid_call(self) -> None:
+        evidence = {**evidence_fixture(), "candidates": []}
+        with (patch.object(concept_ai, "collect_concept_evidence", return_value=evidence),
+              patch.object(ai, "_call_compatible", new_callable=AsyncMock) as model):
+            await concept_ai.start_concept_run()
+            await asyncio.gather(*list(concept_ai._tasks))
+        model.assert_not_awaited()
+        self.assertEqual(concept_ai.get_concept_run()["status"], "succeeded")
+        self.assertEqual(concept_ai.get_concept_run()["result"]["concepts"], [])
 
     async def test_failed_evidence_skips_model_and_can_retry(self) -> None:
         with (patch.object(concept_ai, "collect_concept_evidence", side_effect=RuntimeError("暂无有效行情")),
@@ -204,3 +303,69 @@ class ConceptRunTests(unittest.IsolatedAsyncioTestCase):
             response = client.post("/api/market/concepts/ai?force=true", headers={"x-daily-run-secret": "test-secret"})
             self.assertEqual(response.json()["status"], "running")
             start.assert_awaited_once_with(True)
+
+
+class WorldNewsTests(unittest.IsolatedAsyncioTestCase):
+    def test_sugar_query_expands_to_weather_supply_and_commodity_vocabulary(self) -> None:
+        query = concept_news.search_query("制糖概念")
+        for term in ("白糖", "天气", "厄尔尼诺", "产量", "供需"):
+            self.assertIn(term, query)
+        prompt = concept_ai.build_prompt(evidence_fixture())
+        self.assertIn("这是机制示例，不是本次已发生的事实", prompt)
+        self.assertIn("盘后新变量", prompt)
+        self.assertLessEqual(len(concept_news.search_query("长概念名称" * 20)), 70)
+
+    async def test_search_request_matches_provider_contract(self) -> None:
+        requests = []
+        def reply(request):
+            requests.append(request)
+            return httpx.Response(200, json={"search_result": []})
+        client_type = httpx.AsyncClient
+        with patch.object(concept_news.httpx, "AsyncClient", side_effect=lambda **kwargs: client_type(
+            transport=httpx.MockTransport(reply), **kwargs,
+        )):
+            self.assertEqual(await concept_news.search_world_news("制糖", "BK1001", "test-key"), [])
+        request = requests[0]
+        body = json.loads(request.content)
+        self.assertTrue(str(request.url).endswith("/web_search"))
+        self.assertFalse(body["search_intent"])
+        self.assertEqual(body["search_recency_filter"], "oneMonth")
+        self.assertLessEqual(len(body["search_query"]), 70)
+
+    async def test_glm_research_uses_supported_enabled_thinking_mode(self) -> None:
+        with patch.object(ai, "_post_json", new_callable=AsyncMock, return_value={
+            "choices": [{"message": {"content": "{}"}}],
+        }) as post:
+            await ai._call_compatible("glm", "test", "glm-5.3", "test-key", reasoning_effort="max", timeout_seconds=480)
+        self.assertEqual(post.await_args.args[2]["thinking"], {"type": "enabled"})
+        self.assertEqual(post.await_args.args[2]["reasoning_effort"], "max")
+        self.assertEqual(post.await_args.kwargs["timeout_seconds"], 480)
+
+    def test_web_results_reject_unsafe_links_and_undated_old_future_articles(self) -> None:
+        now = datetime.now(database.CHINA_TZ)
+        good = {"title": "产区天气与供给", "content": "原始报道摘要", "link": "https://example.org/weather",
+                "publish_date": now.isoformat(), "media": "新闻来源"}
+        rows = [good, good, {**good, "link": "javascript:alert(1)"},
+                {**good, "link": "https://example.org/old", "publish_date": (now - timedelta(days=31)).isoformat()},
+                {**good, "link": "https://example.org/future", "publish_date": (now + timedelta(days=1)).isoformat()},
+                {**good, "link": "https://example.org/undated", "publish_date": ""}]
+        sources = concept_news.normalize_search_results({"search_result": rows}, "BK1001")
+        self.assertEqual(len(sources), 1)
+        self.assertEqual(sources[0]["url"], good["link"])
+        self.assertEqual(sources[0]["excerpt"], good["content"])
+
+    async def test_search_unavailability_uses_financial_news_fallback(self) -> None:
+        evidence = evidence_fixture()
+        source = {"id": "BK1001:news:123", "kind": "news", "title": "真实资讯"}
+        with (patch.object(concept_news, "search_world_news", side_effect=httpx.ConnectError("unavailable")),
+              patch.object(concept_news.ConceptResearchClient, "news", return_value=[source])):
+            result = await concept_news.enrich_world_news(evidence, "test-key")
+        self.assertIn(source, result["candidates"][0]["evidence"])
+        self.assertTrue(any("备用来源" in note for note in result["candidates"][0]["warnings"]))
+
+    async def test_missing_all_sources_is_explicit_and_never_fabricates_news(self) -> None:
+        with (patch.object(concept_news, "search_world_news", return_value=[]),
+              patch.object(concept_news.ConceptResearchClient, "news", return_value=[])):
+            result = await concept_news.enrich_world_news(evidence_fixture(), "test-key")
+        self.assertEqual(len(result["candidates"][0]["evidence"]), 1)
+        self.assertTrue(any("来源不足" in note for note in result["candidates"][0]["warnings"]))

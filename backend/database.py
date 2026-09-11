@@ -106,6 +106,7 @@ SCHEMA = [
 
 _write_lock = threading.RLock()
 AI_RUN_LEASE_SECONDS = 180
+CONCEPT_AI_RUN_LEASE_SECONDS = 660
 
 
 def now_iso() -> str:
@@ -377,13 +378,14 @@ def read_ai_run(provider: str, run_date: str) -> dict[str, Any] | None:
         return None
     result = dict(row)
     result["result"] = json.loads(result.pop("resultJson")) if result["resultJson"] else None
-    if result["status"] == "running" and result["startedAt"] <= _ai_lease_cutoff():
+    if result["status"] == "running" and result["startedAt"] <= _ai_lease_cutoff(provider):
         result.update(status="failed", error="上次模型运行已中断或超时，请重试", result=None)
     return result
 
 
-def _ai_lease_cutoff() -> str:
-    return (datetime.now(CHINA_TZ) - timedelta(seconds=AI_RUN_LEASE_SECONDS)).isoformat(timespec="seconds")
+def _ai_lease_cutoff(provider: str | None = None) -> str:
+    seconds = CONCEPT_AI_RUN_LEASE_SECONDS if provider == "concept:glm" else AI_RUN_LEASE_SECONDS
+    return (datetime.now(CHINA_TZ) - timedelta(seconds=seconds)).isoformat(timespec="seconds")
 
 
 def start_ai_run(provider: str, model: str, run_date: str, prompt_version: str, force: bool = False) -> str | None:
@@ -395,7 +397,7 @@ def start_ai_run(provider: str, model: str, run_date: str, prompt_version: str, 
             "SELECT * FROM ai_runs WHERE run_date = ? AND provider = ?", (run_date, provider)
         ).fetchone()
         if existing:
-            if existing["status"] == "running" and existing["started_at"] > _ai_lease_cutoff():
+            if existing["status"] == "running" and existing["started_at"] > _ai_lease_cutoff(provider):
                 return None
             if (not force and existing["status"] == "succeeded"
                     and existing["model"] == model and existing["prompt_version"] == prompt_version):

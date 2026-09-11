@@ -9,12 +9,14 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from . import ai, database
 from .concept_data import collect_concept_evidence
+from .concept_news import enrich_world_news
 
-PROMPT_VERSION = "concept-v1"
+PROMPT_VERSION = "concept-v3-glm53-max"
 PROVIDER: ai.Provider = "glm"
 MODEL = "glm-5.3"
-# Finish before the database's 180-second lease expires, including data collection.
-RUN_TIMEOUT_SECONDS = 150
+# MAX reasoning runs in the background; finish before the concept lease expires.
+MODEL_TIMEOUT_SECONDS = 480
+RUN_TIMEOUT_SECONDS = 600
 _tasks: set[asyncio.Task] = set()
 
 
@@ -34,11 +36,21 @@ class Driver(ResearchModel):
     evidenceIds: list[str] = Field(max_length=5)
 
 
+class Catalyst(ResearchModel):
+    title: str = Field(min_length=2, max_length=80)
+    event: str = Field(min_length=4, max_length=800)
+    transmission: str = Field(min_length=4, max_length=800)
+    impact: str = Field(min_length=4, max_length=600)
+    status: Literal["reported", "hypothesis"]
+    evidenceIds: list[str] = Field(max_length=5)
+
+
 class ConceptChoice(ResearchModel):
     code: str = Field(pattern=r"^BK\d+$")
     reason: str = Field(min_length=4, max_length=1000)
     risk: str = Field(min_length=4, max_length=600)
-    stocks: list[StockChoice] = Field(min_length=1, max_length=3)
+    stocks: list[StockChoice] = Field(max_length=3)
+    catalysts: list[Catalyst] = Field(min_length=1, max_length=3)
     drivers: list[Driver] = Field(min_length=1, max_length=4)
 
 
@@ -56,14 +68,25 @@ SYSTEM_INSTRUCTION = (
 
 def build_prompt(evidence: dict) -> str:
     return (
-        "推荐1至3个近期相对强势概念，按5日/10日持续性、当日涨幅、上涨广度、成交额、资金流综合比较。"
-        "每个概念选1至3只该概念候选中的强势股票，并解释理由与具体风险。"
+        "推荐1至3个值得关注的概念，优先比较近5日/10日持续性，再结合当日涨幅、上涨广度、成交额与资金流。"
+        "strengthStatus=recent_strength才表示已验证近5日或10日正收益；today_active只表示当日活跃，"
+        "历史缺失或近期回调时必须写明趋势待确认，不得把空值当0，不得声称持续上涨。"
+        "每个概念从成份候选选1至3只强势股票，解释理由与具体风险；候选stocks为空时必须输出空数组并说明数据不足。"
         "名称、行情数字和来源链接由系统填充，你只输出代码和分析文字。金额单位元，涨跌幅和广度单位%。"
         "盘中成交额不能与昨日全天直接比较并断言放量，今日与历史行情采集时刻可能略有差异。"
         "drivers解释背后影响因素：data表示行情支持的判断，须引用本概念kind=data的证据ID；"
-        "news表示近7天资讯线索，须引用本概念kind=news的证据ID；资讯仅支持线索存在，不证明涨幅由其导致；"
+        "news表示近30天资讯线索，须引用本概念kind=news的证据ID；资讯仅支持线索存在，不证明涨幅由其导致；"
         "hypothesis表示待验证推测，evidenceIds必须为空，禁止把猜测写成已发生的政策、订单、业绩事件。"
-        "每个概念至少一个data因素。没有相关资讯时，只解释量价/资金/广度结构，并明确事件催化尚待验证。"
+        "每个概念至少一个data因素，drivers负责行情验证。catalysts单独解释1至3项现实催化："
+        "event用通俗语言说清发生了什么，尽量写出时间、地区、主体；transmission写出事件到供需、价格、成本、订单或盈利预期的传导链；"
+        "impact说明对这个概念和相关公司的具体影响、受益与受损的差异以及仍需验证的一环。"
+        "不要把‘资金流入、股价上涨、市场关注’本身当作现实原因。优先寻找天气、政策、供需缺口、商品价格、地缘事件、产业订单或技术变化。"
+        "例如制糖可以研究‘天气异常/厄尔尼诺→甘蔗产量预期→糖价→制糖企业收入和利润’，"
+        "这是机制示例，不是本次已发生的事实；必须找到近期气象或供需证据才能说本轮由它驱动，不能照抄厄尔尼诺严重。"
+        "catalysts.status=reported必须引用本概念news来源ID，且事件描述应能被摘要支持；传导和股价归因仍属于分析。"
+        "找不到现实证据时使用status=hypothesis、evidenceIds=[]，明确写‘尚未找到已证实的催化’，给出需要验证的机制与资料，禁止补造事件。"
+        "不相关或只复述涨幅的搜索结果不能当作事件证据；注意检索中可能出现的反面证据。"
+        "资讯发布时间晚于行情交易日时，应标为盘后新变量，不得倒推为前一日上涨原因。"
         "不得跨概念引用证据，不得重复概念或股票（不同概念可出现同一成份股）。"
         f"输出JSON结构：{json.dumps(ResearchResult.model_json_schema(), ensure_ascii=False)}\n"
         f"以下是数据材料：{json.dumps(evidence, ensure_ascii=False)}"
@@ -84,7 +107,19 @@ def assemble_result(raw: dict, evidence: dict) -> dict:
         stock_codes = [stock.code for stock in choice.stocks]
         if len(set(stock_codes)) != len(stock_codes) or any(code not in stock_pool for code in stock_codes):
             raise ValueError("模型返回了概念成份候选外或重复的股票")
+        if stock_pool and not stock_codes:
+            raise ValueError("模型遗漏了已提供的强势股候选")
         references = {ref["id"]: ref for ref in candidate["evidence"]}
+        catalysts = []
+        for catalyst in choice.catalysts:
+            ids = catalyst.evidenceIds
+            if catalyst.status == "reported":
+                if not ids or any(ref not in references or references[ref]["kind"] != "news" for ref in ids):
+                    raise ValueError("现实催化缺少可核对的新闻或公告来源")
+            elif ids:
+                raise ValueError("待验证催化不能冒用事实来源")
+            catalysts.append({**catalyst.model_dump(exclude={"evidenceIds"}),
+                              "sources": [references[ref] for ref in dict.fromkeys(ids)]})
         drivers = []
         if not any(driver.kind == "data" for driver in choice.drivers):
             raise ValueError("概念分析缺少行情依据")
@@ -99,7 +134,7 @@ def assemble_result(raw: dict, evidence: dict) -> dict:
                             "sources": [references[ref] for ref in dict.fromkeys(ids)]})
         concepts.append({
             **{key: value for key, value in candidate.items() if key not in ("stocks", "evidence")},
-            "reason": choice.reason, "risk": choice.risk, "drivers": drivers,
+            "reason": choice.reason, "risk": choice.risk, "drivers": drivers, "catalysts": catalysts,
             "stocks": [{**stock_pool[stock.code], "reason": stock.reason} for stock in choice.stocks],
         })
     return {"summary": parsed.summary, "concepts": concepts,
@@ -127,8 +162,13 @@ async def _execute(run_date: str, key: str, token: str) -> None:
 
     async def generate() -> dict:
         evidence = await asyncio.to_thread(collect_concept_evidence)
+        if not evidence["candidates"]:
+            return {**{key: evidence[key] for key in ("tradeDate", "dataAsOf", "scope", "warnings")},
+                    "summary": "当前候选中暂无已验证的近期强势或当日上涨方向，暂不强行推荐。", "concepts": []}
+        evidence = await enrich_world_news(evidence, key)
         raw = await ai._call_compatible(PROVIDER, build_prompt(evidence), MODEL, key,
-                                        system_instruction=SYSTEM_INSTRUCTION)
+                                        system_instruction=SYSTEM_INSTRUCTION, reasoning_effort="max",
+                                        timeout_seconds=MODEL_TIMEOUT_SECONDS)
         return assemble_result(raw, evidence)
 
     try:

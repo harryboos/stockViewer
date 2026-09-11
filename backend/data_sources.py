@@ -24,7 +24,7 @@ MARKET_FUND_FLOW_TENCENT_CACHE_KEY = "market_fund_flow:tencent:v1"
 MARKET_FUND_FLOW_COMPAT_KEYS = ("market_fund_flow:v2", "market_fund_flow:v1")
 MARKET_INTRADAY_PAIR_CACHE_VERSION = "1"
 MARKET_INTRADAY_INDEX_CACHE_VERSION = "1"
-SECTOR_OVERVIEW_CACHE_VERSION = "3"
+SECTOR_OVERVIEW_CACHE_VERSION = "4"
 SECTOR_DISPLAY_LIMIT = 6
 SECTOR_TURNOVER_LIMIT = 6
 CONCEPT_EXCLUDED_MARKERS = (
@@ -1028,6 +1028,10 @@ class MarketDataService:
                 },
                 "industryBoards": industry_boards,
                 "conceptBoards": concept_boards,
+                "researchConcepts": list({board["code"]: board for board in [
+                    *category_rows.get("concept", [])[:9],
+                    *sorted(category_rows.get("concept", []), key=lambda board: board.get("amount") or 0, reverse=True)[:3],
+                ]}.values()),
                 "turnoverBoards": turnover_boards,
                 "warnings": list(dict.fromkeys(warnings)),
             }
