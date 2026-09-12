@@ -16,6 +16,7 @@ from . import database
 from .ai import get_daily_ai_runs, provider_status, run_daily_ai
 from .config import SCHEDULER
 from .concept_ai import get_concept_run, start_concept_run
+from .concept_forecast import get_forecast_run, start_forecast_run
 from .data_sources import market_data
 from .strategies import calculate_public_strategies
 
@@ -190,6 +191,20 @@ async def generate_concept_recommendations(
 ) -> dict:
     _authorize_daily(x_daily_run_secret)
     return await start_concept_run(force)
+
+
+@app.get("/api/forecast/concepts")
+def concept_forecast() -> dict:
+    return get_forecast_run()
+
+
+@app.post("/api/forecast/concepts")
+async def generate_concept_forecast(
+    force: bool = Query(False),
+    x_daily_run_secret: str | None = Header(None),
+) -> dict:
+    _authorize_daily(x_daily_run_secret)
+    return await start_forecast_run(force)
 
 
 @app.post("/api/strategies/ai")

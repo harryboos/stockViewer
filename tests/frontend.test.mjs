@@ -178,3 +178,60 @@ test('concept route blocks cross-site generation before contacting the backend',
   assert.equal(response.status, 403);
   assert.equal(fetch.mock.callCount(), 0);
 });
+
+test('forecast cards show a dated horizon, three evidence views, stocks and invalidation', async () => {
+  const { ForecastResearchCards } = await server.ssrLoadModule('/components/concept-forecast.tsx');
+  const research = structuredClone(conceptResearch);
+  research.window = { startDate: '2026-09-13', endDate: '2026-09-27', calendarDays: 15 };
+  Object.assign(research.concepts[0], {
+    thesis: '结合订单和技术走势观察半个月内的相对强势机会。', conviction: 'low',
+    confirmation: '订单确认且上涨广度扩大。', invalidation: '订单取消或价格趋势转弱。',
+    technical: { status: 'supported', summary: '技术趋势有待确认。', sources: [] },
+    fundamental: { status: 'hypothesis', summary: '盈利转化仍需验证。', sources: [] },
+    news: { status: 'supported', summary: '新闻提供产业线索。', sources: research.concepts[0].catalysts[0].sources },
+    technicalData: { lastClose: 105, ma5: null, ma10: null, ma20: null, rsi14: null, distanceTo20dHigh: null, amountRatio5d: null, historyAsOf: '20260911' },
+    fundamentalData: { coverage: 'valuation_only', sampleSize: 1, note: '未覆盖完整财报。', valuations: [
+      { code: '600001', name: '测试强势股', peDynamic: 23.5, pb: null, marketCap: 1000000000 },
+    ] },
+  });
+  const html = renderToStaticMarkup(createElement(ForecastResearchCards, { research, today: '2026-09-12' }));
+  for (const value of ['2026-09-13', '2026-09-27', '15 个自然日', '最近交易日行情', '技术面', '基本面', '时事新闻',
+    '未来半个月的影响', '订单取消', '研究把握度：较低', '测试强势股', '动态 PE 23.50', 'PB —', '产区天气报道']) {
+    assert.ok(html.includes(value), value);
+  }
+  assert.ok(!html.includes('今日行情'));
+  assert.match(html, /RSI（14 日）<\/dt><dd>—/);
+  research.concepts[0].stocks = [];
+  assert.ok(renderToStaticMarkup(createElement(ForecastResearchCards, { research, today: '2026-09-12' })).includes('暂无可核对的同一交易日强势股行情'));
+  research.concepts = [];
+  assert.ok(renderToStaticMarkup(createElement(ForecastResearchCards, { research, today: '2026-09-12' })).includes('暂不强行给出名单'));
+});
+
+test('forecast navigation is selected and its tab contains only the forecast module', async () => {
+  const { AppHeader } = await server.ssrLoadModule('/components/app-header.tsx');
+  const { ConceptForecast } = await server.ssrLoadModule('/components/concept-forecast.tsx');
+  const header = renderToStaticMarkup(createElement(AppHeader, { activeTab: 'forecast', status: null, tradeDate: null }));
+  assert.match(header, /class="nav-item active" aria-current="page">预测/);
+  const html = renderToStaticMarkup(createElement(ConceptForecast));
+  assert.equal((html.match(/<h2 /g) || []).length, 1);
+  assert.ok(html.includes('未来半个月强势概念预测'));
+  assert.ok(html.includes('GLM 5.3 MAX'));
+  assert.ok(!html.includes('近期强势概念推荐'));
+});
+
+test('forecast proxy blocks cross-site paid calls and forwards its own route', async (t) => {
+  const fetch = t.mock.method(globalThis, 'fetch', async (url, options) => {
+    assert.equal(new URL(url).pathname, '/api/forecast/concepts');
+    assert.equal(options.method, 'GET');
+    return new Response(JSON.stringify({ status: 'idle' }));
+  });
+  const route = await server.ssrLoadModule('/app/api/forecast/concepts/route.ts');
+  const response = await route.POST(new NextRequest('http://localhost:3000/api/forecast/concepts?force=true', {
+    method: 'POST', headers: { origin: 'https://untrusted.test', 'sec-fetch-site': 'cross-site' },
+  }));
+  assert.equal(response.status, 403);
+  assert.equal(fetch.mock.callCount(), 0);
+  const read = await route.GET(new NextRequest('http://localhost:3000/api/forecast/concepts'));
+  assert.equal(read.status, 200);
+  assert.equal(fetch.mock.callCount(), 1);
+});

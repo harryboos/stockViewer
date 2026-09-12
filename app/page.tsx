@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { AddStockModal } from '@/components/add-stock-modal';
 import { AppHeader } from '@/components/app-header';
+import { ConceptForecast } from '@/components/concept-forecast';
 import { MarketOverviewView } from '@/components/market-overview-view';
 import { SectorConceptView } from '@/components/sector-concept-view';
 import { StrategiesView } from '@/components/strategies-view';
@@ -24,7 +25,7 @@ import {
 } from '@/lib/types';
 
 
-type ActiveTab = 'watchlist' | 'strategies' | 'market' | 'sectors';
+type ActiveTab = 'watchlist' | 'strategies' | 'market' | 'sectors' | 'forecast';
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('watchlist');
@@ -308,6 +309,7 @@ export default function Home() {
         onOpenStrategies={openStrategies}
         onOpenMarket={openMarket}
         onOpenSectors={openSectors}
+        onOpenForecast={() => setActiveTab('forecast')}
       />
 
       {error && (
@@ -346,6 +348,8 @@ export default function Home() {
           loading={marketLoading}
           onRefresh={() => void loadMarketOverview(true)}
         />
+      ) : activeTab === 'forecast' ? (
+        <ConceptForecast />
       ) : (
         <SectorConceptView
           today={today}

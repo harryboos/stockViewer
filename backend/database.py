@@ -384,7 +384,7 @@ def read_ai_run(provider: str, run_date: str) -> dict[str, Any] | None:
 
 
 def _ai_lease_cutoff(provider: str | None = None) -> str:
-    seconds = CONCEPT_AI_RUN_LEASE_SECONDS if provider == "concept:glm" else AI_RUN_LEASE_SECONDS
+    seconds = CONCEPT_AI_RUN_LEASE_SECONDS if provider in {"concept:glm", "forecast:glm"} else AI_RUN_LEASE_SECONDS
     return (datetime.now(CHINA_TZ) - timedelta(seconds=seconds)).isoformat(timespec="seconds")
 
 

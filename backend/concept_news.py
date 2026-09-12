@@ -15,10 +15,11 @@ SEARCH_TIMEOUT_SECONDS = 10
 NEWS_BUDGET_SECONDS = 25
 
 
-def search_query(name: str) -> str:
+def search_query(name: str, *, forecast: bool = False) -> str:
     terms, topics = research_terms(name)
     # The provider caps query length at 70 characters; recency is a separate filter.
-    return f"{' '.join(terms[:3])} 近期走强 产业新闻 {topics}"[:70]
+    focus = "未来两周 业绩 订单 政策 供需 风险" if forecast else "近期走强 产业新闻"
+    return f"{' '.join(terms[:3])} {focus} {topics}"[:70]
 
 
 def normalize_search_results(payload: dict, code: str) -> list[dict]:
@@ -49,13 +50,13 @@ def normalize_search_results(payload: dict, code: str) -> list[dict]:
     return list(sources.values())[:6]
 
 
-async def search_world_news(name: str, code: str, key: str) -> list[dict]:
+async def search_world_news(name: str, code: str, key: str, *, forecast: bool = False) -> list[dict]:
     # Official Web Search API; the reasoning model remains glm-5.3.
     async with httpx.AsyncClient(timeout=httpx.Timeout(SEARCH_TIMEOUT_SECONDS, connect=4)) as client:
         response = await client.post(
             f"{ai.base_url_for('glm')}/web_search",
             headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-            json={"search_engine": "search_std", "search_query": search_query(name), "search_intent": False, "count": 6,
+            json={"search_engine": "search_std", "search_query": search_query(name, forecast=forecast), "search_intent": False, "count": 6,
                   "search_recency_filter": "oneMonth", "content_size": "high"},
         )
         response.raise_for_status()
@@ -65,7 +66,7 @@ async def search_world_news(name: str, code: str, key: str) -> list[dict]:
         return normalize_search_results(payload, code)
 
 
-async def enrich_world_news(evidence: dict, key: str) -> dict:
+async def enrich_world_news(evidence: dict, key: str, *, forecast: bool = False) -> dict:
     semaphore = asyncio.Semaphore(4)
     client = ConceptResearchClient()
 
@@ -73,7 +74,8 @@ async def enrich_world_news(evidence: dict, key: str) -> dict:
         sources = []
         async with semaphore:
             try:
-                sources = await search_world_news(candidate["name"], candidate["code"], key)
+                options = {"forecast": True} if forecast else {}
+                sources = await search_world_news(candidate["name"], candidate["code"], key, **options)
             except (httpx.HTTPError, ValueError, TypeError):
                 candidate["warnings"].append("现实事件联网检索暂不可用，已尝试财经资讯备用来源")
             if not sources:

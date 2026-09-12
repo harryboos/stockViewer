@@ -95,7 +95,7 @@ button { color: inherit; }
 .brand { border: 0; background: transparent; padding: 0; color: var(--ink); font-weight: 750; font-size: 20px; display: flex; align-items: center; gap: 10px; letter-spacing: -.02em; cursor: pointer; width: fit-content; }
 .brand em { color: var(--green); font-style: normal; font-size: 14px; margin-left: 2px; }
 .brand-mark { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 11px; color: white; font-family: serif; background: var(--green); box-shadow: inset 0 0 0 1px rgba(255,255,255,.18); }
-.main-nav { align-self: stretch; display: flex; align-items: center; gap: 34px; }
+.main-nav { align-self: stretch; display: flex; align-items: center; gap: clamp(14px, 2vw, 28px); }
 .nav-item { height: 100%; padding: 0 3px; border: 0; background: transparent; color: #7a857e; font-size: 15px; cursor: pointer; position: relative; }
 .nav-item.active { color: var(--ink); font-weight: 650; }
 .nav-item.active::after { content: ''; position: absolute; height: 3px; border-radius: 3px 3px 0 0; background: var(--green); left: 0; right: 0; bottom: 0; }
@@ -588,4 +588,55 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}
+
+/* Forecast stays a single working module; each direction has three comparable evidence views. */
+.forecast-content { padding-top: 28px; }
+.forecast-section { margin-top: 0; }
+.forecast-window { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 10px; margin-top: 24px; padding: 14px 18px; background: #173f2f; color: #e4f3e9; border-radius: 10px; font-size: 14px; line-height: 1.7; }
+.forecast-window strong { margin-left: 10px; color: #fff; font-variant-numeric: tabular-nums; }
+.forecast-results { display: grid; gap: 22px; }
+.forecast-card { padding: 24px; }
+.forecast-card .concept-ai-card-heading small, .forecast-card .concept-ai-move small { font-size: 14px; }
+.forecast-conviction { margin-left: 12px; padding: 5px 10px; border-radius: 6px; font-size: 14px; background: #eef3f9; color: #456382; }
+.forecast-conviction.low { background: #faf0df; color: #805a28; }
+.forecast-thesis { font-size: 17px; line-height: 1.9; margin: 20px 0; color: #284b39; }
+.forecast-metrics { grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 16px; }
+.forecast-metrics dt { font-size: 14px; }
+.forecast-perspectives { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 22px; margin-top: 6px; }
+.forecast-perspective { min-width: 0; }
+.forecast-perspective h4 { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.forecast-perspective > p, .forecast-conditions p { font-size: 16px; line-height: 1.85; color: #4c5e52; }
+.forecast-technical { margin: 14px 0 0; padding: 12px; background: #f5f8f4; border-radius: 8px; }
+.forecast-technical > div { margin-bottom: 10px; }
+.forecast-technical > div:last-child { margin: 0; }
+.forecast-technical dt { font-size: 14px; color: #617268; }
+.forecast-technical dd { font-size: 15px; font-variant-numeric: tabular-nums; font-weight: 600; margin: 3px 0 0; }
+.forecast-detail-grid { display: grid; grid-template-columns: 1.3fr 1fr; gap: 28px; border-top: 1px solid var(--line); margin-top: 24px; }
+.forecast-detail-grid > section { min-width: 0; }
+.forecast-card .concept-ai-catalyst p, .forecast-card .concept-ai-stock p { font-size: 16px; }
+.forecast-card .concept-ai-stock > span, .forecast-card .concept-ai-source a, .forecast-card .concept-ai-source details, .forecast-card .concept-ai-source details p { font-size: 14px; }
+.forecast-card .concept-ai-source a small, .forecast-card .concept-ai-stock-quote small, .forecast-card .concept-ai-data-note { font-size: 13px; }
+.forecast-card .concept-ai-evidence, .forecast-card h4 > span { font-size: 12px; }
+.forecast-conditions { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 22px; }
+.forecast-conditions > div { padding: 16px; background: #eff6f1; border-radius: 10px; }
+.forecast-conditions > div:last-child { background: #faf3e9; }
+.forecast-conditions h4 { margin: 0 0 8px; }
+.forecast-conditions p { margin: 0; }
+.forecast-section .concept-ai-summary > span, .forecast-section .concept-ai-provider, .forecast-section .concept-ai-scope { font-size: 13px; }
+.forecast-section .concept-ai-summary > p { font-size: 16px; }
+@media (max-width: 1100px) {
+  .forecast-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .forecast-perspectives { grid-template-columns: minmax(0, 1fr); gap: 0; }
+}
+@media (max-width: 740px) {
+  .forecast-card { padding: 18px; }
+  .forecast-detail-grid, .forecast-conditions { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .forecast-conviction { margin-left: 0; }
+}
+@media (max-width: 640px) {
+  .main-nav { height: auto; min-height: 42px; flex-wrap: wrap; }
+  .main-nav .nav-item { font-size: 14px; min-height: 42px; }
+  .forecast-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .forecast-window strong { display: block; margin-left: 0; }
 }

@@ -1,39 +1,33 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
-
-import { errorMessage, jsonFetch } from '@/lib/client-api';
-import type { ConceptResearch, ConceptRun, ConceptSource } from '@/lib/concept-types';
+import { useDailyConceptRun } from '@/lib/use-daily-concept-run';
+import type { ConceptResearch, ConceptSource } from '@/lib/concept-types';
 import { shortTradeDate } from '@/lib/format';
 
 const endpoint = '/api/market/concepts/ai';
 const driverLabels = { data: '行情依据', news: '资讯线索', hypothesis: '待验证推测' };
 
-function percent(value: number | null) {
+export function percent(value: number | null) {
   return value === null ? '—' : `${value >= 0 ? '+' : ''}${value.toFixed(2)}%`;
 }
 
-function amount(value: number | null, signed = false) {
+export function amount(value: number | null, signed = false) {
   if (value === null) return '—';
   return `${signed && value > 0 ? '+' : ''}${(value / 100_000_000).toFixed(2)} 亿`;
 }
 
-function tone(value: number | null) {
+export function tone(value: number | null) {
   return value === null || value === 0 ? '' : value > 0 ? 'up-text' : 'down-text';
 }
 
-function chinaDay() {
-  return new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
-}
-
-function timestamp(value: string) {
+export function timestamp(value: string) {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? '时间暂缺' : new Intl.DateTimeFormat('zh-CN', {
     timeZone: 'Asia/Shanghai', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false,
   }).format(date);
 }
 
-function SourceLinks({ sources }: { sources: ConceptSource[] }) {
+export function SourceLinks({ sources }: { sources: ConceptSource[] }) {
   return sources.map((source) => (
     <div className="concept-ai-source" key={source.id}>
       <a href={source.url} target="_blank" rel="noopener noreferrer">
@@ -120,64 +114,7 @@ export function ConceptResearchCards({ research, today }: { research: ConceptRes
 }
 
 export function ConceptRecommendations() {
-  const [run, setRun] = useState<ConceptRun | null>(null);
-  const [requestError, setRequestError] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
-  const [revision, setRevision] = useState(0);
-  const [today, setToday] = useState(chinaDay);
-  const submittingRef = useRef(false);
-  const requestRef = useRef<AbortController | null>(null);
-
-  useEffect(() => {
-    const timer = window.setInterval(() => setToday(chinaDay()), 60_000);
-    return () => { window.clearInterval(timer); requestRef.current?.abort(); };
-  }, []);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    async function read() {
-      try {
-        const next = await jsonFetch<ConceptRun>(endpoint, { signal: controller.signal, cache: 'no-store' });
-        if (controller.signal.aborted) return;
-        setRun(next);
-        setRequestError(null);
-        if (next.status === 'running') timer = setTimeout(read, 3000);
-      } catch (error) {
-        if (controller.signal.aborted) return;
-        setRequestError(errorMessage(error, '推荐读取失败'));
-        timer = setTimeout(read, 10_000);
-      }
-    }
-    void read();
-    return () => { controller.abort(); clearTimeout(timer); };
-  }, [revision, today]);
-
-  const current = run?.runDate === today ? run : null;
-  const result = current?.status === 'succeeded' ? current.result : null;
-  const busy = submitting || current?.status === 'running';
-
-  async function generate() {
-    if (submittingRef.current || busy) return;
-    const force = Boolean(result);
-    if (force && !window.confirm('重新分析会更新今天的推荐，并再次调用 AI。继续吗？')) return;
-    submittingRef.current = true;
-    setSubmitting(true);
-    setRequestError(null);
-    const controller = new AbortController();
-    requestRef.current = controller;
-    try {
-      const next = await jsonFetch<ConceptRun>(`${endpoint}${force ? '?force=true' : ''}`, {
-        method: 'POST', signal: controller.signal,
-      });
-      if (!controller.signal.aborted) setRun(next);
-    } catch (error) {
-      if (!controller.signal.aborted) setRequestError(errorMessage(error, '推荐生成失败'));
-    } finally {
-      submittingRef.current = false;
-      if (!controller.signal.aborted) { setSubmitting(false); setRevision((value) => value + 1); }
-    }
-  }
+  const { current, result, busy, submitting, requestError, today, generate, refresh } = useDailyConceptRun<ConceptResearch>(endpoint, '推荐');
 
   return (
     <section className="concept-ai-section" aria-labelledby="concept-ai-title" aria-busy={busy}>
@@ -190,10 +127,10 @@ export function ConceptRecommendations() {
       <div aria-live="polite">
         {!current && !requestError && <p className="concept-ai-state">正在读取当天推荐…</p>}
         {current?.status === 'idle' && !submitting && <div className="concept-ai-state"><strong>发现近期走强的方向与现实原因</strong><p>点击生成，GLM 5.3 MAX 将比较可用的近 5/10 日趋势与当日行情，检索近 30 天产业、政策、天气和供需事件，选出最多 3 个概念。当天结果会保存供再次查看。</p></div>}
-        {current?.status === 'not_configured' && <div className="concept-ai-state"><strong>尚未配置 GLM 5.3 MAX</strong><p>请在服务配置中填写 GLM 的密钥，重启服务后即可生成推荐。</p><button className="refresh-button" onClick={() => setRevision((value) => value + 1)}>重新检查</button></div>}
+        {current?.status === 'not_configured' && <div className="concept-ai-state"><strong>尚未配置 GLM 5.3 MAX</strong><p>请在服务配置中填写 GLM 的密钥，重启服务后即可生成推荐。</p><button className="refresh-button" onClick={refresh}>重新检查</button></div>}
         {busy && <div className="concept-ai-state concept-ai-progress"><span className="loading-ring" /><div><strong>正在进行 MAX 深度分析</strong><p>正在检索相关新闻并分析影响传导，可能需要数分钟，最多等待 10 分钟。可以先查看下方板块榜单，返回此页会继续读取结果。</p></div></div>}
         {current?.status === 'failed' && <p className="concept-ai-error" role="alert">{current.error || '分析未完成，请重新生成。'}</p>}
-        {requestError && <p className="concept-ai-error" role="alert">{requestError} <button onClick={() => setRevision((value) => value + 1)}>重新读取</button></p>}
+        {requestError && <p className="concept-ai-error" role="alert">{requestError} <button onClick={refresh}>重新读取</button></p>}
       </div>
       {result && <ConceptResearchCards research={result} today={today} />}
       <p className="concept-ai-provider">使用 GLM 5.3 MAX 深度分析{current?.finishedAt ? ` · 完成于 ${timestamp(current.finishedAt)}` : ''} · 点击生成才会调用 AI 与联网检索</p>

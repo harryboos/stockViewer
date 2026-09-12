@@ -131,7 +131,9 @@ class ConceptResearchClient(EastmoneyClient):
                     or amount is None or amount < 100_000_000 or quote_date != trade_date):
                 continue
             rows.append({"code": symbol, "name": name, "price": price, "pctChg": change,
-                         "amount": amount, "turnoverRate": number_or_none(raw.get("f8")), "tradeDate": quote_date})
+                         "amount": amount, "turnoverRate": number_or_none(raw.get("f8")), "tradeDate": quote_date,
+                         "peDynamic": number_or_none(raw.get("f9")), "pb": number_or_none(raw.get("f23")),
+                         "marketCap": number_or_none(raw.get("f20"))})
         unique = {row["code"]: row for row in rows}
         return sorted(unique.values(), key=lambda row: (-row["pctChg"], -row["amount"], row["code"]))[:8]
 
@@ -181,7 +183,7 @@ def recent_metrics(history: list[dict], trade_date: str) -> dict:
             "historySessions": len(bars), "historyAsOf": bars[-1]["date"] if bars else None}
 
 
-def collect_concept_evidence() -> dict:
+def collect_concept_evidence(*, forecast: bool = False) -> dict:
     overview = market_data.sector_overview(False)
     trade_date = overview["tradeDate"]
     if not str(overview.get("updatedAt") or "").startswith(database.china_date()):
@@ -196,7 +198,8 @@ def collect_concept_evidence() -> dict:
         code = board["code"]
         metrics = recent_metrics(history, trade_date)
         if metrics["change5d"] is None:
-            warnings.append("近5日趋势暂无法核验，按当日表现观察，不视为已确认的持续强势")
+            warnings.append("近5日趋势暂无法核验，预测的技术面依据不完整" if forecast else
+                            "近5日趋势暂无法核验，按当日表现观察，不视为已确认的持续强势")
         if metrics["change10d"] is None:
             warnings.append("近10日涨幅暂缺")
         if metrics["historyAsOf"] and metrics["historyAsOf"] != trade_date:
@@ -204,7 +207,7 @@ def collect_concept_evidence() -> dict:
         if not stocks:
             warnings.append("暂未取得同一交易日上涨且成交额达到1亿元的成份股行情")
         sustained = any(metrics[key] is not None and metrics[key] > 0 for key in ("change5d", "change10d"))
-        return {
+        candidate = {
             "code": code, "name": board["name"], "tradeDate": trade_date,
             "pctChg": board["pctChg"], "amount": board.get("amount"),
             "amountDelta": board.get("amountDelta"),
@@ -215,6 +218,10 @@ def collect_concept_evidence() -> dict:
                           "source": "东方财富概念板块", "publishedAt": overview["updatedAt"],
                           "url": f"https://quote.eastmoney.com/bk/90.{code}.html", "excerpt": "见本卡片行情指标与成份股快照"}],
         }
+        if forecast:
+            from .forecast_data import add_forecast_metrics
+            add_forecast_metrics(candidate, history, overview["updatedAt"])
+        return candidate
 
     def enrich(board: dict) -> dict:
         warnings = []
@@ -248,9 +255,12 @@ def collect_concept_evidence() -> dict:
             candidates.append(candidate_view(futures[future], [], [], ["扩展行情收集超时，保留已取得的板块快照"]))
     finally:
         executor.shutdown(wait=False, cancel_futures=True)
-    candidates = [row for row in candidates if row["strengthStatus"] == "recent_strength" or row["pctChg"] > 0]
+    if not forecast:
+        candidates = [row for row in candidates if row["strengthStatus"] == "recent_strength" or row["pctChg"] > 0]
     candidates.sort(key=lambda row: (row["strengthStatus"] == "recent_strength", bool(row["stocks"]),
                                      row["change5d"] if row["change5d"] is not None else row["pctChg"], row["code"]), reverse=True)
     return {"tradeDate": trade_date, "dataAsOf": overview["updatedAt"],
-            "scope": f"从概念涨幅榜与成交额榜选取{len(selected)}个活跃方向比较（非全市场穷举）。优先近5/10日正收益方向；历史缺失或短期回调时，仅将当日上涨方向列为活跃观察。",
+            "scope": (f"从概念涨幅榜与成交额榜选取{len(selected)}个活跃方向比较（非全市场穷举）。"
+                      + ("保留短期回调方向，预测的是候选间的相对强势机会。" if forecast else
+                         "优先近5/10日正收益方向；历史缺失或短期回调时，仅将当日上涨方向列为活跃观察。")),
             "warnings": overview.get("warnings", []), "candidates": candidates}
