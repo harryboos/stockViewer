@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import logging
 import os
 import secrets
 from contextlib import asynccontextmanager
@@ -17,8 +18,12 @@ from .ai import get_daily_ai_runs, provider_status, run_daily_ai
 from .config import SCHEDULER
 from .concept_ai import get_concept_run, start_concept_run
 from .concept_forecast import get_forecast_run, start_forecast_run
+from .forecast_feedback import start_feedback_refresh
+from .forecast_history import get_report, history_payload
 from .data_sources import market_data
 from .strategies import calculate_public_strategies
+
+logger = logging.getLogger(__name__)
 
 
 class WatchlistInput(BaseModel):
@@ -42,20 +47,30 @@ def _authorize_daily(supplied: str | None) -> None:
 async def run_daily_bundle() -> None:
     try:
         await asyncio.to_thread(calculate_public_strategies, False)
-    except Exception as error:
-        database.set_meta("daily_strategy_error", str(error))
+    except Exception:
+        logger.exception("每日规则策略运行失败")
     try:
         await run_daily_ai(False)
-    except Exception as error:
-        database.set_meta("daily_ai_error", str(error))
+    except Exception:
+        logger.exception("每日 AI 选股运行失败")
+
+
+async def maintain_storage() -> None:
+    try:
+        await asyncio.to_thread(database.maintain_storage)
+    except Exception:
+        logger.exception("数据库定期清理失败")
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     database.initialize()
-    scheduler: AsyncIOScheduler | None = None
+    scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
+    scheduler.add_job(maintain_storage, trigger="cron", hour=4, minute=0,
+                      id="storage-maintenance", replace_existing=True, max_instances=1, coalesce=True)
+    scheduler.add_job(start_feedback_refresh, trigger="cron", hour="16-22", minute=20,
+                      id="forecast-feedback", replace_existing=True, max_instances=1, coalesce=True)
     if SCHEDULER.enabled:
-        scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
         scheduler.add_job(
             run_daily_bundle,
             trigger="cron",
@@ -67,9 +82,11 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
             max_instances=1,
             coalesce=True,
         )
-        scheduler.start()
-    yield
-    if scheduler:
+    scheduler.start()
+    await start_feedback_refresh()
+    try:
+        yield
+    finally:
         scheduler.shutdown(wait=False)
 
 
@@ -205,6 +222,25 @@ async def generate_concept_forecast(
 ) -> dict:
     _authorize_daily(x_daily_run_secret)
     return await start_forecast_run(force)
+
+
+@app.get("/api/forecast/history")
+def forecast_history(page: int = Query(1, ge=1), page_size: int = Query(10, ge=1, le=30)) -> dict:
+    return history_payload(page, page_size)
+
+
+@app.get("/api/forecast/history/report")
+def forecast_history_report(id: int = Query(..., ge=1)) -> dict:
+    report = get_report(id)
+    if report is None:
+        raise HTTPException(status_code=404, detail="历史预测不存在")
+    return report
+
+
+@app.post("/api/forecast/history")
+async def update_forecast_feedback(x_daily_run_secret: str | None = Header(None)) -> dict:
+    _authorize_daily(x_daily_run_secret)
+    return await start_feedback_refresh()
 
 
 @app.post("/api/strategies/ai")

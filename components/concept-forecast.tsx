@@ -4,6 +4,7 @@ import { SourceLinks, amount, percent, timestamp, tone } from '@/components/conc
 import type { ForecastResearch } from '@/lib/forecast-types';
 import { shortTradeDate } from '@/lib/format';
 import { useDailyConceptRun } from '@/lib/use-daily-concept-run';
+import { ForecastHistory } from '@/components/forecast-history';
 
 const number = (value: number | null) => value === null ? '—' : value.toFixed(2);
 const perspectives = [['technical', '技术面'], ['fundamental', '基本面'], ['news', '时事新闻']] as const;
@@ -20,6 +21,7 @@ export function ForecastResearchCards({ research, today }: { research: ForecastR
         <p>{research.summary}</p>
         <span>{sessionLabel}行情 · {shortTradeDate(research.tradeDate)}　快照更新 {timestamp(research.dataAsOf)}（北京时间）</span>
       </div>
+      {research.feedbackUsed?.asOf && <p className="concept-ai-data-note">本次参考的已到期反馈：半个月 {research.feedbackUsed.sampleCounts['15'] ?? 0} 个样本 · 一个月 {research.feedbackUsed.sampleCounts['30'] ?? 0} 个样本。仅使用生成前已核对的结果。</p>}
       {research.concepts.length === 0 && <p className="concept-ai-state">当前证据不足以选出预测方向，暂不强行给出名单。可在行情或新闻更新后重新分析。</p>}
       <div className="forecast-results">
         {research.concepts.map((concept, index) => (
@@ -123,6 +125,7 @@ export function ConceptForecast() {
         {result && <ForecastResearchCards research={result} today={today} />}
         <p className="concept-ai-provider">使用 GLM 5.3 MAX 深度分析{current?.finishedAt ? ` · 完成于 ${timestamp(current.finishedAt)}` : ''} · 点击生成才会调用 AI 与联网检索</p>
       </section>
+      <ForecastHistory finishedAt={current?.finishedAt} renderResearch={research => <ForecastResearchCards research={research} today={today} />} />
     </div>
   );
 }

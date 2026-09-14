@@ -229,6 +229,7 @@ class ApiRegressionTests(unittest.TestCase):
               patch("backend.main.database.set_meta"),
               patch("backend.main._watchlist_payload", return_value={"ok": True, "stocks": []}),
               patch("backend.main.database.initialize"),
+              patch("backend.main.start_feedback_refresh", new_callable=AsyncMock),
               patch("backend.main.SCHEDULER", Mock(enabled=False)),
               TestClient(app) as client):
             response = client.post("/api/watchlist", json={"tsCode": "600519.SH"})

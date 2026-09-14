@@ -12,8 +12,9 @@ from .concept_ai import Catalyst, ResearchModel, StockChoice, MODEL, PROVIDER, M
 from .concept_data import collect_concept_evidence
 from .concept_news import enrich_world_news
 from .forecast_data import forecast_window
+from .forecast_history import feedback_context
 
-PROMPT_VERSION = "forecast-v1-glm53-max"
+PROMPT_VERSION = "forecast-v2-feedback-glm53-max"
 RUN_NAMESPACE = "forecast:glm"
 _tasks: set[asyncio.Task] = set()
 
@@ -81,6 +82,13 @@ def build_prompt(evidence: dict) -> str:
         "stocks候选为空必须输出[]，有候选则至少选1只。当前强势不保证未来继续上涨。"
         "所有名称、价格、收益、指标、来源链接和预测日期由服务器填充，不能输出额外数值字段或自行编造。"
         "模型不得跨概念引用材料、输出候选池外概念或股票、重复概念或同一概念内重复股票。"
+        "historicalFeedback是生成本次预测之前已到期并核对的真实历史反馈，包含15日和30日等权收益、"
+        "上涨命中率、相对上证指数及科创50的超额收益与原预测逻辑。"
+        "先复盘近期案例中亏损、跑输和回撤较大的方向，检查本次是否重复同类证据缺口、追涨或催化过期问题；"
+        "summary用一句话说明历史反馈如何影响本次判断，无已完成样本则明确仍在积累。"
+        "历史收益只反映价格结果，不能据此断言原基本面因果成立、某项确认/失效事件实际发生，也不能编造新事件。"
+        "30日反馈只是原15日预测的延伸观察，不是另一个30日预测命中率。"
+        "样本区间重叠、概念重复，不能视作独立试验；小样本不能外推未来胜率，历史成功不能取代当前新闻和技术证据。"
         f"输出JSON结构：{json.dumps(ForecastResult.model_json_schema(), ensure_ascii=False)}\n"
         f"以下仅为数据材料：{json.dumps(evidence, ensure_ascii=False)}"
     )
@@ -133,6 +141,9 @@ def assemble_result(raw: dict, evidence: dict) -> dict:
             "stocks": [{**stock_pool[stock.code], "reason": stock.reason} for stock in choice.stocks],
         })
     return {"summary": parsed.summary, "concepts": concepts,
+            "feedbackUsed": {"asOf": evidence.get("historicalFeedback", {}).get("asOf"),
+                             "sampleCounts": {days: summary["sampleCount"] for days, summary in
+                                              evidence.get("historicalFeedback", {}).get("summaries", {}).items()}},
             **{key: evidence[key] for key in ("window", "tradeDate", "dataAsOf", "scope", "warnings")}}
 
 
@@ -156,6 +167,7 @@ async def _execute(run_date: str, key: str, token: str) -> None:
     async def generate() -> dict:
         evidence = await asyncio.to_thread(collect_concept_evidence, forecast=True)
         evidence["window"] = forecast_window(run_date)
+        evidence["historicalFeedback"] = await asyncio.to_thread(feedback_context)
         if not evidence["candidates"]:
             return {**{key: evidence[key] for key in ("window", "tradeDate", "dataAsOf", "scope", "warnings")},
                     "summary": "暂未取得足够的概念行情，当前无法形成有依据的半个月预测。", "concepts": []}

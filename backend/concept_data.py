@@ -13,6 +13,7 @@ import requests
 from . import database
 from .data_sources import market_data, number_or_none
 from .eastmoney import COMMON_PARAMS, SPOT_FIELD_MAP, EastmoneyClient
+from .storage_policy import CONCEPT_HISTORY_CACHE_VERSION
 
 MARKET_RESEARCH_LIMIT = 12
 MARKET_RESEARCH_TIMEOUT = 40
@@ -66,7 +67,7 @@ class ConceptResearchClient(EastmoneyClient):
         if not re.fullmatch(r"BK\d+", code):
             raise ValueError("概念代码格式不正确")
         end = datetime.strptime(trade_date, "%Y%m%d")
-        cache_key = f"concept_history:{code}:{trade_date}:v1"
+        cache_key = f"concept_history:{code}:{trade_date}:v{CONCEPT_HISTORY_CACHE_VERSION}"
         try:
             saved = json.loads(database.get_meta(cache_key) or "null")
         except (ValueError, TypeError):

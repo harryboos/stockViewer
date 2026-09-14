@@ -65,7 +65,6 @@ export type AiResult = {
 };
 
 export type WatchlistStock = StockBasic & {
-  positionWeight: number;
   quote: Quote | null;
 };
 

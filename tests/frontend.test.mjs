@@ -207,13 +207,14 @@ test('forecast cards show a dated horizon, three evidence views, stocks and inva
   assert.ok(renderToStaticMarkup(createElement(ForecastResearchCards, { research, today: '2026-09-12' })).includes('暂不强行给出名单'));
 });
 
-test('forecast navigation is selected and its tab contains only the forecast module', async () => {
+test('forecast navigation contains prediction and historical feedback modules', async () => {
   const { AppHeader } = await server.ssrLoadModule('/components/app-header.tsx');
   const { ConceptForecast } = await server.ssrLoadModule('/components/concept-forecast.tsx');
   const header = renderToStaticMarkup(createElement(AppHeader, { activeTab: 'forecast', status: null, tradeDate: null }));
   assert.match(header, /class="nav-item active" aria-current="page">预测/);
   const html = renderToStaticMarkup(createElement(ConceptForecast));
-  assert.equal((html.match(/<h2 /g) || []).length, 1);
+  assert.equal((html.match(/<h2 /g) || []).length, 2);
+  assert.ok(html.includes('历史预测与准确率'));
   assert.ok(html.includes('未来半个月强势概念预测'));
   assert.ok(html.includes('GLM 5.3 MAX'));
   assert.ok(!html.includes('近期强势概念推荐'));
@@ -233,5 +234,48 @@ test('forecast proxy blocks cross-site paid calls and forwards its own route', a
   assert.equal(fetch.mock.callCount(), 0);
   const read = await route.GET(new NextRequest('http://localhost:3000/api/forecast/concepts'));
   assert.equal(read.status, 200);
+  assert.equal(fetch.mock.callCount(), 1);
+});
+
+test('feedback cards distinguish averages, hit rates, paired samples and missing values', async () => {
+  const { FeedbackSummaryCard } = await server.ssrLoadModule('/components/forecast-history.tsx');
+  const summary = { sampleCount: 2, totalCount: 4, trackingCount: 1, missingCount: 1,
+    averageReturnPct: 9, positiveRate: 100, averageDrawdownPct: -3,
+    benchmarks: { sh000001: { averageExcessPct: 6, sampleCount: 2, outperformRate: 100 },
+      sh000688: { averageExcessPct: null, sampleCount: 0, outperformRate: null } } };
+  const html = renderToStaticMarkup(createElement(FeedbackSummaryCard, { days: '15', summary }));
+  for (const value of ['半个月反馈', '+9.00%', '100.0%', '+6.00 个百分点', '2 个有效概念样本', '0 个配对样本', '1 个到期待补数据']) assert.ok(html.includes(value), value);
+  const extended = renderToStaticMarkup(createElement(FeedbackSummaryCard, { days: '30', summary }));
+  assert.ok(extended.includes('一个月延伸反馈'));
+  assert.ok(!html.includes('NaN'));
+});
+
+test('historical concept table shows actual windows and never labels incomplete returns as final', async () => {
+  const { HistoryReportTable } = await server.ssrLoadModule('/components/forecast-history.tsx');
+  const outcome = { status: 'missing_data', targetDate: '2026-09-27', note: '等待完整行情', returnPct: null,
+    entryDate: null, exitDate: null, entryPrice: null, exitPrice: null, maxDrawdownPct: null, maxRisePct: null, maxFallPct: null, benchmarks: {} };
+  const entry = { runDate: '2026-09-12', concepts: [{ code: 'BK1001', name: 'MLCC', outcomes: { '15': outcome } }] };
+  const html = renderToStaticMarkup(createElement(HistoryReportTable, { entry, days: '15' }));
+  for (const value of ['MLCC', '已到期 · 待补数据', '2026-09-27', '阶段表现 · 不计统计', '收盘最大回撤', '等待同区间行情']) assert.ok(html.includes(value), value);
+  assert.ok(!html.includes('NaN'));
+  assert.ok(!html.includes('+0.00%'));
+  entry.concepts = [];
+  assert.ok(renderToStaticMarkup(createElement(HistoryReportTable, { entry, days: '15' })).includes('作为观望记录保留'));
+});
+
+test('history route is read-only on GET and protects feedback refresh from cross-site writes', async (t) => {
+  const fetch = t.mock.method(globalThis, 'fetch', async (url, options) => {
+    assert.equal(new URL(url).pathname, '/api/forecast/history');
+    assert.equal(new URL(url).searchParams.get('page'), '2');
+    assert.equal(options.method, 'GET');
+    return new Response(JSON.stringify({ reports: [] }));
+  });
+  const route = await server.ssrLoadModule('/app/api/forecast/history/route.ts');
+  const rejected = await route.POST(new NextRequest('http://localhost:3000/api/forecast/history', {
+    method: 'POST', headers: { origin: 'https://untrusted.test', 'sec-fetch-site': 'cross-site' },
+  }));
+  assert.equal(rejected.status, 403);
+  assert.equal(fetch.mock.callCount(), 0);
+  assert.equal((await route.GET(new NextRequest('http://localhost:3000/api/forecast/history?page=2'))).status, 200);
   assert.equal(fetch.mock.callCount(), 1);
 });

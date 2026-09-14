@@ -25,6 +25,7 @@ export type ForecastResearch = {
   summary: string; tradeDate: string; dataAsOf: string; scope: string; warnings: string[];
   window: { generatedOn: string; startDate: string; endDate: string; calendarDays: number };
   concepts: ForecastConcept[];
+  feedbackUsed?: { asOf: string | null; sampleCounts: Partial<Record<'15' | '30', number>> };
 };
 
 export type ForecastRun = Omit<ConceptRun, 'result'> & { result: ForecastResearch | null };

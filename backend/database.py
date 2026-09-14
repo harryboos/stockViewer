@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -9,6 +11,11 @@ from typing import Any, Iterator
 from uuid import uuid4
 
 from .config import CHINA_TZ, DATABASE_PATH
+from .report_storage import decode_result, encode_result
+from . import storage_policy
+
+logger = logging.getLogger(__name__)
+STORAGE_SCHEMA_VERSION = "1"
 
 
 DEFAULT_WATCHLIST = [
@@ -39,7 +46,6 @@ SCHEMA = [
     """CREATE TABLE IF NOT EXISTS watchlist (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         ts_code TEXT NOT NULL UNIQUE,
-        position_weight REAL NOT NULL DEFAULT 0,
         added_at TEXT NOT NULL
     )""",
     """CREATE TABLE IF NOT EXISTS stock_basics (
@@ -132,6 +138,7 @@ def connection() -> Iterator[sqlite3.Connection]:
 
 
 def initialize() -> None:
+    backup_before_storage_migration()
     with _write_lock, connection() as db:
         db.execute("PRAGMA journal_mode = WAL")
         db.execute("BEGIN IMMEDIATE")
@@ -140,6 +147,9 @@ def initialize() -> None:
         ).fetchone()
         for statement in SCHEMA:
             db.execute(statement)
+        watch_columns = {str(row["name"]) for row in db.execute("PRAGMA table_info(watchlist)")}
+        if "position_weight" in watch_columns:
+            db.execute("ALTER TABLE watchlist DROP COLUMN position_weight")
         quote_columns = {str(row["name"]) for row in db.execute("PRAGMA table_info(quote_snapshots)").fetchall()}
         if "volume_ratio" not in quote_columns:
             db.execute("ALTER TABLE quote_snapshots ADD COLUMN volume_ratio REAL")
@@ -154,7 +164,21 @@ def initialize() -> None:
                 ORDER BY updated_at DESC LIMIT 1
             ) WHERE prompt_version IS NULL"""
         )
+        # Import real forecasts before daily cache cleanup; retain prompt metadata.
+        from .forecast_history import initialize_archive
+        initialize_archive(db)
         timestamp = now_iso()
+        storage_version = db.execute("SELECT value FROM app_meta WHERE key = 'storage_schema_version'").fetchone()
+        if not storage_version or storage_version["value"] != STORAGE_SCHEMA_VERSION:
+            for row in db.execute("SELECT id, result_json FROM ai_runs WHERE result_json IS NOT NULL").fetchall():
+                try:
+                    packed = encode_result(decode_result(row["result_json"]))
+                except (ValueError, TypeError, KeyError, IndexError, AttributeError):
+                    logger.warning("Skipping unreadable legacy AI result %s during storage migration", row["id"])
+                    continue
+                db.execute("UPDATE ai_runs SET result_json = ? WHERE id = ?", (packed, row["id"]))
+            db.execute("INSERT OR REPLACE INTO app_meta (key, value, updated_at) VALUES ('storage_schema_version', ?, ?)",
+                       (STORAGE_SCHEMA_VERSION, timestamp))
         if not db.execute("SELECT 1 FROM app_meta WHERE key = 'quote_volume_unit'").fetchone():
             db.execute("UPDATE quote_snapshots SET vol = vol * 100 WHERE source LIKE 'AKShare%'")
             db.execute(
@@ -174,10 +198,80 @@ def initialize() -> None:
         )
         if new_watchlist:
             db.executemany(
-                "INSERT INTO watchlist (ts_code, position_weight, added_at) VALUES (?, 0, ?)",
+                "INSERT INTO watchlist (ts_code, added_at) VALUES (?, ?)",
                 [(code, timestamp) for code in DEFAULT_WATCHLIST],
             )
         db.execute("PRAGMA optimize")
+    maintain_storage()
+
+
+def backup_before_storage_migration() -> str | None:
+    """SQLite's backup API includes WAL contents; preserve one pre-migration snapshot."""
+    path = DATABASE_PATH.resolve()
+    if not path.is_file() or path.stat().st_size == 0:
+        return None
+    with _write_lock:
+        source = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=20)
+        try:
+            if not source.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='watchlist'").fetchone():
+                return None
+            has_meta = source.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='app_meta'").fetchone()
+            version = source.execute("SELECT value FROM app_meta WHERE key='storage_schema_version'").fetchone() if has_meta else None
+            old_columns = {row[1] for row in source.execute("PRAGMA table_info(watchlist)")}
+            if version and version[0] == STORAGE_SCHEMA_VERSION and "position_weight" not in old_columns:
+                return None
+            destination = path.with_name(f"{path.stem}.before-storage-v{STORAGE_SCHEMA_VERSION}.sqlite3")
+            if not destination.exists():
+                # Exclusive creation prevents accidentally replacing an earlier backup.
+                try:
+                    with destination.open("xb"):
+                        pass
+                    os.chmod(destination, 0o600)
+                except FileExistsError:
+                    raise RuntimeError("数据库迁移备份正在由另一个进程创建，请稍后重启") from None
+                target = sqlite3.connect(destination)
+                try:
+                    source.backup(target)
+                    if (target.execute("PRAGMA quick_check").fetchone()[0] != "ok"
+                            or not target.execute("SELECT 1 FROM sqlite_master WHERE name='watchlist'").fetchone()):
+                        raise RuntimeError("数据库备份校验失败，迁移未开始")
+                except BaseException:
+                    target.close()
+                    destination.unlink(missing_ok=True)
+                    raise
+                finally:
+                    target.close()
+            else:
+                target = sqlite3.connect(destination.as_uri() + "?mode=ro", uri=True)
+                try:
+                    if (target.execute("PRAGMA quick_check").fetchone()[0] != "ok"
+                            or not target.execute("SELECT 1 FROM sqlite_master WHERE name='watchlist'").fetchone()):
+                        raise RuntimeError("已有数据库备份校验失败，迁移未开始")
+                finally:
+                    target.close()
+            return str(destination)
+        finally:
+            source.close()
+
+
+def maintain_storage(force: bool = False) -> dict:
+    """Run once per China calendar day, independently of paid analysis scheduling."""
+    today = datetime.now(CHINA_TZ).date()
+    with _write_lock, connection() as db:
+        db.execute("BEGIN IMMEDIATE")
+        last = db.execute("SELECT value FROM app_meta WHERE key = ?", (storage_policy.MAINTENANCE_KEY,)).fetchone()
+        if last and not force:
+            try:
+                summary = json.loads(last["value"])
+                if summary.get("date") == today.isoformat():
+                    return {**summary, "skipped": True}
+            except (ValueError, TypeError, AttributeError):
+                pass
+        summary = storage_policy.cleanup(db, today, _ai_lease_cutoff)
+        db.execute("INSERT INTO app_meta (key, value, updated_at) VALUES (?, ?, ?) "
+                   "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+                   (storage_policy.MAINTENANCE_KEY, json.dumps(summary, ensure_ascii=False), now_iso()))
+        return summary
 
 
 def get_meta(key: str) -> str | None:
@@ -187,12 +281,19 @@ def get_meta(key: str) -> str | None:
 
 
 def set_meta(key: str, value: str) -> None:
+    if key in storage_policy.UNUSED_META:
+        return
     with _write_lock, connection() as db:
         db.execute(
             """INSERT INTO app_meta (key, value, updated_at) VALUES (?, ?, ?)
             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at""",
             (key, value, now_iso()),
         )
+        match = storage_policy.HISTORY_PATTERN.fullmatch(key)
+        if match:
+            keys = [row["key"] for row in db.execute("SELECT key FROM app_meta WHERE key LIKE ?", (f"concept_history:{match[1]}:%",))]
+            expired = storage_policy.old_history_keys(keys, datetime.now(CHINA_TZ).date())
+            db.executemany("DELETE FROM app_meta WHERE key = ?", [(old_key,) for old_key in expired])
 
 
 def upsert_stock_basics(stocks: list[dict[str, Any]]) -> None:
@@ -270,7 +371,7 @@ def get_watchlist_rows() -> list[dict[str, Any]]:
     with connection() as db:
         rows = db.execute(
             """SELECT b.ts_code AS tsCode, b.symbol, b.name, b.area, b.industry,
-            b.market, b.exchange, b.list_date AS listDate, w.position_weight AS positionWeight,
+            b.market, b.exchange, b.list_date AS listDate,
             q.trade_date AS tradeDate, q.open, q.high, q.low, q.close, q.pre_close AS preClose,
             q.change, q.pct_chg AS pctChg, q.vol, q.amount, q.source, q.fetched_at AS fetchedAt
             FROM watchlist w
@@ -308,7 +409,7 @@ def add_watch_stock(ts_code: str) -> None:
         if not exists:
             raise ValueError("股票代码不存在，请先搜索后添加")
         db.execute(
-            "INSERT OR IGNORE INTO watchlist (ts_code, position_weight, added_at) VALUES (?, 0, ?)",
+            "INSERT OR IGNORE INTO watchlist (ts_code, added_at) VALUES (?, ?)",
             (ts_code, now_iso()),
         )
 
@@ -377,7 +478,7 @@ def read_ai_run(provider: str, run_date: str) -> dict[str, Any] | None:
     if not row:
         return None
     result = dict(row)
-    result["result"] = json.loads(result.pop("resultJson")) if result["resultJson"] else None
+    result["result"] = decode_result(result.pop("resultJson")) if result["resultJson"] else None
     if result["status"] == "running" and result["startedAt"] <= _ai_lease_cutoff(provider):
         result.update(status="failed", error="上次模型运行已中断或超时，请重试", result=None)
     return result
@@ -415,12 +516,12 @@ def start_ai_run(provider: str, model: str, run_date: str, prompt_version: str, 
 
 def finish_ai_run(provider: str, run_date: str, result: dict[str, Any] | None, error: str | None, token: str) -> None:
     with _write_lock, connection() as db:
-        db.execute(
+        updated = db.execute(
             """UPDATE ai_runs SET status = ?, result_json = ?, error = ?, finished_at = ?
-            WHERE run_date = ? AND provider = ? AND run_token = ?""",
+            WHERE run_date = ? AND provider = ? AND run_token = ? AND status = 'running'""",
             (
                 "succeeded" if result else "failed",
-                json.dumps(result, ensure_ascii=False) if result else None,
+                encode_result(result) if result else None,
                 error,
                 now_iso(),
                 run_date,
@@ -428,3 +529,7 @@ def finish_ai_run(provider: str, run_date: str, result: dict[str, Any] | None, e
                 token,
             ),
         )
+        if updated.rowcount and provider == "forecast:glm" and result:
+            from .forecast_history import archive_run
+            archive_run(db, db.execute("SELECT * FROM ai_runs WHERE provider = ? AND run_date = ?",
+                                      (provider, run_date)).fetchone())

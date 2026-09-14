@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -13,18 +14,20 @@ from . import database
 from .config import MARKET
 from .eastmoney import EastmoneyClient
 from .tencent import TencentClient
+from .storage_policy import (
+    CONCEPT_CACHE_VERSION, SECTOR_OVERVIEW_CACHE_VERSION,
+    MARKET_INTRADAY_PAIR_CACHE_VERSION, MARKET_INTRADAY_INDEX_CACHE_VERSION,
+)
+
+logger = logging.getLogger(__name__)
 
 
 CATALOG_CACHE_SECONDS = 24 * 60 * 60
-CONCEPT_CACHE_VERSION = "3"
 MARKET_TURNOVER_CACHE_KEY = "market_turnover:v1"
 MARKET_TURNOVER_COMPAT_KEYS = ("market_turnover:v2",)
 MARKET_FUND_FLOW_EAST_CACHE_KEY = "market_fund_flow:eastmoney:v1"
 MARKET_FUND_FLOW_TENCENT_CACHE_KEY = "market_fund_flow:tencent:v1"
 MARKET_FUND_FLOW_COMPAT_KEYS = ("market_fund_flow:v2", "market_fund_flow:v1")
-MARKET_INTRADAY_PAIR_CACHE_VERSION = "1"
-MARKET_INTRADAY_INDEX_CACHE_VERSION = "1"
-SECTOR_OVERVIEW_CACHE_VERSION = "4"
 SECTOR_DISPLAY_LIMIT = 6
 SECTOR_TURNOVER_LIMIT = 6
 CONCEPT_EXCLUDED_MARKERS = (
@@ -261,7 +264,7 @@ class MarketDataService:
             source = "BaoStock"
         database.upsert_stock_basics(rows)
         database.set_meta("stock_catalog_synced_at", database.now_iso())
-        database.set_meta("stock_catalog_source", source)
+        logger.info("股票目录已同步，来源：%s", source)
         return len(rows)
 
     def _baostock_catalog(self) -> list[dict[str, Any]]:
@@ -1036,7 +1039,8 @@ class MarketDataService:
                 "warnings": list(dict.fromkeys(warnings)),
             }
             database.set_meta(cache_key, json.dumps(result, ensure_ascii=False))
-            database.set_meta("sector_overview_error", "；".join(debug_errors))
+            if debug_errors:
+                logger.warning("板块数据获取异常：%s", "；".join(debug_errors))
             self._sector_cache = result
             self._sector_fetched_at = datetime.now(database.CHINA_TZ)
             return result
