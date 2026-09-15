@@ -2,19 +2,23 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import json
 import os
 import tempfile
+import threading
 import unittest
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+import httpx
 from fastapi.testclient import TestClient
 
 from backend import ai, concept_ai, concept_data, concept_forecast as forecast, concept_news, database
 from backend.forecast_data import add_forecast_metrics, forecast_window, technical_metrics
 from backend.main import app
 from backend.test_concept_ai import evidence_fixture
+from backend.test_glm_transport import delta, mock_http
 
 
 def history_fixture(count=21):
@@ -95,6 +99,16 @@ class ForecastEvidenceTests(unittest.TestCase):
 
 
 class ForecastValidationTests(unittest.TestCase):
+    def test_prompt_compacts_duplicate_metrics_without_losing_news_or_mutating_evidence(self):
+        evidence = forecast_evidence()
+        original = copy.deepcopy(evidence)
+        compact = forecast.prompt_evidence(evidence)
+        candidate = compact["candidates"][0]
+        self.assertEqual(candidate["technicalData"], evidence["candidates"][0]["technicalData"])
+        self.assertEqual(candidate["evidence"][-1], evidence["candidates"][0]["evidence"][-1])
+        self.assertIn("technicalData", candidate["evidence"][1]["excerpt"])
+        self.assertEqual(evidence, original)
+
     def test_prices_window_and_sources_are_joined_from_server_evidence(self):
         evidence = forecast_evidence()
         result = forecast.assemble_result(forecast_result(), evidence)
@@ -142,6 +156,7 @@ class ForecastRunTests(unittest.IsolatedAsyncioTestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         for target in (patch.object(database, "DATABASE_PATH", Path(temporary.name) / "forecast.sqlite3"),
+                       patch.object(database, "china_date", return_value="2026-09-11"),
                        patch.dict(os.environ, {"GLM_API_KEY": "test-key", "GLM_MODEL": "wrong-model"}, clear=True),
                        patch.object(forecast, "enrich_world_news", new_callable=AsyncMock, side_effect=lambda evidence, key, **kw: evidence)):
             target.start()
@@ -162,6 +177,7 @@ class ForecastRunTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(model.await_args.args[0], "glm")
             self.assertEqual(model.await_args.args[2], "glm-5.3")
             self.assertEqual(model.await_args.kwargs["reasoning_effort"], "max")
+            self.assertTrue(model.await_args.kwargs["resilient_stream"])
             collect.assert_called_once_with(forecast=True)
             forecast.enrich_world_news.assert_awaited_once()
             self.assertTrue(forecast.enrich_world_news.await_args.kwargs["forecast"])
@@ -171,6 +187,91 @@ class ForecastRunTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(concept_ai.get_concept_run()["result"]["summary"], "原推荐缓存")
         with patch.object(database, "china_date", return_value="2099-01-01"):
             self.assertEqual(forecast.get_forecast_run()["status"], "idle")
+
+    async def test_slow_data_collection_is_shared_and_fails_before_model_call(self):
+        release = threading.Event()
+
+        def collect(**kwargs):
+            release.wait(timeout=2)
+            return forecast_evidence()
+
+        with (patch.object(forecast, "DATA_TIMEOUT_SECONDS", 0.02),
+              patch.object(forecast, "collect_concept_evidence", side_effect=collect) as source,
+              patch.object(ai, "_call_compatible", new_callable=AsyncMock) as model):
+            try:
+                for _ in range(2):
+                    await forecast.start_forecast_run()
+                    await asyncio.gather(*list(forecast._tasks))
+                    self.assertIn("概念行情收集超时", forecast.get_forecast_run()["error"])
+                source.assert_called_once()
+                model.assert_not_awaited()
+            finally:
+                release.set()
+                await asyncio.wrap_future(forecast._evidence_future)
+
+    async def test_feedback_outage_preserves_prediction_but_reports_missing_feedback(self):
+        with (patch.object(forecast, "collect_concept_evidence", return_value=forecast_evidence()),
+              patch.object(forecast, "feedback_context", side_effect=RuntimeError("locked")),
+              patch.object(ai, "_call_compatible", new_callable=AsyncMock, return_value=forecast_result()) as model):
+            await forecast.start_forecast_run()
+            await asyncio.gather(*list(forecast._tasks))
+        result = forecast.get_forecast_run()
+        self.assertEqual(result["status"], "succeeded")
+        self.assertIn('"available":false', model.await_args.args[1])
+        self.assertIn("历史反馈暂不可用", " ".join(result["result"]["warnings"]))
+
+    async def test_overload_recovers_through_real_transport_and_archives_once(self):
+        from backend import glm_transport
+
+        responses = [httpx.Response(429, json={"error": {"code": "1305"}}),
+                     httpx.Response(200, headers={"content-type": "text/event-stream"},
+                                    content=delta(json.dumps(forecast_result(), ensure_ascii=False), "stop"))]
+        with (patch.object(forecast, "collect_concept_evidence", return_value=forecast_evidence()),
+              mock_http(lambda request: responses.pop(0)),
+              patch.object(glm_transport.asyncio, "sleep", new_callable=AsyncMock) as sleep):
+            await forecast.start_forecast_run()
+            await asyncio.gather(*list(forecast._tasks))
+            self.assertEqual(forecast.get_forecast_run()["status"], "succeeded")
+            self.assertEqual(forecast.get_forecast_run()["result"]["concepts"][0]["stocks"][0]["price"], 12.5)
+            sleep.assert_awaited_once()
+        self.assertEqual(responses, [])
+        with database.connection() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM forecast_reports").fetchone()[0], 1)
+
+    async def test_late_shared_data_cannot_be_used_after_date_changes(self):
+        evidence = forecast_evidence()
+        evidence["dataAsOf"] = "2026-09-10T14:00:00+08:00"
+        with patch.object(forecast, "collect_concept_evidence", return_value=evidence):
+            with self.assertRaisesRegex(RuntimeError, "旧缓存"):
+                await forecast.collect_evidence()
+
+    async def test_browser_disconnect_during_database_claim_does_not_orphan_run(self):
+        release = threading.Event()
+        claimed = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        start = database.start_ai_run
+
+        def delayed_claim(*args, **kwargs):
+            token = start(*args, **kwargs)
+            loop.call_soon_threadsafe(claimed.set)
+            release.wait(timeout=2)
+            return token
+
+        with (patch.object(database, "start_ai_run", side_effect=delayed_claim),
+              patch.object(forecast, "collect_concept_evidence", return_value=forecast_evidence()),
+              patch.object(ai, "_call_compatible", new_callable=AsyncMock, return_value=forecast_result()) as model):
+            request = asyncio.create_task(forecast.start_forecast_run())
+            try:
+                await asyncio.wait_for(claimed.wait(), timeout=1)
+                request.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await request
+            finally:
+                release.set()
+                while forecast._tasks:
+                    await asyncio.gather(*list(forecast._tasks))
+            self.assertEqual(forecast.get_forecast_run()["status"], "succeeded")
+            model.assert_awaited_once()
 
     async def test_read_only_api_missing_key_and_secret_enforcement(self):
         client = TestClient(app)

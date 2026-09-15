@@ -204,6 +204,7 @@ async def _call_compatible(
     *, system_instruction: str = SHARED_SYSTEM_INSTRUCTION,
     reasoning_effort: Literal["low", "high", "max"] | None = None,
     timeout_seconds: float | None = None,
+    resilient_stream: bool = False,
 ) -> dict[str, Any]:
     request: dict[str, Any] = {
         "model": model,
@@ -218,17 +219,26 @@ async def _call_compatible(
         request["enable_thinking"] = False
     if provider == "glm" and reasoning_effort:
         request.update(thinking={"type": "enabled"}, reasoning_effort=reasoning_effort)
-    payload = await _post_json(
+    transport = _post_json
+    if resilient_stream:
+        if provider != "glm":
+            raise ValueError("长时研究流式请求仅用于 GLM")
+        from .glm_transport import post_research
+        transport = post_research
+    payload = await transport(
         f"{base_url_for(provider)}/chat/completions",
         {"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
         request,
-        **({"timeout_seconds": timeout_seconds} if timeout_seconds is not None else {}),
+        **({"timeout_seconds": timeout_seconds or 90.0} if resilient_stream or timeout_seconds is not None else {}),
     )
     try:
         content = payload["choices"][0]["message"]["content"]
         if not isinstance(content, str) or not content.strip():
             raise TypeError("empty content")
-        return json.loads(content)
+        result = json.loads(content)
+        if not isinstance(result, dict):
+            raise TypeError("expected JSON object")
+        return result
     except (KeyError, IndexError, TypeError, json.JSONDecodeError) as error:
         raise RuntimeError(f"{PROVIDER_LABELS[provider]} 未返回可解析结果") from error
 

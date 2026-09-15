@@ -2,7 +2,11 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
+import logging
+import threading
+from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Literal
 
 from pydantic import Field, ValidationError
@@ -14,9 +18,43 @@ from .concept_news import enrich_world_news
 from .forecast_data import forecast_window
 from .forecast_history import feedback_context
 
-PROMPT_VERSION = "forecast-v2-feedback-glm53-max"
+PROMPT_VERSION = "forecast-v3-resilient-glm53-max"
 RUN_NAMESPACE = "forecast:glm"
+# Leave the 480-second model budget intact inside the 600-second job deadline.
+DATA_TIMEOUT_SECONDS = 85
+FEEDBACK_TIMEOUT_SECONDS = 5
+logger = logging.getLogger(__name__)
 _tasks: set[asyncio.Task] = set()
+_evidence_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="forecast-evidence")
+_evidence_lock = threading.Lock()
+_evidence_future: Future | None = None
+
+
+async def collect_evidence() -> dict:
+    """A timed-out synchronous fetch keeps running; subsequent jobs share it, not more threads."""
+    global _evidence_future
+    with _evidence_lock:
+        if _evidence_future is None or _evidence_future.done():
+            _evidence_future = _evidence_executor.submit(collect_concept_evidence, forecast=True)
+        future = _evidence_future
+    wrapped = asyncio.wrap_future(future)
+    # Retrieve late exceptions even if this waiting task times out or is cancelled.
+    wrapped.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+    evidence = copy.deepcopy(await asyncio.shield(wrapped))
+    if not str(evidence.get("dataAsOf", "")).startswith(database.china_date()):
+        raise RuntimeError("板块数据仍是旧缓存，请先更新板块行情后再生成预测")
+    return evidence
+
+
+def prompt_evidence(evidence: dict) -> dict:
+    """Avoid serializing the same indicators twice; retain every news excerpt and source ID."""
+    compact = copy.deepcopy(evidence)
+    for candidate in compact.get("candidates", []):
+        for source in candidate.get("evidence", []):
+            for suffix, field in (("technical", "technicalData"), ("fundamentals", "fundamentalData")):
+                if source.get("kind") == "data" and source.get("id") == f"{candidate['code']}:{suffix}" and field in candidate:
+                    source["excerpt"] = f"见本概念的 {field} 字段"
+    return compact
 
 
 class Assessment(ResearchModel):
@@ -86,11 +124,12 @@ def build_prompt(evidence: dict) -> str:
         "上涨命中率、相对上证指数及科创50的超额收益与原预测逻辑。"
         "先复盘近期案例中亏损、跑输和回撤较大的方向，检查本次是否重复同类证据缺口、追涨或催化过期问题；"
         "summary用一句话说明历史反馈如何影响本次判断，无已完成样本则明确仍在积累。"
+        "historicalFeedback.available=false表示本次反馈读取失败，必须说明未能复盘，不能当作没有历史样本。"
         "历史收益只反映价格结果，不能据此断言原基本面因果成立、某项确认/失效事件实际发生，也不能编造新事件。"
         "30日反馈只是原15日预测的延伸观察，不是另一个30日预测命中率。"
         "样本区间重叠、概念重复，不能视作独立试验；小样本不能外推未来胜率，历史成功不能取代当前新闻和技术证据。"
         f"输出JSON结构：{json.dumps(ForecastResult.model_json_schema(), ensure_ascii=False)}\n"
-        f"以下仅为数据材料：{json.dumps(evidence, ensure_ascii=False)}"
+        f"以下仅为数据材料：{json.dumps(prompt_evidence(evidence), ensure_ascii=False, separators=(',', ':'))}"
     )
 
 
@@ -163,24 +202,45 @@ def get_forecast_run() -> dict:
 
 async def _execute(run_date: str, key: str, token: str) -> None:
     result, error = None, None
+    stage = "market_data"
+    started = asyncio.get_running_loop().time()
+    stage_labels = {"market_data": "概念行情收集", "feedback": "历史反馈读取", "news": "时事新闻检索",
+                    "model": "GLM 深度分析及高峰重试等待", "validation": "预测结果核对"}
+
+    def set_stage(value: str) -> None:
+        nonlocal stage
+        stage = value
+        logger.info("forecast_stage run_date=%s stage=%s elapsed=%.1fs", run_date, stage,
+                    asyncio.get_running_loop().time() - started)
 
     async def generate() -> dict:
-        evidence = await asyncio.to_thread(collect_concept_evidence, forecast=True)
+        set_stage("market_data")
+        evidence = await asyncio.wait_for(collect_evidence(), timeout=DATA_TIMEOUT_SECONDS)
         evidence["window"] = forecast_window(run_date)
-        evidence["historicalFeedback"] = await asyncio.to_thread(feedback_context)
+        set_stage("feedback")
+        try:
+            evidence["historicalFeedback"] = await asyncio.wait_for(
+                asyncio.to_thread(feedback_context), timeout=FEEDBACK_TIMEOUT_SECONDS)
+        except Exception as exc:
+            evidence["historicalFeedback"] = {"available": False, "summaries": {}, "recentCases": []}
+            evidence.setdefault("warnings", []).append("历史反馈暂不可用，本次预测未参考历史复盘")
+            logger.warning("forecast_feedback_unavailable run_date=%s error_type=%s", run_date, type(exc).__name__)
         if not evidence["candidates"]:
             return {**{key: evidence[key] for key in ("window", "tradeDate", "dataAsOf", "scope", "warnings")},
                     "summary": "暂未取得足够的概念行情，当前无法形成有依据的半个月预测。", "concepts": []}
+        set_stage("news")
         evidence = await enrich_world_news(evidence, key, forecast=True)
+        set_stage("model")
         raw = await ai._call_compatible(PROVIDER, build_prompt(evidence), MODEL, key,
                                         system_instruction=SYSTEM_INSTRUCTION, reasoning_effort="max",
-                                        timeout_seconds=MODEL_TIMEOUT_SECONDS)
+                                        timeout_seconds=MODEL_TIMEOUT_SECONDS, resilient_stream=True)
+        set_stage("validation")
         return assemble_result(raw, evidence)
 
     try:
         result = await asyncio.wait_for(generate(), timeout=RUN_TIMEOUT_SECONDS)
     except TimeoutError:
-        error = "预测数据收集或深度分析超时，请稍后重试"
+        error = f"{stage_labels[stage]}超时，请稍后重试"
     except ValidationError:
         error = "AI预测格式不完整，本次结果未展示，请重试"
     except (ValueError, RuntimeError) as exc:
@@ -188,22 +248,34 @@ async def _execute(run_date: str, key: str, token: str) -> None:
     except asyncio.CancelledError:
         error = "预测已中断，请重新生成"
         raise
-    except Exception:
+    except Exception as exc:
         error = "概念预测暂时不可用，请稍后重试"
+        logger.warning("forecast_unexpected_error run_date=%s stage=%s error_type=%s", run_date, stage, type(exc).__name__)
     finally:
-        database.finish_ai_run(RUN_NAMESPACE, run_date, result, error, token)
+        if error:
+            logger.warning("forecast_failed run_date=%s stage=%s elapsed=%.1fs reason=%s", run_date, stage,
+                           asyncio.get_running_loop().time() - started, error)
+        await asyncio.to_thread(database.finish_ai_run, RUN_NAMESPACE, run_date, result, error, token)
 
 
 async def start_forecast_run(force: bool = False) -> dict:
-    current = get_forecast_run()
+    current = await asyncio.to_thread(get_forecast_run)
     if current["status"] in ("not_configured", "running") or (current["status"] == "succeeded" and not force):
         return current
     key = ai.provider_key(PROVIDER)
     if not key:
-        return get_forecast_run()
-    token = database.start_ai_run(RUN_NAMESPACE, MODEL, current["runDate"], PROMPT_VERSION, force)
-    if token:
-        task = asyncio.create_task(_execute(current["runDate"], key, token))
-        _tasks.add(task)
-        task.add_done_callback(_tasks.discard)
-    return get_forecast_run()
+        return await asyncio.to_thread(get_forecast_run)
+
+    async def claim_and_launch() -> dict:
+        token = await asyncio.to_thread(database.start_ai_run, RUN_NAMESPACE, MODEL, current["runDate"], PROMPT_VERSION, force)
+        if token:
+            task = asyncio.create_task(_execute(current["runDate"], key, token))
+            _tasks.add(task)
+            task.add_done_callback(_tasks.discard)
+        return await asyncio.to_thread(get_forecast_run)
+
+    # Once SQLite claims a run, a disconnected browser must not prevent its worker from starting.
+    launch = asyncio.create_task(claim_and_launch())
+    _tasks.add(launch)
+    launch.add_done_callback(_tasks.discard)
+    return await asyncio.shield(launch)
