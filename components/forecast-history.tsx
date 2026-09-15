@@ -37,8 +37,8 @@ export function HistoryReportTable({ entry, days }: { entry: HistoryEntry; days:
     <tbody>{entry.concepts.map(concept => {
       const item = concept.outcomes[days];
       return <tr key={concept.code}>
-        <th scope="row"><strong>{concept.name}</strong><small>{concept.code}</small><span className={`feedback-status ${item.status}`}>{({ completed: '已到期 · 已核对', missing_data: '已到期 · 待补数据', tracking: '跟踪中', pending: '尚未开始' })[item.status]}</span></th>
-        <td><span>{item.entryDate || '等待首个交易日'}<br />— {item.exitDate || '—'}</span><small>计划到期 {item.targetDate}</small></td>
+        <th scope="row"><strong>{concept.name}</strong><small>{concept.code}</small><span className={`feedback-status ${item.status}`}>{item.dataStatus === 'unavailable' && item.status === 'tracking' ? '跟踪中 · 数据待补齐' : ({ completed: '已到期 · 已核对', missing_data: '已到期 · 待补数据', tracking: '跟踪中', pending: '尚未开始' })[item.status]}</span></th>
+        <td><span>{item.entryDate || (item.dataStatus === 'waiting_for_close' ? '等待首个交易日收盘' : item.dataStatus === 'unavailable' ? '行情核对未完成' : '等待核对收盘行情')}<br />— {item.exitDate || '—'}</span><small>计划到期 {item.targetDate}</small>{(item.returnPct === null || item.dataStatus === 'unavailable') && <small>{item.note}</small>}</td>
         <td><strong className={tone(item.returnPct)}>{percent(item.returnPct)}</strong><small>{item.status === 'completed' ? '到期收益' : '阶段表现 · 不计统计'}</small>
           <details className="feedback-price-detail"><summary>波动与价格依据</summary><p>首日开盘 {price(item.entryPrice)} → 末日收盘 {price(item.exitPrice)}</p><p>期间最高涨幅 {percent(item.maxRisePct)}<br />期间最低涨幅 {percent(item.maxFallPct)}<br />收盘最大回撤 {percent(item.maxDrawdownPct)}</p><p>{item.note}</p>
             {item.url && <a href={item.url} target="_blank" rel="noreferrer">{item.source || '概念行情来源'}</a>}

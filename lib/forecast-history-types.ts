@@ -7,6 +7,7 @@ export type BenchmarkOutcome = {
   entryPrice?: number | null; exitPrice?: number | null; source?: string | null; url?: string | null;
 };
 export type ForecastOutcome = {
+  dataStatus?: 'waiting_for_close' | 'awaiting_update' | 'unavailable' | 'ready';
   status: 'pending' | 'tracking' | 'completed' | 'missing_data'; targetDate: string; note: string;
   returnPct: number | null; entryDate: string | null; exitDate: string | null;
   entryPrice: number | null; exitPrice: number | null; maxDrawdownPct: number | null;

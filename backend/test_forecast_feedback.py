@@ -7,13 +7,13 @@ import tempfile
 import unittest
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi.testclient import TestClient
 
 from backend import database, forecast_feedback as feedback, forecast_history as history
 from backend.concept_forecast import PROMPT_VERSION, assemble_result, build_prompt
-from backend.forecast_prices import FeedbackPriceClient, normalize_bars
+from backend.forecast_prices import CalendarUnavailableError, FeedbackPriceClient, decode_calendar, normalize_bars
 from backend.main import app
 from backend.test_concept_forecast import forecast_evidence, forecast_result
 
@@ -49,6 +49,65 @@ def outcome(value=108, benchmark_missing=False):
 
 
 class EvaluationTests(unittest.TestCase):
+    def test_calendar_supports_linux_racer_without_context_manager(self):
+        class LinuxRacer:
+            # py-mini-racer 0.6, selected by AKShare on Linux, has no
+            # __enter__, __exit__ or close; resources are released by __del__.
+            def eval(self, script):
+                pass
+
+            def call(self, function, encoded):
+                return ["2026-09-14T00:00:00.000Z", "2026-12-31T00:00:00.000Z"]
+
+        session = MagicMock()
+        session.__enter__.return_value.get.return_value.text = 'var datelist="encoded-calendar";'
+        with (patch("py_mini_racer.MiniRacer", LinuxRacer),
+              patch.object(FeedbackPriceClient, "_session", return_value=session),
+              patch.object(database, "get_meta", return_value=None), patch.object(database, "set_meta")):
+            self.assertEqual(FeedbackPriceClient().calendar(), ["2026-09-14", "2026-12-31"])
+
+    def test_modern_calendar_runtime_is_closed_on_success_and_decode_error(self):
+        for failure in (False, True):
+            runtime = MagicMock()
+            runtime.call.return_value = ["2026-09-14T00:00:00.000Z"]
+            if failure:
+                runtime.call.side_effect = ValueError("invalid data")
+            with patch("py_mini_racer.MiniRacer", return_value=runtime):
+                if failure:
+                    with self.assertRaises(ValueError):
+                        decode_calendar("encoded")
+                else:
+                    self.assertEqual(decode_calendar("encoded"), ["2026-09-14"])
+            runtime.close.assert_called_once()
+
+    def test_calendar_decode_failure_is_identified_and_valid_cache_survives(self):
+        session = MagicMock()
+        session.__enter__.return_value.get.return_value.text = 'var datelist="encoded";'
+        for saved in ('malformed-json', json.dumps({"dates": ["2026-09-14"], "fetchedOn": "2026-09-01"})):
+            with (patch.object(FeedbackPriceClient, "_session", return_value=session),
+                  patch.object(database, "get_meta", return_value=saved),
+                  patch("backend.forecast_prices.decode_calendar", side_effect=TypeError("legacy engine error")),
+                  self.assertLogs("backend.forecast_prices", level="ERROR") as logs):
+                if saved == 'malformed-json':
+                    with self.assertRaisesRegex(CalendarUnavailableError, "交易日历解析失败"):
+                        FeedbackPriceClient().calendar()
+                else:
+                    self.assertEqual(FeedbackPriceClient().calendar(), ["2026-09-14"])
+            self.assertIn("TypeError", " ".join(logs.output))
+
+    def test_latest_forecast_waits_for_first_close_while_old_forecast_can_track(self):
+        now = instant("2026-09-15T01:00:00")
+        old = feedback.evaluate(report_fixture(), 15, prices(), {}, calendar_fixture(), now)
+        self.assertEqual(old["entryDate"], "2026-09-14")
+        self.assertEqual(old["dataStatus"], "ready")
+        latest = report_fixture()
+        latest["publishedAt"] = "2026-09-14T10:45:00+08:00"
+        latest["result"]["window"]["startDate"] = "2026-09-15"
+        current = feedback.evaluate(latest, 15, prices(), {}, calendar_fixture(), now)
+        self.assertIsNone(current["returnPct"])
+        self.assertEqual(current["dataStatus"], "waiting_for_close")
+        self.assertIn("2026-09-15", current["note"])
+
     def test_calendar_holidays_aligned_prices_and_percentage_point_excess(self):
         item = outcome()
         self.assertEqual(item["status"], "completed")
@@ -165,6 +224,18 @@ class ArchiveTests(unittest.TestCase):
         database.finish_ai_run("forecast:glm", "2026-09-12", None, "failed", token)
         self.assertEqual(history.history_payload()["totalReports"], 0)
 
+    def test_failed_calendar_refresh_preserves_phase_and_explains_empty_rows(self):
+        self.save()
+        token = feedback.claim_refresh()
+        message = "交易日历解析失败，请更新服务后重试"
+        with patch.object(FeedbackPriceClient, "calendar", side_effect=CalendarUnavailableError(message)):
+            feedback.refresh_feedback(token)
+        self.assertEqual(history.refresh_status()["error"], message)
+        data = history.history_payload(as_of=instant("2026-09-15T01:00:00"))
+        item = data["reports"][0]["concepts"][0]["outcomes"]["15"]
+        self.assertEqual(item["dataStatus"], "unavailable")
+        self.assertEqual(item["note"], message)
+
     def test_real_legacy_reports_migrate_once_before_daily_cache_cleanup(self):
         report = report_fixture()["result"]
         with database.connection() as db:
@@ -266,6 +337,27 @@ class ArchiveTests(unittest.TestCase):
         self.assertEqual(history.reports_to_refresh(), [])
         tracked["benchmarks"]["sh000688"]["returnPct"] = None
         self.put(1, 30, tracked)
+        self.assertEqual(len(history.reports_to_refresh()), 1)
+
+    def test_outage_retains_dated_tracking_prices_without_finalizing_and_remains_retryable(self):
+        self.save()
+        original = {**outcome(), "status": "tracking", "dataStatus": "ready"}
+        self.put(1, 15, original)
+        token = feedback.claim_refresh()
+        with (patch.object(FeedbackPriceClient, "calendar", return_value=calendar_fixture()),
+              patch.object(FeedbackPriceClient, "history", return_value={"rows": []}),
+              patch.object(feedback, "datetime") as clock):
+            clock.now.return_value = instant("2026-10-20T18:00:00")
+            clock.combine = datetime.combine; clock.fromisoformat = datetime.fromisoformat
+            feedback.refresh_feedback(token)
+        data = history.history_payload(as_of=instant("2026-10-20T18:00:00"))
+        saved = data["reports"][0]["concepts"][0]["outcomes"]["15"]
+        self.assertEqual(saved["returnPct"], original["returnPct"])
+        self.assertEqual(saved["exitDate"], original["exitDate"])
+        self.assertEqual(saved["status"], "missing_data")
+        self.assertEqual(saved["dataStatus"], "unavailable")
+        self.assertIn("保留截至", saved["note"])
+        self.assertEqual(data["summaries"]["15"]["sampleCount"], 0)
         self.assertEqual(len(history.reports_to_refresh()), 1)
 
 

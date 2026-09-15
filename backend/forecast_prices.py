@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import re
 from datetime import date
@@ -10,6 +11,28 @@ from . import database
 from .concept_data import ConceptResearchClient
 
 CALENDAR_KEY = "forecast_trade_calendar:v1"
+logger = logging.getLogger(__name__)
+
+
+class CalendarUnavailableError(RuntimeError):
+    """A safe user message with the original failure retained in server logs."""
+
+
+def decode_calendar(encoded: str) -> list[str]:
+    from akshare.stock.cons import hk_js_decode
+    from py_mini_racer import MiniRacer
+
+    # AKShare installs mini-racer on macOS and py-mini-racer 0.6 on Linux.
+    # The Linux class has no context-manager protocol (or explicit close).
+    runtime = MiniRacer()
+    try:
+        runtime.eval(hk_js_decode)
+        raw = runtime.call("d", encoded)
+    finally:
+        close = getattr(runtime, "close", None)
+        if callable(close):
+            close()
+    return sorted({date.fromisoformat(str(value)[:10]).isoformat() for value in raw})
 
 
 def normalize_bars(rows: list, start: str, end: str) -> list[dict]:
@@ -31,28 +54,32 @@ def normalize_bars(rows: list, start: str, end: str) -> list[dict]:
 
 class FeedbackPriceClient(ConceptResearchClient):
     def calendar(self) -> list[str]:
-        saved = json.loads(database.get_meta(CALENDAR_KEY) or "{}")
-        if saved.get("fetchedOn") == database.china_date():
-            return saved["dates"]
         try:
-            from akshare.stock.cons import hk_js_decode
-            from py_mini_racer import MiniRacer
+            saved = json.loads(database.get_meta(CALENDAR_KEY) or "{}")
+            if not isinstance(saved, dict) or not isinstance(saved.get("dates"), list):
+                saved = {}
+        except (ValueError, TypeError):
+            saved = {}
+        if saved.get("fetchedOn") == database.china_date() and saved.get("dates"):
+            return saved["dates"]
+        stage = "读取"
+        try:
             with self._session(trust_env=False) as session:
                 response = session.get("https://finance.sina.com.cn/realstock/company/klc_td_sh.txt", timeout=(3, 8))
                 response.raise_for_status()
+            stage = "解析"
             encoded = response.text.split("=", 1)[1].split(";", 1)[0].strip().strip('"')
-            with MiniRacer() as runtime:
-                runtime.eval(hk_js_decode)
-                raw = runtime.call("d", encoded)
-            dates = sorted({date.fromisoformat(str(value)[:10]).isoformat() for value in raw})
+            dates = decode_calendar(encoded)
             if not dates:
                 raise ValueError("empty calendar")
+            stage = "保存"
             database.set_meta(CALENDAR_KEY, json.dumps({"dates": dates, "fetchedOn": database.china_date()}))
             return dates
-        except Exception:
+        except Exception as error:
+            logger.exception("预测反馈交易日历%s失败", stage)
             if saved.get("dates"):
                 return saved["dates"]
-            raise RuntimeError("交易日历暂不可用，不能把缺行情误判为休市") from None
+            raise CalendarUnavailableError(f"交易日历{stage}失败，暂时无法核对收益；请更新服务后重试，具体原因见服务日志") from error
 
     def history(self, code: str, start: str, end: str) -> dict:
         if not re.fullmatch(r"BK\d+|sh000001|sh000688", code):

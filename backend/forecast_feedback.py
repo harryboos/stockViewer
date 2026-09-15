@@ -11,7 +11,7 @@ from uuid import uuid4
 
 from . import database
 from .forecast_history import BENCHMARKS, HORIZONS, REFRESH_KEY, reports_to_refresh, refresh_status
-from .forecast_prices import FeedbackPriceClient
+from .forecast_prices import CalendarUnavailableError, FeedbackPriceClient
 
 logger = logging.getLogger(__name__)
 _tasks: set[asyncio.Task] = set()
@@ -26,9 +26,13 @@ def bounds(report: dict, days: int) -> tuple[date, date]:
 def pending_outcome(report: dict, days: int, now: datetime) -> dict:
     start, target = bounds(report, days)
     mature = now >= datetime.combine(target, time(15, 10), database.CHINA_TZ)
+    last_closed_day = now.date() if now.time() >= time(15, 10) else now.date() - timedelta(days=1)
+    waiting = last_closed_day < start
     return {"horizonDays": days, "targetDate": target.isoformat(),
             "status": "missing_data" if mature else "pending" if now.date() < start else "tracking",
-            "note": "已到期，等待完整收盘行情核对" if mature else "未到期，阶段表现不计入统计",
+            "dataStatus": "waiting_for_close" if waiting else "awaiting_update",
+            "note": (f"观察期从 {start.isoformat()} 开始，等待首个交易日的完整收盘行情" if waiting
+                     else "已到期，等待完整收盘行情核对" if mature else "等待核对收盘行情，可点击更新实际表现"),
             "returnPct": None, "entryDate": None, "exitDate": None, "entryPrice": None, "exitPrice": None,
             "maxDrawdownPct": None, "maxRisePct": None, "maxFallPct": None, "benchmarks": {}, "path": []}
 
@@ -47,17 +51,17 @@ def evaluate(report: dict, days: int, history: dict, benchmarks: dict,
         return outcome
     # Calendar coverage is required; weekdays alone would misclassify holidays.
     if not calendar or calendar[0] > start.isoformat() or calendar[-1] < through.isoformat():
-        return {**outcome, "note": "交易日历覆盖不足，等待核对"}
+        return {**outcome, "dataStatus": "unavailable", "note": "交易日历覆盖不足，等待核对"}
     published = datetime.fromisoformat(report["publishedAt"])
     if published.tzinfo is None:
-        return {**outcome, "note": "历史发布时间缺少时区，无法可靠计算"}
+        return {**outcome, "dataStatus": "unavailable", "note": "历史发布时间缺少时区，无法可靠计算"}
     sessions = [day for day in calendar if start.isoformat() <= day <= through.isoformat()
                 and datetime.combine(date.fromisoformat(day), time(9, 30), database.CHINA_TZ) > published]
     if not sessions:
-        return {**outcome, "note": "预测发布后尚无可用的完整交易日"}
+        return {**outcome, "dataStatus": "waiting_for_close", "note": "预测发布后尚无可用的完整交易日"}
     rows = {row["date"]: row for row in history.get("rows", [])}
     if any(day not in rows for day in sessions):
-        return {**outcome, "note": "概念日线缺失或不连续，等待补齐后核对"}
+        return {**outcome, "dataStatus": "unavailable", "note": "概念日线缺失或不连续，等待补齐后核对"}
     entry, exit_day = sessions[0], sessions[-1]
     opening, closing = rows[entry]["open"], rows[exit_day]["close"]
     change = _return(opening, closing)
@@ -80,7 +84,7 @@ def evaluate(report: dict, days: int, history: dict, benchmarks: dict,
                         "entryPrice": index_rows[entry]["open"] if ready else None,
                         "exitPrice": index_rows[exit_day]["close"] if ready else None,
                         "source": data.get("source"), "url": data.get("url")}
-    return {**outcome, "status": "completed" if outcome["status"] == "missing_data" else "tracking",
+    return {**outcome, "dataStatus": "ready", "status": "completed" if outcome["status"] == "missing_data" else "tracking",
             "note": "已按完整交易日核对" if outcome["status"] == "missing_data" else "截至最近完整收盘，阶段表现不计入统计",
             "entryDate": entry, "exitDate": exit_day, "entryPrice": opening, "exitPrice": closing,
             "returnPct": change, "maxDrawdownPct": drawdown,
@@ -159,11 +163,18 @@ def refresh_feedback(token: str) -> None:
                         if revised == saved["benchmarks"]:
                             continue
                         value = {**saved, "benchmarks": revised}
+                    elif saved and saved.get("returnPct") is not None and value.get("returnPct") is None:
+                        # Keep a dated tracking observation during an outage, but
+                        # never promote a partial window to a final outcome.
+                        value = {**saved, "status": value["status"], "dataStatus": "unavailable",
+                                 "note": f"{value['note']}；保留截至 {saved['exitDate']} 的上次行情"}
                     value["checkedAt"] = database.now_iso()
                     db.execute("INSERT OR REPLACE INTO forecast_feedback VALUES (?, ?, ?, ?, ?)",
                                (report["id"], code, days, json.dumps(value, ensure_ascii=False), value["checkedAt"]))
                 db.execute("UPDATE forecast_reports SET checked_at = ? WHERE id = ?", (database.now_iso(), report["id"]))
             checked += 1
+    except CalendarUnavailableError as exc:
+        error = str(exc)
     except Exception:
         logger.exception("历史预测反馈更新失败")
         error = "行情或交易日历暂不可用，已保留此前结果，可稍后重试"

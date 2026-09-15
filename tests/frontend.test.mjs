@@ -279,3 +279,22 @@ test('history route is read-only on GET and protects feedback refresh from cross
   assert.equal((await route.GET(new NextRequest('http://localhost:3000/api/forecast/history?page=2'))).status, 200);
   assert.equal(fetch.mock.callCount(), 1);
 });
+
+test('history distinguishes missing data from waiting for the first close', async () => {
+  const { HistoryReportTable } = await server.ssrLoadModule('/components/forecast-history.tsx');
+  const outcome = { status: 'tracking', dataStatus: 'unavailable', targetDate: '2026-09-27',
+    note: '交易日历解析失败，请更新服务后重试', returnPct: null, entryDate: null, exitDate: null,
+    entryPrice: null, exitPrice: null, maxDrawdownPct: null, maxRisePct: null, maxFallPct: null, benchmarks: {} };
+  const entry = { runDate: '2026-09-12', concepts: [{ code: 'BK0976', name: '被动元件概念', outcomes: { '15': outcome } }] };
+  const broken = renderToStaticMarkup(createElement(HistoryReportTable, { entry, days: '15' }));
+  assert.ok(broken.includes('跟踪中 · 数据待补齐'));
+  assert.ok(broken.includes('行情核对未完成'));
+  assert.ok(!broken.includes('等待首个交易日'));
+  assert.ok(broken.indexOf('交易日历解析失败') < broken.indexOf('<details'), 'reason is visible without expanding details');
+  outcome.dataStatus = 'waiting_for_close';
+  outcome.note = '观察期从 2026-09-15 开始，等待首个交易日的完整收盘行情';
+  const waiting = renderToStaticMarkup(createElement(HistoryReportTable, { entry, days: '15' }));
+  assert.ok(waiting.includes('等待首个交易日收盘'));
+  assert.ok(waiting.includes('观察期从 2026-09-15 开始'));
+  assert.ok(!waiting.includes('行情核对未完成'));
+});

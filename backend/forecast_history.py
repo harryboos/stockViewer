@@ -109,6 +109,7 @@ def refresh_status() -> dict:
 def history_payload(page: int = 1, page_size: int = 10, *, as_of: datetime | None = None) -> dict:
     from .forecast_feedback import pending_outcome
     now = as_of or datetime.now(database.CHINA_TZ)
+    refresh = refresh_status()
     with database.connection() as db:
         rows = db.execute(f"SELECT {OVERVIEW_COLUMNS} FROM forecast_reports ORDER BY id DESC").fetchall()
         saved = {(row["report_id"], row["concept_code"], row["horizon_days"]): json.loads(row["result_json"])
@@ -132,8 +133,15 @@ def history_payload(page: int = 1, page_size: int = 10, *, as_of: datetime | Non
                     # Stale tracking prices remain dated but must not become final
                     # just because the calendar has since advanced.
                     outcome = {**pending, **(outcome or {}), "status": pending["status"],
-                               "targetDate": pending["targetDate"],
-                               "note": pending["note"] if pending["status"] == "missing_data" else (outcome or pending)["note"]}
+                               "targetDate": pending["targetDate"]}
+                    if outcome.get("returnPct") is None:
+                        if pending["dataStatus"] == "waiting_for_close":
+                            outcome.update(dataStatus="waiting_for_close", note=pending["note"])
+                        elif (refresh.get("status") == "failed" and refresh.get("error")
+                              and (refresh.get("finishedAt") or "") >= report["publishedAt"]):
+                            outcome.update(dataStatus="unavailable", note=refresh["error"])
+                    elif pending["status"] == "missing_data" and outcome.get("dataStatus") != "unavailable":
+                        outcome["note"] = pending["note"]
                 outcomes[str(days)] = {key: value for key, value in outcome.items() if key != "path"}
                 if primary:
                     cohorts[str(days)].append(outcome)
@@ -145,7 +153,7 @@ def history_payload(page: int = 1, page_size: int = 10, *, as_of: datetime | Non
     return {"reports": entries, "page": page, "pageSize": page_size, "totalReports": len(rows),
             "forecastDays": len(first_ids), "abstentionDays": abstentions,
             "summaries": {days: summarize(items) for days, items in cohorts.items()},
-            "refresh": refresh_status(), "asOf": now.isoformat(timespec="seconds")}
+            "refresh": refresh, "asOf": now.isoformat(timespec="seconds")}
 
 
 def feedback_context(as_of: datetime | None = None) -> dict:
@@ -193,7 +201,7 @@ def reports_to_refresh(limit: int = 12) -> list[dict]:
             continue
         def needs_update(concept: dict, days: int) -> bool:
             item = saved.get((row["id"], concept["code"], days))
-            if item is None or item.get("returnPct") is None:
+            if item is None or item.get("returnPct") is None or item.get("dataStatus") == "unavailable":
                 return True
             if any(item.get("benchmarks", {}).get(code, {}).get("returnPct") is None for code in BENCHMARKS):
                 return True
