@@ -132,8 +132,8 @@ class MarketDataService:
             if self._trade_date and self._trade_date_checked_on == today:
                 return self._trade_date
             try:
-                calendar = self._akshare().tool_trade_date_hist_sina()
-                dates = [item.date() if hasattr(item, "date") else date.fromisoformat(str(item)[:10]) for item in calendar["trade_date"]]
+                from .forecast_prices import FeedbackPriceClient
+                dates = [date.fromisoformat(item) for item in FeedbackPriceClient().calendar()]
                 self._trade_date = max(item for item in dates if item <= today).strftime("%Y%m%d")
             except Exception:
                 self._trade_date = _last_weekday(today).strftime("%Y%m%d")
@@ -213,9 +213,10 @@ class MarketDataService:
         return result
 
     def market_snapshot(self, force: bool = False) -> list[dict[str, Any]]:
+        requested_at = datetime.now(database.CHINA_TZ)
         with self._spot_lock:
             if (
-                not force
+                (not force or (self._spot_fetched_at and self._spot_fetched_at >= requested_at))
                 and self._spot_rows
                 and self._spot_fetched_at
                 and (datetime.now(database.CHINA_TZ) - self._spot_fetched_at).total_seconds() < MARKET.spot_cache_seconds
@@ -913,9 +914,10 @@ class MarketDataService:
         return boards
 
     def sector_overview(self, force: bool = False) -> dict[str, Any]:
+        requested_at = datetime.now(database.CHINA_TZ)
         with self._sector_lock:
             if (
-                not force
+                (not force or (self._sector_fetched_at and self._sector_fetched_at >= requested_at))
                 and self._sector_cache
                 and self._sector_fetched_at
                 and (datetime.now(database.CHINA_TZ) - self._sector_fetched_at).total_seconds()
@@ -1035,9 +1037,18 @@ class MarketDataService:
                     *category_rows.get("concept", [])[:9],
                     *sorted(category_rows.get("concept", []), key=lambda board: board.get("amount") or 0, reverse=True)[:3],
                 ]}.values()),
+                "conceptUniverse": [{"code": board["code"], "name": board["name"]}
+                                    for board in category_rows.get("concept", [])],
                 "turnoverBoards": turnover_boards,
                 "warnings": list(dict.fromkeys(warnings)),
             }
+            from .research_store import save_universe, cache_put
+            if result["conceptUniverse"]:
+                save_universe(result["conceptUniverse"], result["updatedAt"])
+            cache_put("latest-sectors", result)
+            cache_put("rotation-snapshot", {"asOf": result["updatedAt"], "boards": [
+                {key: board[key] for key in ("code", "name", "pctChg", "breadth", "amount")}
+                for board in category_rows.get("concept", [])]})
             database.set_meta(cache_key, json.dumps(result, ensure_ascii=False))
             if debug_errors:
                 logger.warning("板块数据获取异常：%s", "；".join(debug_errors))
@@ -1378,9 +1389,10 @@ class MarketDataService:
                 )
 
     def market_overview(self, force: bool = False) -> dict[str, Any]:
+        requested_at = datetime.now(database.CHINA_TZ)
         with self._overview_lock:
             if (
-                not force
+                (not force or (self._overview_fetched_at and self._overview_fetched_at >= requested_at))
                 and self._overview_cache
                 and self._overview_fetched_at
                 and (datetime.now(database.CHINA_TZ) - self._overview_fetched_at).total_seconds()
@@ -1529,6 +1541,8 @@ class MarketDataService:
             }
             self._overview_cache = result
             self._overview_fetched_at = datetime.now(database.CHINA_TZ)
+            from .research_store import cache_put
+            cache_put("latest-market", result)
             return result
 
     def status(self) -> dict[str, Any]:

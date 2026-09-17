@@ -1,4 +1,6 @@
 'use client';
+import { StockLink } from './stock-detail';
+import { RotationPanel } from './research-panels';
 
 import { useState } from 'react';
 
@@ -125,7 +127,7 @@ function LeaderBoardCard({ board, index }: { board: SectorBoard; index: number }
         {board.leaders.length ? board.leaders.map((leader) => (
           <div key={`${leader.role}-${leader.code ?? leader.name}`}>
             <span>{leader.role}</span>
-            <div><strong>{leader.name}</strong><small>{leader.code ?? '代码待补充'} · {leader.price === null ? '价格暂缺' : `现价 ${leader.price.toFixed(2)}`}</small></div>
+            <div>{leader.code ? <StockLink code={leader.code}><strong>{leader.name}</strong></StockLink> : <strong>{leader.name}</strong>}<small>{leader.code ?? '代码待补充'} · {leader.price === null ? '价格暂缺' : `现价 ${leader.price.toFixed(2)}`}</small></div>
             <b className={(leader.pctChg ?? 0) >= 0 ? 'up-text' : 'down-text'}>{formatPct(leader.pctChg)}</b>
             <em>{leader.amount === null ? '成交额暂缺' : `成交 ${formatAmount(leader.amount).replace('+', '')}`}</em>
           </div>
@@ -142,6 +144,7 @@ export function SectorConceptView({ today, data, loading, onRefresh }: SectorCon
     return (
       <section className="content market-page page-enter">
         <ConceptRecommendations />
+        <RotationPanel />
         <div className="market-loading"><span className="loading-ring" /><strong>正在扫描行业与概念板块</strong><p>合并板块强度、成交额、涨跌广度、资金流和龙头股</p></div>
       </section>
     );
@@ -151,6 +154,7 @@ export function SectorConceptView({ today, data, loading, onRefresh }: SectorCon
     return (
       <section className="content market-page page-enter">
         <ConceptRecommendations />
+        <RotationPanel />
         <div className="market-loading"><strong>板块概念数据暂未加载</strong><button className="refresh-button" onClick={onRefresh}>重新加载</button></div>
       </section>
     );
@@ -200,6 +204,7 @@ export function SectorConceptView({ today, data, loading, onRefresh }: SectorCon
         </div>
       </section>
 
+      <RotationPanel />
       <div className="market-footnote">
         <p>成交额 Top 矩阵在全部行业与概念板块中统一排名；板块强度、今日成交额、上涨家数与领涨股来自东方财富实时板块行情。“较昨日”按前一交易日板块日线成交额计算，主力资金龙头来自板块资金流排名。龙头仅表示当日价格或资金口径靠前，不代表公司基本面质量或后续涨幅。</p>
         {data.warnings.length > 0 && <p className="market-warning">部分扩展数据已降级：{data.warnings.join('；')}</p>}

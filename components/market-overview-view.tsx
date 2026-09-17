@@ -1,4 +1,5 @@
 import { shortTradeDate } from '@/lib/format';
+import { StockLink } from './stock-detail';
 import type { MarketOverview } from '@/lib/types';
 
 
@@ -158,7 +159,7 @@ export function MarketOverviewView({ today, data, loading, onRefresh }: MarketOv
           <div className="market-panel-heading"><div><small>量能焦点</small><h2>成交额前列</h2></div><span>最新快照</span></div>
           <div className="turnover-focus-list">
             {data.topTurnover.map((item, index) => (
-              <div key={item.code}><span>{index + 1}</span><div><strong>{item.name}</strong><small>{item.code}</small></div><b className={(item.pctChg ?? 0) >= 0 ? 'up-text' : 'down-text'}>{formatPct(item.pctChg)}</b><em>{formatAmount(item.amount)}</em></div>
+              <div key={item.code}><span>{index + 1}</span><div><StockLink code={item.code}><strong>{item.name}</strong></StockLink><small>{item.code}</small></div><b className={(item.pctChg ?? 0) >= 0 ? 'up-text' : 'down-text'}>{formatPct(item.pctChg)}</b><em>{formatAmount(item.amount)}</em></div>
             ))}
           </div>
         </article>

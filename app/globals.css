@@ -1,4 +1,5 @@
 @import 'tailwindcss';
+@import './research.css';
 
 :root {
   --ink: #172019;

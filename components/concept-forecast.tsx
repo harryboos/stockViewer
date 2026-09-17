@@ -1,4 +1,5 @@
 'use client';
+import { StockLink } from './stock-detail';
 
 import { SourceLinks, amount, percent, timestamp, tone } from '@/components/concept-recommendations';
 import type { ForecastResearch } from '@/lib/forecast-types';
@@ -81,7 +82,7 @@ export function ForecastResearchCards({ research, today }: { research: ForecastR
                   const valuation = concept.fundamentalData.valuations.find((row) => row.code === stock.code);
                   return (
                     <div className="concept-ai-stock" key={stock.code}>
-                      <div className="concept-ai-stock-quote"><div><strong>{stock.name}</strong><small>{stock.code} · ¥{stock.price.toFixed(2)}</small></div><b className={tone(stock.pctChg)}>{percent(stock.pctChg)}</b></div>
+                      <div className="concept-ai-stock-quote"><div><StockLink code={stock.code}><strong>{stock.name}</strong></StockLink><small>{stock.code} · ¥{stock.price.toFixed(2)}</small></div><b className={tone(stock.pctChg)}>{percent(stock.pctChg)}</b></div>
                       <span>成交 {amount(stock.amount)} · 换手 {number(stock.turnoverRate)}{stock.turnoverRate === null ? '' : '%'}</span>
                       <span>动态 PE {number(valuation?.peDynamic ?? null)} · PB {number(valuation?.pb ?? null)} · 市值 {amount(valuation?.marketCap ?? null)}</span>
                       <p>{stock.reason}</p>
@@ -122,6 +123,7 @@ export function ConceptForecast() {
           {current?.status === 'failed' && <p className="concept-ai-error" role="alert">{current.error || '预测未完成，请重新生成。'}</p>}
           {requestError && <p className="concept-ai-error" role="alert">{requestError} <button onClick={refresh}>重新读取</button></p>}
         </div>
+        {current?.status !== 'succeeded' && result && <p className="data-note">以下保留上次成功结果 · {current?.previousFinishedAt ? timestamp(current.previousFinishedAt) : '完成时间待补'}</p>}
         {result && <ForecastResearchCards research={result} today={today} />}
         <p className="concept-ai-provider">使用 GLM 5.3 MAX 深度分析{current?.finishedAt ? ` · 完成于 ${timestamp(current.finishedAt)}` : ''} · 点击生成才会调用 AI 与联网检索</p>
       </section>

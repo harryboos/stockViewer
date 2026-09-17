@@ -154,7 +154,7 @@ def initialize() -> None:
         if "volume_ratio" not in quote_columns:
             db.execute("ALTER TABLE quote_snapshots ADD COLUMN volume_ratio REAL")
         ai_columns = {str(row["name"]) for row in db.execute("PRAGMA table_info(ai_runs)")}
-        for column in ("prompt_version", "run_token"):
+        for column in ("prompt_version", "run_token", "previous_result_json", "previous_finished_at"):
             if column not in ai_columns:
                 db.execute(f"ALTER TABLE ai_runs ADD COLUMN {column} TEXT")
         db.execute(
@@ -167,6 +167,8 @@ def initialize() -> None:
         # Import real forecasts before daily cache cleanup; retain prompt metadata.
         from .forecast_history import initialize_archive
         initialize_archive(db)
+        from .research_store import initialize as initialize_research
+        initialize_research(db)
         timestamp = now_iso()
         storage_version = db.execute("SELECT value FROM app_meta WHERE key = 'storage_schema_version'").fetchone()
         if not storage_version or storage_version["value"] != STORAGE_SCHEMA_VERSION:
@@ -371,7 +373,9 @@ def get_watchlist_rows() -> list[dict[str, Any]]:
     with connection() as db:
         rows = db.execute(
             """SELECT b.ts_code AS tsCode, b.symbol, b.name, b.area, b.industry,
-            b.market, b.exchange, b.list_date AS listDate,
+            b.market, b.exchange, b.list_date AS listDate, w.added_at AS addedAt,
+            w.group_name AS groupName, w.reason, w.note, w.reference_price AS referencePrice,
+            w.reference_date AS referenceDate,
             q.trade_date AS tradeDate, q.open, q.high, q.low, q.close, q.pre_close AS preClose,
             q.change, q.pct_chg AS pctChg, q.vol, q.amount, q.source, q.fetched_at AS fetchedAt
             FROM watchlist w
@@ -403,15 +407,15 @@ def search_stocks(query: str, limit: int = 20) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
-def add_watch_stock(ts_code: str) -> None:
+def add_watch_stock(ts_code: str) -> bool:
     with _write_lock, connection() as db:
         exists = db.execute("SELECT 1 FROM stock_basics WHERE ts_code = ?", (ts_code,)).fetchone()
         if not exists:
             raise ValueError("股票代码不存在，请先搜索后添加")
-        db.execute(
+        return db.execute(
             "INSERT OR IGNORE INTO watchlist (ts_code, added_at) VALUES (?, ?)",
             (ts_code, now_iso()),
-        )
+        ).rowcount == 1
 
 
 def remove_watch_stock(ts_code: str) -> None:
@@ -465,6 +469,8 @@ def save_strategy_run(run_date: str, trade_date: str, result: list[dict[str, Any
             result_json = excluded.result_json, source = excluded.source, created_at = excluded.created_at""",
             (run_date, trade_date, json.dumps(result, ensure_ascii=False), source, now_iso()),
         )
+        from .research_store import archive_rules
+        archive_rules(db, result, now_iso())
 
 
 def read_ai_run(provider: str, run_date: str) -> dict[str, Any] | None:
@@ -472,6 +478,7 @@ def read_ai_run(provider: str, run_date: str) -> dict[str, Any] | None:
         row = db.execute(
             """SELECT provider, model, status, prompt_version AS promptVersion, started_at AS startedAt,
             result_json AS resultJson, error,
+            previous_result_json AS previousResultJson, previous_finished_at AS previousFinishedAt,
             finished_at AS finishedAt FROM ai_runs WHERE run_date = ? AND provider = ?""",
             (run_date, provider),
         ).fetchone()
@@ -479,6 +486,8 @@ def read_ai_run(provider: str, run_date: str) -> dict[str, Any] | None:
         return None
     result = dict(row)
     result["result"] = decode_result(result.pop("resultJson")) if result["resultJson"] else None
+    previous = result.pop("previousResultJson")
+    result["previousResult"] = decode_result(previous) if previous else None
     if result["status"] == "running" and result["startedAt"] <= _ai_lease_cutoff(provider):
         result.update(status="failed", error="上次模型运行已中断或超时，请重试", result=None)
     return result
@@ -507,10 +516,14 @@ def start_ai_run(provider: str, model: str, run_date: str, prompt_version: str, 
             """INSERT INTO ai_runs (run_date, provider, model, status, started_at, prompt_version, run_token)
             VALUES (?, ?, ?, 'running', ?, ?, ?)
             ON CONFLICT(run_date, provider) DO UPDATE SET model = excluded.model, status = 'running',
+            previous_result_json = CASE WHEN ai_runs.status='succeeded' THEN ai_runs.result_json ELSE ai_runs.previous_result_json END,
+            previous_finished_at = CASE WHEN ai_runs.status='succeeded' THEN ai_runs.finished_at ELSE ai_runs.previous_finished_at END,
             result_json = NULL, error = NULL, started_at = excluded.started_at, finished_at = NULL,
             prompt_version = excluded.prompt_version, run_token = excluded.run_token""",
             (run_date, provider, model, now_iso(), prompt_version, token),
         )
+        db.execute("INSERT INTO ai_attempts(token,provider,started_at,status,stage) VALUES (?,?,?,'running','准备数据')",
+                   (token, provider, now_iso()))
     return token
 
 
@@ -533,3 +546,10 @@ def finish_ai_run(provider: str, run_date: str, result: dict[str, Any] | None, e
             from .forecast_history import archive_run
             archive_run(db, db.execute("SELECT * FROM ai_runs WHERE provider = ? AND run_date = ?",
                                       (provider, run_date)).fetchone())
+        if updated.rowcount:
+            db.execute("UPDATE ai_attempts SET status=?,finished_at=?,stage=? WHERE token=?",
+                       ("succeeded" if result else "failed", now_iso(), "已完成" if result else "失败", token))
+            if provider in {"glm", "deepseek", "qwen"} and result and isinstance(result.get("picks"), list):
+                from .research_store import archive_selection
+                row = db.execute("SELECT model,finished_at FROM ai_runs WHERE run_token=?", (token,)).fetchone()
+                archive_selection(db, run_date, f"ai:{provider}", row["model"], row["finished_at"], result["picks"])

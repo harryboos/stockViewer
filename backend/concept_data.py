@@ -261,6 +261,9 @@ def collect_concept_evidence(*, forecast: bool = False) -> dict:
     candidates.sort(key=lambda row: (row["strengthStatus"] == "recent_strength", bool(row["stocks"]),
                                      row["change5d"] if row["change5d"] is not None else row["pctChg"], row["code"]), reverse=True)
     return {"tradeDate": trade_date, "dataAsOf": overview["updatedAt"],
+            "comparisonUniverse": {"asOf": overview["updatedAt"],
+                "scope": "预测当时可获取的全部有效概念" if overview.get("conceptUniverse") else "预测当时可获取的概念候选（非全市场）",
+                "boards": overview.get("conceptUniverse") or [{"code": row["code"], "name": row["name"]} for row in selected]},
             "scope": (f"从概念涨幅榜与成交额榜选取{len(selected)}个活跃方向比较（非全市场穷举）。"
                       + ("保留短期回调方向，预测的是候选间的相对强势机会。" if forecast else
                          "优先近5/10日正收益方向；历史缺失或短期回调时，仅将当日上涨方向列为活跃观察。")),

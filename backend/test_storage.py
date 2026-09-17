@@ -178,7 +178,7 @@ class StorageTests(unittest.TestCase):
         with patch.object(main, "SCHEDULER", SimpleNamespace(enabled=False)), patch.object(main, "AsyncIOScheduler", return_value=scheduler):
             with TestClient(main.app):
                 scheduler.start.assert_called_once()
-                self.assertEqual([call.kwargs["id"] for call in scheduler.add_job.call_args_list], ["storage-maintenance", "forecast-feedback"])
+                self.assertEqual([call.kwargs["id"] for call in scheduler.add_job.call_args_list], ["storage-maintenance", "forecast-feedback", "research-feedback"])
             scheduler.shutdown.assert_called_once()
 
     def test_orphan_prompt_metadata_is_removed_but_unmigrated_versions_are_kept(self):

@@ -78,16 +78,14 @@ class DataRegressionTests(unittest.TestCase):
 
     def test_trade_calendar_expires_on_next_china_date(self) -> None:
         service = MarketDataService()
-        calendar = pd.DataFrame({"trade_date": [date(2026, 9, 4), date(2026, 9, 7)]})
-        akshare = Mock()
-        akshare.tool_trade_date_hist_sina.return_value = calendar
-        with patch.object(service, "_akshare", return_value=akshare), patch("backend.data_sources.datetime") as clock:
+        calendar = ['2026-09-04', '2026-09-07']
+        with patch('backend.forecast_prices.FeedbackPriceClient.calendar', return_value=calendar) as fetch, patch("backend.data_sources.datetime") as clock:
             clock.now.return_value = datetime(2026, 9, 4, tzinfo=database.CHINA_TZ)
             self.assertEqual(service.latest_trade_date(), "20260904")
             self.assertEqual(service.latest_trade_date(), "20260904")
             clock.now.return_value = datetime(2026, 9, 7, tzinfo=database.CHINA_TZ)
             self.assertEqual(service.latest_trade_date(), "20260907")
-        self.assertEqual(akshare.tool_trade_date_hist_sina.call_count, 2)
+        self.assertEqual(fetch.call_count, 2)
 
     def test_empty_market_response_activates_backoff(self) -> None:
         service = MarketDataService()

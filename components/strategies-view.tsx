@@ -1,8 +1,11 @@
 import { shortTradeDate } from '@/lib/format';
 import { AI_META, PUBLIC_STRATEGY_META, type StrategyMeta } from '@/lib/strategy-meta';
+import { StockLink } from './stock-detail';
+import { SelectionHistoryPanel } from './research-panels';
 import {
   AI_PROVIDERS,
   type AiRunView,
+  type AiProvider,
   type PublicStrategyResult,
   type StrategyId,
   type StrategySummary,
@@ -19,6 +22,8 @@ type StrategiesViewProps = {
   loading: boolean;
   onLoad: () => void;
   onRerun: () => void;
+  aiLoading?: boolean;
+  onGenerateAi?: (provider?: AiProvider, failedOnly?: boolean) => void;
 };
 
 type ExpandableCopyProps = {
@@ -88,6 +93,8 @@ export function StrategiesView({
   loading,
   onLoad,
   onRerun,
+  aiLoading = false,
+  onGenerateAi,
 }: StrategiesViewProps) {
   const publicItems = displayedStrategies(strategies);
   const aiItems = displayedAiRuns(status, aiRuns);
@@ -109,7 +116,7 @@ export function StrategiesView({
           </button>
           <button type="button" className="daily-status daily-button manual-rerun" onClick={onRerun} disabled={loading}>
             <span className="rerun-mark" aria-hidden="true">↻</span>
-            <div><strong>{loading ? '请等待当前任务' : '手动重跑全部'}</strong><small>重新取数 · 会再次调用 AI</small></div>
+            <div><strong>{loading ? '请等待当前任务' : '更新规则策略'}</strong><small>免费行情计算 · 不调用 AI</small></div>
           </button>
         </div>
       </div>
@@ -134,7 +141,7 @@ export function StrategiesView({
                   {strategy.picks.length ? strategy.picks.map((pick, index) => (
                     <div key={pick.code}>
                       <span className="pick-rank">{String(index + 1).padStart(2, '0')}</span>
-                      <strong>{pick.name}</strong>
+                      <StockLink code={pick.code}><strong>{pick.name}</strong></StockLink>
                       <small>{pick.code} · {strictNoFill ? '命中全部条件' : `${pick.score}分`}</small>
                       <p>{pick.reason}</p>
                     </div>
@@ -168,12 +175,14 @@ export function StrategiesView({
 
       <section className="strategy-section ai-section">
         <div className="section-heading">
-          <div><span className="section-index">02</span><div><h2>AI 每日选股</h2><p>三家官方 API 使用完全相同的提示语与输入；失败不会用演示结果冒充</p></div></div>
+          <div><span className="section-index">02</span><div><h2>AI 每日选股</h2><p>浏览只读状态，点击才调用已配置的模型；成功结果不会随失败重试重复生成</p></div></div>
           <span className={`source-count ${aiRunning ? 'ai-running' : 'ai-ready'}`}><i /> {completedAiCount}/3 已完成</span>
         </div>
+        <div className="research-filters"><button className="add-button" disabled={aiLoading || aiRunning || !aiItems.some(run => run.status === 'pending' || run.status === 'failed')} onClick={() => onGenerateAi?.()}>{aiLoading ? 'AI 生成中…' : '生成未完成 AI 选股'}</button><button className="refresh-button" disabled={aiLoading || aiRunning || !aiItems.some(run => run.status === 'failed')} onClick={() => onGenerateAi?.(undefined, true)}>仅重试失败 AI</button><small>调用分析接口可能产生费用</small></div>
         <div className="ai-grid">
           {aiItems.map((run) => {
             const meta = AI_META[run.provider];
+            const result = run.status === 'succeeded' ? run.result : run.previousResult;
             const apiKeyName = {
               deepseek: 'DEEPSEEK_API_KEY',
               glm: 'GLM_API_KEY',
@@ -183,21 +192,23 @@ export function StrategiesView({
               <article className={`ai-card ${meta.theme}`} key={run.provider}>
                 <div className="ai-card-heading">
                   <span className="ai-monogram">{meta.monogram}</span>
-                  <div><small>{meta.model} · {run.model}</small><h3>{run.result?.title ?? meta.fallbackTitle}</h3></div>
+                  <div><small>{meta.model} · {run.model}</small><h3>{result?.title ?? meta.fallbackTitle}</h3></div>
                   <span className={`run-badge status-${run.status}`}>{runStatusLabel(run)}</span>
                 </div>
-                <ExpandableCopy className="ai-desc" previewLength={180} text={run.result?.summary ?? (
+                {run.status !== 'succeeded' && result && <p className="data-note">保留上次成功结果 · {run.previousFinishedAt ? new Date(run.previousFinishedAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }) : '历史结果'}</p>}
+                {run.status === 'failed' && <p className="research-error">{run.error}<button className="text-button" disabled={aiLoading || aiRunning} onClick={() => onGenerateAi?.(run.provider, true)}>仅重试此模型</button></p>}
+                <ExpandableCopy className="ai-desc" previewLength={180} text={result?.summary ?? (
                   run.status === 'not_configured'
                     ? `请在 .env.local 配置 ${apiKeyName}`
-                    : run.status === 'failed' ? run.error : '今日首次进入策略页时自动运行。'
+                    : run.status === 'failed' ? run.error : '点击生成后才开始分析真实行情。'
                 ) ?? '模型运行失败，请点击重试'} />
-                <div className="logic-line"><span>选股逻辑</span><ExpandableCopy className="logic-copy" previewLength={120} text={run.result?.logic ?? meta.logic} /></div>
+                <div className="logic-line"><span>选股逻辑</span><ExpandableCopy className="logic-copy" previewLength={120} text={result?.logic ?? meta.logic} /></div>
                 <div className="ai-picks">
-                  {run.result?.picks.map((pick, index) => (
+                  {result?.picks.map((pick, index) => (
                     <div className="ai-pick-row" key={pick.code}>
                       <span className="rank-circle">{index + 1}</span>
                       <div className="ai-pick-copy">
-                        <div className="ai-pick-name"><strong>{pick.name}</strong><small>{pick.code}</small></div>
+                        <div className="ai-pick-name"><StockLink code={pick.code}><strong>{pick.name}</strong></StockLink><small>{pick.code}</small></div>
                         <ExpandableCopy className="ai-pick-reason" previewLength={110} text={pick.reason} />
                         <ExpandableCopy className="pick-risk" previewLength={80} text={pick.risk} label="风险" />
                       </div>
@@ -234,7 +245,7 @@ export function StrategiesView({
             <div className="summary-subhead"><strong>多策略共识</strong><span>至少被两种独立方法选中</span></div>
             {summary.consensus.length ? (
               <div className="consensus-list">{summary.consensus.map((item, index) => (
-                <div key={item.code}><span className="consensus-rank">{index + 1}</span><div><strong>{item.name}</strong><small>{item.code} · {item.sources.join(' / ')}</small></div><span className="consensus-count"><b>{item.count}</b> 种</span></div>
+                <div key={item.code}><span className="consensus-rank">{index + 1}</span><div><StockLink code={item.code}><strong>{item.name}</strong></StockLink><small>{item.code} · {item.sources.join(' / ')}</small></div><span className="consensus-count"><b>{item.count}</b> 种</span></div>
               ))}</div>
             ) : <div className="summary-empty">暂无多策略共识，单一策略信号不作为总结结论。</div>}
           </div>
@@ -246,6 +257,7 @@ export function StrategiesView({
         </div>
         <p className="summary-footnote">总结只统计页面中已成功取得的真实结果；“多策略共识”表示方法重合，不代表未来上涨概率或买入建议。</p>
       </section>
+      <SelectionHistoryPanel />
     </section>
   );
 }

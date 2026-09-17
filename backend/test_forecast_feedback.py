@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from datetime import date, datetime, timedelta
@@ -49,36 +50,27 @@ def outcome(value=108, benchmark_missing=False):
 
 
 class EvaluationTests(unittest.TestCase):
-    def test_calendar_supports_linux_racer_without_context_manager(self):
-        class LinuxRacer:
-            # py-mini-racer 0.6, selected by AKShare on Linux, has no
-            # __enter__, __exit__ or close; resources are released by __del__.
-            def eval(self, script):
-                pass
+    def test_calendar_decoder_runs_isolated_and_passes_encoded_value_without_code_interpolation(self):
+        output = MagicMock(stdout='["2026-09-14T00:00:00.000Z", "2026-12-31T00:00:00.000Z"]')
+        encoded = 'calendar; process.exit(1); //'
+        with patch('backend.forecast_prices.shutil.which', return_value='/usr/bin/node'), \
+             patch('backend.forecast_prices.subprocess.run', return_value=output) as execute:
+            self.assertEqual(decode_calendar(encoded), ['2026-09-14', '2026-12-31'])
+        args, kwargs = execute.call_args
+        self.assertNotIn(encoded, args[0][-1])
+        self.assertEqual(json.loads(kwargs['input'])['encoded'], encoded)
+        self.assertEqual(kwargs['timeout'], 10)
+        self.assertTrue(kwargs['check'])
 
-            def call(self, function, encoded):
-                return ["2026-09-14T00:00:00.000Z", "2026-12-31T00:00:00.000Z"]
-
+    def test_child_engine_crash_or_timeout_is_contained_and_cached_calendar_survives(self):
         session = MagicMock()
-        session.__enter__.return_value.get.return_value.text = 'var datelist="encoded-calendar";'
-        with (patch("py_mini_racer.MiniRacer", LinuxRacer),
-              patch.object(FeedbackPriceClient, "_session", return_value=session),
-              patch.object(database, "get_meta", return_value=None), patch.object(database, "set_meta")):
-            self.assertEqual(FeedbackPriceClient().calendar(), ["2026-09-14", "2026-12-31"])
-
-    def test_modern_calendar_runtime_is_closed_on_success_and_decode_error(self):
-        for failure in (False, True):
-            runtime = MagicMock()
-            runtime.call.return_value = ["2026-09-14T00:00:00.000Z"]
-            if failure:
-                runtime.call.side_effect = ValueError("invalid data")
-            with patch("py_mini_racer.MiniRacer", return_value=runtime):
-                if failure:
-                    with self.assertRaises(ValueError):
-                        decode_calendar("encoded")
-                else:
-                    self.assertEqual(decode_calendar("encoded"), ["2026-09-14"])
-            runtime.close.assert_called_once()
+        session.__enter__.return_value.get.return_value.text = 'var datelist="encoded";'
+        for failure in (subprocess.CalledProcessError(-6, ['node']), subprocess.TimeoutExpired(['node'], 10)):
+            with patch('backend.forecast_prices.subprocess.run', side_effect=failure), \
+                 patch.object(FeedbackPriceClient, '_session', return_value=session), \
+                 patch.object(database, 'get_meta', return_value=json.dumps({'dates': ['2026-09-14'], 'fetchedOn': '2026-09-01'})), \
+                 self.assertLogs('backend.forecast_prices', level='ERROR'):
+                self.assertEqual(FeedbackPriceClient().calendar(), ['2026-09-14'])
 
     def test_calendar_decode_failure_is_identified_and_valid_cache_survives(self):
         session = MagicMock()

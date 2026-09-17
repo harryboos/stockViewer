@@ -66,6 +66,12 @@ export type AiResult = {
 
 export type WatchlistStock = StockBasic & {
   quote: Quote | null;
+  addedAt?: string;
+  groupName?: string;
+  reason?: string;
+  note?: string;
+  referencePrice?: number | null;
+  referenceDate?: string | null;
 };
 
 export type DataSourceStatus = {
@@ -95,6 +101,8 @@ export type AiRunView = {
   result: AiResult | null;
   error: string | null;
   finishedAt: string | null;
+  previousResult?: AiResult | null;
+  previousFinishedAt?: string | null;
 };
 
 export type StrategyPick = {

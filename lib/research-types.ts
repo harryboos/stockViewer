@@ -1,0 +1,35 @@
+import type { Quote, StockBasic, WatchlistStock, SectorBoard } from './types';
+import type { FeedbackSummary, ForecastOutcome } from './forecast-history-types';
+
+export type ResearchJob = { key: string; name: string; status: 'idle' | 'running' | 'succeeded' | 'failed';
+  error?: string | null; startedAt?: string; finishedAt?: string; progress: { done?: number; total?: number; stage?: string } };
+export type Operations = {
+  sources: { key: string; name: string; state: string; updatedAt: string | null; tradeDate: string | null; error: string | null }[];
+  jobs: ResearchJob[];
+  aiRuns: { provider: string; model: string; status: string; stage?: string; error?: string; finishedAt?: string }[];
+  aiUsage: { runsToday: number; requestsToday: number; failedToday: number; note: string };
+  nextRulesAt: string | null; researchSchedule: string; asOf: string;
+};
+export type StockProfile = { stock: StockBasic; quote: Quote | null; conceptScope: string;
+  concepts: { code: string; name: string; asOf: string; source: string }[];
+  selections: { date: string; publishedAt: string; strategy: string; reason: string; score: number | null }[] };
+export type Candle = { date: string; open: number | null; close: number; high: number | null; low: number | null; vol: number | null; amount: number | null };
+export type StockSeries = { rows: Candle[]; asOf: string; adjustment: string; source: string; warning: string | null };
+export type StockNews = { asOf: string; items: { id: string; title: string; url: string; excerpt: string; publishedAt: string; source: string }[] };
+export type RotationItem = { code: string; name: string; asOf: string; returns: Record<string, number>;
+  ranks: Record<string, number>; rankChanges: Record<string, number>; path: { date: string; close: number }[];
+  snapshot?: { breadth: number; amount: number | null; pctChg: number } };
+export type Rotation = { items: RotationItem[]; coveredCount: number; totalCount: number; asOf: string | null; updatedAt: string | null; snapshotAsOf?: string };
+export type SelectionHistory = { sessions: number; page: number; pageSize: number; total: number; asOf: string;
+  summaries: (FeedbackSummary & { key: string; name: string; days: number })[];
+  entries: { id: number; runDate: string; strategyKey: string; name: string; publishedAt: string; origin: 'first_success' | 'retained_cache';
+    picks: { code: string; name: string; reason: string; outcome: Partial<ForecastOutcome> & { status: string; note: string } }[] }[] };
+export type ComparisonWinner = { code: string; name: string; returnPct: number; entryPrice: number; exitPrice: number; url: string; checkedAt: string };
+export type ConceptComparison = { reportId: number; days: number; status: string; strongest: ComparisonWinner | null;
+  leaders: ComparisonWinner[]; coveredCount: number; totalCount: number; scope: string; universeAsOf: string | null;
+  entryDate: string | null; exitDate: string | null; fullCoverage?: boolean; averageSelectedReturn: number | null; selectedCount?: number;
+  selected: { code: string; name: string; rank: number; returnPct: number; gapPct: number }[] };
+export type DailyDigestData = { asOf: string; quoteDate: string | null; watchMovers: WatchlistStock[];
+  market: { tradeDate: string; updatedAt: string; snapshot: { breadth: number; turnover: number }; warnings: string[] } | null;
+  strongBoards: SectorBoard[]; sectorAsOf: string | null; rotationLeaders: RotationItem[];
+  recentSelections: SelectionHistory['entries']; forecastSummaries: Record<'15' | '30', FeedbackSummary>; note: string };

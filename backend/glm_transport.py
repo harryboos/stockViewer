@@ -155,6 +155,9 @@ async def post_research(url: str, headers: dict[str, str], payload: dict[str, An
             async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_seconds, connect=20.0)) as client:
                 for attempt in range(1, MAX_ATTEMPTS + 1):
                     try:
+                        from .research_jobs import ai_token, record_ai_stage
+                        if ai_token.get():
+                            await asyncio.to_thread(record_ai_stage, ai_token.get(), f"GLM 深度分析 · 第 {attempt} 次请求", call=True)
                         async with client.stream("POST", url, headers=headers, json={**payload, "stream": True}) as response:
                             if response.status_code >= 400:
                                 try:
@@ -190,6 +193,8 @@ async def post_research(url: str, headers: dict[str, str], payload: dict[str, An
                         raise failure  # Honor Retry-After; never retry earlier to fit our budget.
                     logger.warning("forecast_glm_retry attempt=%s/%s delay=%.1fs reason=%s",
                                    attempt, MAX_ATTEMPTS, delay, failure)
+                    if ai_token.get():
+                        await asyncio.to_thread(record_ai_stage, ai_token.get(), f"高峰等待 {delay:.0f} 秒后重试")
                     await asyncio.sleep(delay)
     except TimeoutError as error:
         raise RequestFailure("GLM 深度分析及高峰重试等待超时，请稍后重新生成") from error

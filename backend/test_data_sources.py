@@ -40,6 +40,13 @@ class _FakeSession:
 
 
 class MarketDataServiceTests(unittest.TestCase):
+    def setUp(self):
+        # These source tests isolate persistence; durable research records have their own suite.
+        for target in ('cache_put', 'save_universe'):
+            mocked = patch(f'backend.research_store.{target}')
+            mocked.start()
+            self.addCleanup(mocked.stop)
+
     def test_delay_route_paginates_and_reuses_successful_session(self) -> None:
         pages = {
             1: {"data": {"total": 3, "diff": [{"f12": "000001"}, {"f12": "000002"}]}},

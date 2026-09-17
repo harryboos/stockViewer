@@ -14,8 +14,8 @@ async function readJson(response) {
 }
 
 try {
-  const system = await readJson(await fetch(`${backendUrl}/api/system`, { signal: AbortSignal.timeout(10_000) }));
-  if (!system.providers.marketData) throw new Error('免费行情服务未就绪，请先运行 npm run setup');
+  // Reachable service can obtain its first quotes during calculation; no cached quote is required.
+  await readJson(await fetch(`${backendUrl}/api/system`, { signal: AbortSignal.timeout(10_000) }));
 
   const headers = runSecret ? { 'x-daily-run-secret': runSecret } : {};
   const result = await readJson(await fetch(`${backendUrl}/api/daily`, { method: 'POST', headers, signal: AbortSignal.timeout(600_000) }));

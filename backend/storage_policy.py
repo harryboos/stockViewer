@@ -113,5 +113,11 @@ def cleanup(db: sqlite3.Connection, today: date, lease_cutoff) -> dict:
             if run is None or run["prompt_version"] is not None:
                 prompt_keys.append((row["key"],))
     db.executemany("DELETE FROM app_meta WHERE key = ?", prompt_keys)
+    cache_removed = db.execute("""DELETE FROM research_cache WHERE substr(updated_at,1,10) < ?
+        AND cache_key NOT IN ('latest-market','latest-sectors','rotation','rotation-snapshot')""",
+                               ((today - timedelta(days=7)).isoformat(),)).rowcount
+    attempts_removed = db.execute("DELETE FROM ai_attempts WHERE substr(started_at,1,10) < ?",
+                                  ((today - timedelta(days=30)).isoformat(),)).rowcount
     return {"date": today.isoformat(), "metaRemoved": len(remove) + len(prompt_keys),
-            "strategyRemoved": len(strategy_keys), "aiRemoved": len(ai_keys)}
+            "strategyRemoved": len(strategy_keys), "aiRemoved": len(ai_keys),
+            "researchCacheRemoved": cache_removed, "attemptsRemoved": attempts_removed}

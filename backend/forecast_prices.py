@@ -5,6 +5,9 @@ import json
 import logging
 import math
 import re
+import shutil
+import subprocess
+import threading
 from datetime import date
 
 from . import database
@@ -12,6 +15,15 @@ from .concept_data import ConceptResearchClient
 
 CALENDAR_KEY = "forecast_trade_calendar:v1"
 logger = logging.getLogger(__name__)
+_calendar_lock = threading.Lock()
+_DECODER = """
+const fs = require('node:fs');
+const vm = require('node:vm');
+const input = JSON.parse(fs.readFileSync(0, 'utf8'));
+const output = vm.runInNewContext(input.source + '; JSON.stringify(d(encoded))',
+  { encoded: input.encoded }, { timeout: 5000 });
+process.stdout.write(output);
+"""
 
 
 class CalendarUnavailableError(RuntimeError):
@@ -20,18 +32,19 @@ class CalendarUnavailableError(RuntimeError):
 
 def decode_calendar(encoded: str) -> list[str]:
     from akshare.stock.cons import hk_js_decode
-    from py_mini_racer import MiniRacer
-
-    # AKShare installs mini-racer on macOS and py-mini-racer 0.6 on Linux.
-    # The Linux class has no context-manager protocol (or explicit close).
-    runtime = MiniRacer()
-    try:
-        runtime.eval(hk_js_decode)
-        raw = runtime.call("d", encoded)
-    finally:
-        close = getattr(runtime, "close", None)
-        if callable(close):
-            close()
+    node = shutil.which('node')
+    if not node:
+        raise RuntimeError('交易日历解析需要项目已有的 Node.js 运行环境')
+    # Native MiniRacer initialization can abort the entire Python process when
+    # multiple background workers first initialize it. Use the project's existing
+    # Node runtime in a bounded child process; an engine crash cannot kill FastAPI.
+    # Provider data is passed as a value, never interpolated into executable code.
+    process = subprocess.run([node, '--max-old-space-size=64', '-e', _DECODER],
+                             input=json.dumps({'source': hk_js_decode, 'encoded': encoded}),
+                             text=True, capture_output=True, check=True, timeout=10)
+    raw = json.loads(process.stdout)
+    if not isinstance(raw, list) or not raw:
+        raise ValueError('empty calendar')
     return sorted({date.fromisoformat(str(value)[:10]).isoformat() for value in raw})
 
 
@@ -54,6 +67,11 @@ def normalize_bars(rows: list, start: str, end: str) -> list[dict]:
 
 class FeedbackPriceClient(ConceptResearchClient):
     def calendar(self) -> list[str]:
+        # All consumers share the same durable calendar and initialization lock.
+        with _calendar_lock:
+            return self._calendar()
+
+    def _calendar(self) -> list[str]:
         try:
             saved = json.loads(database.get_meta(CALENDAR_KEY) or "{}")
             if not isinstance(saved, dict) or not isinstance(saved.get("dates"), list):

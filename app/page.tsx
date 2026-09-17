@@ -9,12 +9,15 @@ import { MarketOverviewView } from '@/components/market-overview-view';
 import { SectorConceptView } from '@/components/sector-concept-view';
 import { StrategiesView } from '@/components/strategies-view';
 import { WatchlistView } from '@/components/watchlist-view';
+import { StockDetailProvider } from '@/components/stock-detail';
+import { DailyDigest, OperationsView } from '@/components/research-panels';
 import { errorMessage, isAbortError, jsonFetch } from '@/lib/client-api';
 import { formatChinaDate } from '@/lib/format';
 import { buildStrategySummary } from '@/lib/strategy-summary';
 import {
   AI_PROVIDERS,
   type AiRunView,
+  type AiProvider,
   type MarketOverview,
   type PublicStrategyResult,
   type SectorOverview,
@@ -25,7 +28,7 @@ import {
 } from '@/lib/types';
 
 
-type ActiveTab = 'watchlist' | 'strategies' | 'market' | 'sectors' | 'forecast';
+type ActiveTab = 'watchlist' | 'strategies' | 'market' | 'sectors' | 'forecast' | 'digest' | 'operations';
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('watchlist');
@@ -45,7 +48,10 @@ export default function Home() {
   const [sectorLoading, setSectorLoading] = useState(false);
   const [searching, setSearching] = useState(false);
   const [toast, setToast] = useState('');
-  const [error, setError] = useState('');
+  const [errors, setErrors] = useState<Partial<Record<ActiveTab, string>>>({});
+  const setError = useCallback((value: string, tab: ActiveTab = 'watchlist') => setErrors(current => ({ ...current, [tab]: value })), []);
+  const [aiSubmitting, setAiSubmitting] = useState(false);
+  const aiSubmitLock = useRef(false);
   const [watchlistBusy, setWatchlistBusy] = useState(false);
   const watchlistLock = useRef(false);
   const strategyLock = useRef(false);
@@ -59,23 +65,22 @@ export default function Home() {
   useEffect(() => {
     const controller = new AbortController();
     const options = { signal: controller.signal };
-    Promise.allSettled([
-      jsonFetch<SystemStatus>('/api/system', options),
-      jsonFetch<WatchlistResponse>('/api/watchlist', options),
-      jsonFetch<{ runs: AiRunView[] }>('/api/strategies/ai', options),
-    ]).then(([system, watchlist, ai]) => {
-      if (controller.signal.aborted) return;
-      if (system.status === 'fulfilled') {
-        setStatus({ ...system.value, dataSource: watchlist.status === 'fulfilled' ? watchlist.value.dataSource : system.value.dataSource });
-      }
-      if (watchlist.status === 'fulfilled') setStocks(watchlist.value.stocks);
-      if (ai.status === 'fulfilled') setAiRuns(ai.value.runs);
-      const failed = [system, watchlist].find((result) => result.status === 'rejected');
-      if (failed?.status === 'rejected') setError(errorMessage(failed.reason, '应用初始化失败'));
-      setLoading(false);
-    });
+    void jsonFetch<SystemStatus>('/api/system', options).then(value => { if (!controller.signal.aborted) setStatus(value); }).catch(cause => { if (!controller.signal.aborted) setError(errorMessage(cause, '系统状态读取失败'), 'operations'); });
+    const readWatchlist = async () => {
+      try {
+        const cached = await jsonFetch<WatchlistResponse>('/api/watchlist?cached_only=true', options);
+        if (controller.signal.aborted) return;
+        applyWatchlist(cached); setLoading(false);
+        const latest = await jsonFetch<WatchlistResponse>('/api/watchlist', options);
+        if (!controller.signal.aborted) applyWatchlist(latest);
+      } catch (cause) {
+        if (!controller.signal.aborted) setError(errorMessage(cause, '自选行情读取失败'));
+      } finally { if (!controller.signal.aborted) setLoading(false); }
+    };
+    void readWatchlist();
+    void jsonFetch<{ runs: AiRunView[] }>('/api/strategies/ai', options).then(value => { if (!controller.signal.aborted) setAiRuns(value.runs); }).catch(cause => { if (!controller.signal.aborted) setError(errorMessage(cause, 'AI 状态读取失败'), 'strategies'); });
     return () => controller.abort();
-  }, []);
+  }, [applyWatchlist, setError]);
 
   useEffect(() => {
     if (!toast) return;
@@ -112,7 +117,7 @@ export default function Home() {
     if (strategyLock.current) return;
     strategyLock.current = true;
     setStrategyLoading(true);
-    setError('');
+    setError('', 'strategies');
     const loadRules = async () => {
       const data = await jsonFetch<{ strategies: PublicStrategyResult[] }>(`/api/strategies/public${force ? '?force=true' : ''}`);
       setPublicStrategies(data.strategies);
@@ -120,42 +125,34 @@ export default function Home() {
     const loadAi = async () => {
       const aiData = await jsonFetch<{ runs: AiRunView[] }>('/api/strategies/ai');
       setAiRuns(aiData.runs);
-      if (force || aiData.runs.some((run) => run.status === 'pending' || run.status === 'failed')) {
-        setAiRuns((runs) => runs.map((run) => (
-          run.status === 'pending' || run.status === 'failed' || (force && run.status === 'succeeded')
-            ? { ...run, status: 'running', error: null, result: null, finishedAt: null }
-            : run
-        )));
-        try {
-          const completed = await jsonFetch<{ runs: AiRunView[] }>(`/api/strategies/ai${force ? '?force=true' : ''}`, { method: 'POST' });
-          setAiRuns(completed.runs);
-        } catch (reason) {
-          try {
-            const current = await jsonFetch<{ runs: AiRunView[] }>('/api/strategies/ai');
-            setAiRuns(current.runs);
-          } catch {
-            setAiRuns((runs) => runs.map((run) => run.status === 'running'
-              ? { ...run, status: 'failed', error: '暂时无法确认运行结果，请检查今日策略状态', result: null }
-              : run));
-          }
-          throw reason;
-        }
-      }
     };
     try {
       const results = await Promise.allSettled([loadRules(), loadAi()]);
       const failures = results.filter((result) => result.status === 'rejected');
-      if (failures.length) setError(failures.map((result) => errorMessage(result.reason, '策略加载失败')).join('；'));
-      else if (force) setToast('手动重跑请求已完成，请查看各模型状态');
+      if (failures.length) setError(failures.map((result) => errorMessage(result.reason, '策略加载失败')).join('；'), 'strategies');
+      else if (force) setToast('规则策略已更新，AI 结果保持原样');
     } finally {
       strategyLock.current = false;
       setStrategyLoading(false);
     }
-  }, []);
+  }, [setError]);
+
+  async function generateAi(provider?: AiProvider, failedOnly = false) {
+    if (aiSubmitLock.current) return;
+    aiSubmitLock.current = true; setAiSubmitting(true); setError('', 'strategies');
+    const params = new URLSearchParams();
+    if (provider) params.set('provider', provider);
+    if (failedOnly) params.set('failed_only', 'true');
+    try {
+      const result = await jsonFetch<{ runs: AiRunView[] }>(`/api/strategies/ai?${params}`, { method: 'POST' });
+      setAiRuns(result.runs);
+    } catch (cause) { setError(errorMessage(cause, 'AI 生成失败，稍后检查运行状态'), 'strategies'); }
+    finally { aiSubmitLock.current = false; setAiSubmitting(false); }
+  }
 
   const hasRunningAi = aiRuns.some((run) => run.status === 'running');
   useEffect(() => {
-    if (!hasRunningAi || strategyLoading) return;
+    if (!hasRunningAi && !aiSubmitting) return;
     const controller = new AbortController();
     let timer: number;
     const poll = async () => {
@@ -170,13 +167,10 @@ export default function Home() {
     };
     timer = window.setTimeout(poll, 3000);
     return () => { controller.abort(); window.clearTimeout(timer); };
-  }, [hasRunningAi, strategyLoading]);
+  }, [hasRunningAi, aiSubmitting]);
 
   const rerunStrategies = useCallback(() => {
-    const confirmed = window.confirm(
-      '手动重跑会重新获取行情、重新计算全部规则策略，并再次调用所有已配置的 AI，可能产生接口费用。确定继续吗？',
-    );
-    if (confirmed) void loadStrategies(true);
+    void loadStrategies(true);
   }, [loadStrategies]);
 
   const openStrategies = useCallback(() => {
@@ -186,16 +180,16 @@ export default function Home() {
 
   const loadMarketOverview = useCallback(async (force = false) => {
     setMarketLoading(true);
-    setError('');
+    setError('', 'market');
     try {
       const queryString = force ? '?force=true' : '';
       setMarketOverview(await jsonFetch<MarketOverview>(`/api/market/overview${queryString}`));
     } catch (reason) {
-      setError(errorMessage(reason, '大盘数据加载失败'));
+      setError(errorMessage(reason, '大盘数据加载失败'), 'market');
     } finally {
       setMarketLoading(false);
     }
-  }, []);
+  }, [setError]);
 
   const openMarket = useCallback(() => {
     setActiveTab('market');
@@ -204,16 +198,16 @@ export default function Home() {
 
   const loadSectorOverview = useCallback(async (force = false) => {
     setSectorLoading(true);
-    setError('');
+    setError('', 'sectors');
     try {
       const queryString = force ? '?force=true' : '';
       setSectorOverview(await jsonFetch<SectorOverview>(`/api/market/sectors${queryString}`));
     } catch (reason) {
-      setError(errorMessage(reason, '板块概念数据加载失败'));
+      setError(errorMessage(reason, '板块概念数据加载失败'), 'sectors');
     } finally {
       setSectorLoading(false);
     }
-  }, []);
+  }, [setError]);
 
   const openSectors = useCallback(() => {
     setActiveTab('sectors');
@@ -300,7 +294,7 @@ export default function Home() {
   );
 
   return (
-    <main className="app-shell">
+    <StockDetailProvider><main className="app-shell">
       <AppHeader
         activeTab={activeTab}
         status={status}
@@ -310,10 +304,12 @@ export default function Home() {
         onOpenMarket={openMarket}
         onOpenSectors={openSectors}
         onOpenForecast={() => setActiveTab('forecast')}
+        onOpenDigest={() => setActiveTab('digest')}
+        onOpenOperations={() => setActiveTab('operations')}
       />
 
-      {error && (
-        <div className="global-error" role="alert"><span>!</span><strong>{error}</strong><button onClick={() => setError('')}>关闭</button></div>
+      {errors[activeTab] && (
+        <div className="global-error" role="alert"><span>!</span><strong>{errors[activeTab]}</strong><button onClick={() => setError('', activeTab)}>关闭</button></div>
       )}
 
       {activeTab === 'watchlist' ? (
@@ -329,6 +325,7 @@ export default function Home() {
           onOpenAdd={() => setModalOpen(true)}
           onOpenStrategies={openStrategies}
           onRemove={(stock) => void removeStock(stock)}
+          onUpdated={applyWatchlist}
         />
       ) : activeTab === 'strategies' ? (
         <StrategiesView
@@ -340,6 +337,8 @@ export default function Home() {
           loading={strategyLoading}
           onLoad={() => void loadStrategies()}
           onRerun={rerunStrategies}
+          aiLoading={aiSubmitting}
+          onGenerateAi={(provider, failedOnly) => void generateAi(provider, failedOnly)}
         />
       ) : activeTab === 'market' ? (
         <MarketOverviewView
@@ -348,6 +347,10 @@ export default function Home() {
           loading={marketLoading}
           onRefresh={() => void loadMarketOverview(true)}
         />
+      ) : activeTab === 'digest' ? (
+        <DailyDigest navigate={tab => { if (tab === 'market') openMarket(); else if (tab === 'sectors') openSectors(); else if (tab === 'strategies') openStrategies(); else setActiveTab(tab); }} />
+      ) : activeTab === 'operations' ? (
+        <OperationsView />
       ) : activeTab === 'forecast' ? (
         <ConceptForecast />
       ) : (
@@ -372,6 +375,6 @@ export default function Home() {
       )}
 
       {toast && <div className="toast" role="status"><span>✓</span>{toast}</div>}
-    </main>
+    </main></StockDetailProvider>
   );
 }

@@ -80,6 +80,7 @@ class AiResult(BaseModel):
 
 RESULT_SCHEMA = AiResult.model_json_schema()
 _daily_task: asyncio.Task[dict[str, Any]] | None = None
+_scoped_tasks: dict[tuple, asyncio.Task] = {}
 
 
 def read_secret(name: str) -> str | None:
@@ -220,6 +221,9 @@ async def _call_compatible(
     if provider == "glm" and reasoning_effort:
         request.update(thinking={"type": "enabled"}, reasoning_effort=reasoning_effort)
     transport = _post_json
+    from .research_jobs import ai_token, record_ai_stage
+    if not resilient_stream and ai_token.get():
+        await asyncio.to_thread(record_ai_stage, ai_token.get(), "模型分析中", call=True)
     if resilient_stream:
         if provider != "glm":
             raise ValueError("长时研究流式请求仅用于 GLM")
@@ -254,6 +258,8 @@ async def _execute_provider(
     token = database.start_ai_run(provider, model, run_date, PROMPT_VERSION, force)
     if token is None:
         return database.read_ai_run(provider, run_date) or _empty_run(provider, "pending")
+    from .research_jobs import ai_token
+    context_token = ai_token.set(token)
     try:
         prompt = _build_prompt(candidates)
         raw = await asyncio.wait_for(_call_compatible(provider, prompt, model, key), timeout=100)
@@ -285,6 +291,8 @@ async def _execute_provider(
     except Exception as error:
         database.finish_ai_run(provider, run_date, None, f"未预期错误：{error}", token)
         return database.read_ai_run(provider, run_date) or _empty_run(provider, "failed")
+    finally:
+        ai_token.reset(context_token)
 
 
 def get_daily_ai_runs(run_date: str | None = None) -> dict[str, Any]:
@@ -299,20 +307,31 @@ def get_daily_ai_runs(run_date: str | None = None) -> dict[str, Any]:
     return {"runDate": run_date, "runs": runs}
 
 
-async def run_daily_ai(force: bool = False) -> dict[str, Any]:
+async def run_daily_ai(force: bool = False, provider: Provider | None = None, failed_only: bool = False) -> dict[str, Any]:
     global _daily_task
+    if provider is not None or failed_only:
+        scope = (provider, failed_only)
+        task = _scoped_tasks.get(scope)
+        if task is None or task.done():
+            task = asyncio.create_task(_run_daily_ai(force, provider, failed_only))
+            _scoped_tasks[scope] = task
+            task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+        return await asyncio.shield(task)
     if _daily_task is None or _daily_task.done():
-        _daily_task = asyncio.create_task(_run_daily_ai(force))
+        work = _run_daily_ai(force) if provider is None and not failed_only else _run_daily_ai(force, provider, failed_only)
+        _daily_task = asyncio.create_task(work)
         # Retrieve abandoned errors when a disconnected caller stops awaiting.
         _daily_task.add_done_callback(lambda task: None if task.cancelled() else task.exception())
     return await asyncio.shield(_daily_task)
 
 
-async def _run_daily_ai(force: bool) -> dict[str, Any]:
+async def _run_daily_ai(force: bool, provider: Provider | None = None, failed_only: bool = False) -> dict[str, Any]:
     run_date = database.china_date()
     current = get_daily_ai_runs(run_date)
     needed = [run for run in current["runs"] if run["status"] in {"pending", "failed"}
               or (force and run["status"] == "succeeded")]
+    needed = [run for run in needed if (provider is None or run["provider"] == provider)
+              and (not failed_only or run["status"] == "failed")]
     if not needed:
         return current
     try:

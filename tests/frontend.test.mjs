@@ -33,6 +33,68 @@ before(async () => {
 
 after(async () => { await server?.close(); });
 
+test('research job requests preserve the job key and block cross-site execution', async (t) => {
+  const fetch = t.mock.method(globalThis, 'fetch', async (url, options) => {
+    assert.equal(new URL(url).searchParams.get('key'), 'comparison');
+    assert.equal(options.method, 'POST');
+    return new Response('{"status":"running"}');
+  });
+  const route = await server.ssrLoadModule('/app/api/research/jobs/route.ts');
+  const allowed = await route.POST(new NextRequest('http://localhost:3000/api/research/jobs?key=comparison', { method: 'POST' }));
+  assert.equal(allowed.status, 200);
+  const blocked = await route.POST(new NextRequest('http://localhost:3000/api/research/jobs?key=comparison', {
+    method: 'POST', headers: { origin: 'https://untrusted.test', 'sec-fetch-site': 'cross-site' },
+  }));
+  assert.equal(blocked.status, 403);
+  assert.equal(fetch.mock.callCount(), 1);
+});
+
+test('watch notes forward PATCH body and reject cross-site edits', async (t) => {
+  const fetch = t.mock.method(globalThis, 'fetch', async (_url, options) => {
+    assert.equal(options.method, 'PATCH');
+    assert.equal(JSON.parse(options.body).note, '关注订单');
+    return new Response('{"stocks":[]}');
+  });
+  const route = await server.ssrLoadModule('/app/api/watchlist/route.ts');
+  const result = await route.PATCH(new NextRequest('http://localhost:3000/api/watchlist', {
+    method: 'PATCH', body: JSON.stringify({ tsCode: '600519.SH', note: '关注订单' }),
+    headers: { 'content-type': 'application/json' },
+  }));
+  assert.equal(result.status, 200);
+  const blocked = await route.PATCH(new NextRequest('http://localhost:3000/api/watchlist', {
+    method: 'PATCH', headers: { origin: 'https://untrusted.test' },
+  }));
+  assert.equal(blocked.status, 403);
+  assert.equal(fetch.mock.callCount(), 1);
+});
+
+test('hindsight comparison labels partial coverage and exact dates, never calls it prediction accuracy', async () => {
+  const { ComparisonResult } = await server.ssrLoadModule('/components/research-panels.tsx');
+  const leader = { code: 'BK1002', name: '测试赢家', returnPct: 12, entryPrice: 100, exitPrice: 112, url: 'https://example.org', checkedAt: '2026-09-28T18:00:00+08:00' };
+  const data = { reportId: 1, days: 15, strongest: leader, leaders: [leader], status: 'completed',
+    coveredCount: 2, totalCount: 3, fullCoverage: false, scope: '预测时冻结的范围', universeAsOf: '2026-09-12T18:00:00+08:00',
+    entryDate: '2026-09-14', exitDate: '2026-09-24', averageSelectedReturn: 8, selectedCount: 2,
+    selected: [{ code: 'BK1001', name: '测试预测', rank: 2, returnPct: 8, gapPct: -4 }] };
+  const html = renderToStaticMarkup(createElement(ComparisonResult, { data }));
+  for (const text of ['事后比较', '已覆盖范围最强', '2026-09-14', '2026-09-24', '2/3', '+12.00%', '+8.00%', '-4.00 个百分点', '1/2', '不计入预测命中率']) {
+    assert.ok(html.includes(text), text);
+  }
+  const empty = renderToStaticMarkup(createElement(ComparisonResult, { data: null }));
+  assert.ok(empty.includes('尚无同区间的完整对照行情'));
+  assert.ok(!empty.includes('0.00%'));
+});
+
+test('stock candle chart renders verified OHLC and no fake bars for missing values', async () => {
+  const { CandleChart } = await server.ssrLoadModule('/components/stock-detail.tsx');
+  const rows = [{ date: '20260917', open: 100, high: 112, low: 99, close: 110, vol: 2500 }];
+  const html = renderToStaticMarkup(createElement(CandleChart, { rows }));
+  assert.ok(html.includes('20260917 开 100 高 112 低 99 收 110 成交量 2500 股'));
+  assert.ok(html.includes('前复权'));
+  const missing = renderToStaticMarkup(createElement(CandleChart, { rows: [{ ...rows[0], open: null }] }));
+  assert.ok(missing.includes('尚无可展示的完整日线'));
+  assert.ok(!missing.includes('<svg'));
+});
+
 test('watchlist excludes missing changes, flat stocks and stale trading dates from gains', () => {
   const values = [
     { tradeDate: '20260907', pctChg: 2 }, { tradeDate: '20260907', pctChg: -1 },

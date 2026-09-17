@@ -10,7 +10,7 @@ export function chinaDay() {
 
 // Reading a tab never starts paid work. Both modules keep their own daily server cache.
 export function useDailyConceptRun<Result>(endpoint: string, label: string) {
-  type Run = Omit<ConceptRun, 'result'> & { result: Result | null };
+  type Run = Omit<ConceptRun, 'result' | 'previousResult'> & { result: Result | null; previousResult?: Result | null };
   const [run, setRun] = useState<Run | null>(null);
   const [requestError, setRequestError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -46,7 +46,7 @@ export function useDailyConceptRun<Result>(endpoint: string, label: string) {
   }, [endpoint, label, revision, today]);
 
   const current = run?.runDate === today ? run : null;
-  const result = current?.status === 'succeeded' ? current.result : null;
+  const result = current?.status === 'succeeded' ? current.result : current?.previousResult ?? null;
   const busy = submitting || current?.status === 'running';
 
   async function generate() {

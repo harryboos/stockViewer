@@ -5,6 +5,8 @@ import { percent, timestamp, tone } from '@/components/concept-recommendations';
 import { errorMessage, jsonFetch } from '@/lib/client-api';
 import type { ForecastResearch } from '@/lib/forecast-types';
 import type { BenchmarkCode, FeedbackRefresh, FeedbackSummary, ForecastHistoryData, ForecastOutcome, HistoryEntry, Horizon } from '@/lib/forecast-history-types';
+import { ComparisonPanel } from './research-panels';
+import { JobButton } from './research-common';
 
 const benchmarks = [['sh000001', '上证指数'], ['sh000688', '科创50']] as const;
 const rate = (value: number | null) => value === null ? '—' : `${value.toFixed(1)}%`;
@@ -104,7 +106,7 @@ export function ForecastHistory({ finishedAt, renderResearch }: { finishedAt?: s
 
   const busy = submitting || data?.refresh.status === 'running';
   return <section className="concept-ai-section forecast-history-section" aria-labelledby="forecast-history-title" aria-busy={busy}>
-    <div className="concept-ai-heading"><div><p className="eyebrow">预测 → 实际表现 → 反馈</p><h2 id="forecast-history-title">历史预测与准确率</h2><p>保留当时的判断，用之后的行情检验，让下一次预测有据可循。</p></div><button className="refresh-button" disabled={busy || !data?.totalReports} onClick={update}>{busy ? '正在核对行情…' : '更新实际表现'}</button></div>
+    <div className="concept-ai-heading"><div><p className="eyebrow">预测 → 实际表现 → 反馈</p><h2 id="forecast-history-title">历史预测与准确率</h2><p>保留当时的判断，用之后的行情检验，让下一次预测有据可循。</p></div><div className="research-filters"><button className="refresh-button" disabled={busy || !data?.totalReports} onClick={update}>{busy ? '正在核对行情…' : '更新实际表现'}</button><JobButton jobKey="comparison" label="核对同期最强" /></div></div>
     {error && <p className="concept-ai-error" role="alert">{error} <button onClick={() => setRevision(value => value + 1)}>重试</button></p>}
     {!data && !error && <p className="concept-ai-state">正在读取历史预测…</p>}
     {data && <>
@@ -121,6 +123,7 @@ export function ForecastHistory({ finishedAt, renderResearch }: { finishedAt?: s
       {data.page === page && data.reports.map(entry => <article className="feedback-report" key={entry.id}>
         <header><div><h4>{entry.runDate} 预测</h4><small>发布于 {timestamp(entry.publishedAt)} · 北京时间 · 版本 #{entry.id}</small></div><span className={`feedback-cohort ${entry.includedInStats ? 'primary' : ''}`}>{entry.includedInStats ? '当日首次 · 计入统计' : '重生成版本 · 不计统计'}</span></header>
         <HistoryReportTable entry={entry} days={days} />
+        <ComparisonPanel reportId={entry.id} days={days} />
         <button className="feedback-original-button" aria-expanded={selected === entry.id} onClick={() => { setDetailError(null); setReport(null); setSelected(value => value === entry.id ? null : entry.id); }}>{selected === entry.id ? '收起当时预测' : '查看当时概念数据、强势股与预测依据'}</button>
         {selected === entry.id && <div className="feedback-original"><p className="concept-ai-data-note">以下保留发布时的行情、判断和来源，用于对照当时的预测依据。</p>{detailError ? <p className="concept-ai-error" role="alert">{detailError}</p> : report?.id === entry.id ? renderResearch(report.result) : <p className="concept-ai-state">正在读取当时的原始预测…</p>}</div>}
       </article>)}

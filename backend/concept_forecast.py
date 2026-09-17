@@ -49,6 +49,7 @@ async def collect_evidence() -> dict:
 def prompt_evidence(evidence: dict) -> dict:
     """Avoid serializing the same indicators twice; retain every news excerpt and source ID."""
     compact = copy.deepcopy(evidence)
+    compact.pop("comparisonUniverse", None)  # Evaluation universe is not a model candidate pool.
     for candidate in compact.get("candidates", []):
         for source in candidate.get("evidence", []):
             for suffix, field in (("technical", "technicalData"), ("fundamentals", "fundamentalData")):
@@ -180,6 +181,7 @@ def assemble_result(raw: dict, evidence: dict) -> dict:
             "stocks": [{**stock_pool[stock.code], "reason": stock.reason} for stock in choice.stocks],
         })
     return {"summary": parsed.summary, "concepts": concepts,
+            "comparisonUniverse": evidence.get("comparisonUniverse"),
             "feedbackUsed": {"asOf": evidence.get("historicalFeedback", {}).get("asOf"),
                              "sampleCounts": {days: summary["sampleCount"] for days, summary in
                                               evidence.get("historicalFeedback", {}).get("summaries", {}).items()}},
@@ -201,6 +203,8 @@ def get_forecast_run() -> dict:
 
 
 async def _execute(run_date: str, key: str, token: str) -> None:
+    from .research_jobs import ai_token, record_ai_stage
+    ai_token.set(token)
     result, error = None, None
     stage = "market_data"
     started = asyncio.get_running_loop().time()
@@ -210,6 +214,7 @@ async def _execute(run_date: str, key: str, token: str) -> None:
     def set_stage(value: str) -> None:
         nonlocal stage
         stage = value
+        record_ai_stage(token, stage_labels[value])
         logger.info("forecast_stage run_date=%s stage=%s elapsed=%.1fs", run_date, stage,
                     asyncio.get_running_loop().time() - started)
 

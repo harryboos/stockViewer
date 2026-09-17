@@ -3,7 +3,7 @@ import type { SystemStatus } from '@/lib/types';
 
 
 type AppHeaderProps = {
-  activeTab: 'watchlist' | 'strategies' | 'market' | 'sectors' | 'forecast';
+  activeTab: 'watchlist' | 'strategies' | 'market' | 'sectors' | 'forecast' | 'digest' | 'operations';
   status: SystemStatus | null;
   tradeDate: string | null;
   onOpenWatchlist: () => void;
@@ -11,6 +11,8 @@ type AppHeaderProps = {
   onOpenMarket: () => void;
   onOpenSectors: () => void;
   onOpenForecast: () => void;
+  onOpenDigest?: () => void;
+  onOpenOperations?: () => void;
 };
 
 export function AppHeader({
@@ -22,6 +24,8 @@ export function AppHeader({
   onOpenMarket,
   onOpenSectors,
   onOpenForecast,
+  onOpenDigest,
+  onOpenOperations,
 }: AppHeaderProps) {
   return (
     <header className="topbar">
@@ -29,13 +33,15 @@ export function AppHeader({
         <span className="brand-mark">观</span><span>观星 <em>A股</em></span>
       </button>
       <nav className="main-nav" aria-label="主导航">
+        <button className={`nav-item ${activeTab === 'digest' ? 'active' : ''}`} onClick={onOpenDigest}>每日摘要</button>
         <button className={`nav-item ${activeTab === 'watchlist' ? 'active' : ''}`} onClick={onOpenWatchlist}>我的自选</button>
         <button className={`nav-item ${activeTab === 'strategies' ? 'active' : ''}`} onClick={onOpenStrategies}>策略选股</button>
         <button className={`nav-item ${activeTab === 'market' ? 'active' : ''}`} onClick={onOpenMarket}>大盘观察</button>
         <button className={`nav-item ${activeTab === 'sectors' ? 'active' : ''}`} onClick={onOpenSectors}>板块概念</button>
         <button className={`nav-item ${activeTab === 'forecast' ? 'active' : ''}`} onClick={onOpenForecast} aria-current={activeTab === 'forecast' ? 'page' : undefined}>预测</button>
+        <button className={`nav-item ${activeTab === 'operations' ? 'active' : ''}`} onClick={onOpenOperations}>数据与任务</button>
       </nav>
-      <div className={`market-state ${status?.providers.marketData ? 'live' : ''}`}>
+      <div className={`market-state ${status?.dataSource.health === 'healthy' ? 'live' : ''}`}>
         <span />
         {status?.providers.marketData
           ? `${status.dataSource.source} · ${shortTradeDate(tradeDate)}`

@@ -158,6 +158,8 @@ def get_concept_run() -> dict:
 
 
 async def _execute(run_date: str, key: str, token: str) -> None:
+    from .research_jobs import ai_token, record_ai_stage
+    ai_token.set(token)
     result, error = None, None
 
     async def generate() -> dict:
@@ -165,6 +167,7 @@ async def _execute(run_date: str, key: str, token: str) -> None:
         if not evidence["candidates"]:
             return {**{key: evidence[key] for key in ("tradeDate", "dataAsOf", "scope", "warnings")},
                     "summary": "当前候选中暂无已验证的近期强势或当日上涨方向，暂不强行推荐。", "concepts": []}
+        await asyncio.to_thread(record_ai_stage, token, "检索现实事件")
         evidence = await enrich_world_news(evidence, key)
         raw = await ai._call_compatible(PROVIDER, build_prompt(evidence), MODEL, key,
                                         system_instruction=SYSTEM_INSTRUCTION, reasoning_effort="max",
