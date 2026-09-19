@@ -106,8 +106,8 @@ export function StrategiesView({
       <div className="strategy-hero">
         <div>
           <p className="eyebrow">多视角选股实验室</p>
-          <h1>把真实数据与不同方法，放在同一张桌上</h1>
-          <p className="subtitle">规则策略每日计算；三家 AI 使用同一提示语、同一候选池和同一输出约束。结果写入本地 SQLite，避免重复调用。</p>
+          <h1>策略选股</h1>
+          <p className="subtitle">比较规则策略与 AI 观点，跟踪每次选股的后续表现。AI 分析仅在点击生成后运行。</p>
         </div>
         <div className="strategy-actions">
           <button type="button" className="daily-status daily-button" onClick={onLoad} disabled={loading}>

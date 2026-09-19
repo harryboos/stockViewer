@@ -33,7 +33,7 @@ function RelativeReturn({ outcome, code }: { outcome: ForecastOutcome; code: Ben
 
 export function HistoryReportTable({ entry, days }: { entry: HistoryEntry; days: Horizon }) {
   if (entry.concepts.length === 0) return <p className="concept-ai-state">当时未给出预测方向，作为观望记录保留，不产生收益样本。</p>;
-  return <div className="feedback-table-scroll"><table className="feedback-table">
+  return <div className="feedback-table-scroll" role="region" aria-label={`${entry.runDate} 预测表现，可横向滚动`} tabIndex={0}><table className="feedback-table">
     <caption className="sr-only">{entry.runDate} 预测的 {days} 天实际表现</caption>
     <thead><tr><th scope="col">概念 / 核对状态</th><th scope="col">实际观察区间</th><th scope="col">概念涨幅</th><th scope="col">相对上证指数</th><th scope="col">相对科创50</th></tr></thead>
     <tbody>{entry.concepts.map(concept => {

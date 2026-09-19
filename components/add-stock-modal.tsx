@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react';
 import { marketLabel } from '@/lib/format';
 import type { StockBasic } from '@/lib/types';
 
@@ -24,8 +25,9 @@ export function AddStockModal({
   const dialogRef = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     const dialog = dialogRef.current;
+    const previousFocus = document.activeElement;
     dialog?.showModal();
-    return () => dialog?.close();
+    return () => { dialog?.close(); if (previousFocus instanceof HTMLElement) previousFocus.focus(); };
   }, []);
 
   return (
@@ -69,9 +71,8 @@ export function AddStockModal({
             <div className="modal-empty">{query ? '没有匹配结果' : '输入代码或名称开始搜索'}</div>
           )}
         </div>
-        <p className="modal-footnote">股票列表每日同步一次；自选股保存在本机 data/stockviewer.sqlite3。</p>
+        <p className="modal-footnote">股票列表每日同步；关注列表会自动保存。</p>
       </section>
     </dialog>
   );
 }
-import { useEffect, useRef } from 'react';

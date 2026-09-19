@@ -273,9 +273,12 @@ test('forecast navigation contains prediction and historical feedback modules', 
   const { AppHeader } = await server.ssrLoadModule('/components/app-header.tsx');
   const { ConceptForecast } = await server.ssrLoadModule('/components/concept-forecast.tsx');
   const header = renderToStaticMarkup(createElement(AppHeader, { activeTab: 'forecast', status: null, tradeDate: null }));
-  assert.match(header, /class="nav-item active" aria-current="page">预测/);
+  const activeNavigation = header.match(/<button[^>]*aria-current="page"[^>]*>[\s\S]*?<\/button>/g) || [];
+  assert.equal(activeNavigation.length, 1);
+  assert.match(activeNavigation[0], /<span>概念预测<\/span>/);
   const html = renderToStaticMarkup(createElement(ConceptForecast));
-  assert.equal((html.match(/<h2 /g) || []).length, 2);
+  assert.equal((html.match(/<h1 /g) || []).length, 1);
+  assert.equal((html.match(/<h2 /g) || []).length, 1);
   assert.ok(html.includes('历史预测与准确率'));
   assert.ok(html.includes('未来半个月强势概念预测'));
   assert.ok(html.includes('GLM 5.3 MAX'));

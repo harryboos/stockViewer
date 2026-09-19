@@ -57,6 +57,8 @@ export default function Home() {
   const strategyLock = useRef(false);
   const today = formatChinaDate();
 
+  useEffect(() => { window.scrollTo({ top: 0, behavior: 'instant' }); }, [activeTab]);
+
   const applyWatchlist = useCallback((data: WatchlistResponse) => {
     setStocks(data.stocks);
     setStatus((current) => current ? { ...current, dataSource: data.dataSource } : current);
@@ -294,7 +296,8 @@ export default function Home() {
   );
 
   return (
-    <StockDetailProvider><main className="app-shell">
+    <StockDetailProvider><div className="app-shell">
+      <a className="skip-link" href="#main-content">跳至页面内容</a>
       <AppHeader
         activeTab={activeTab}
         status={status}
@@ -308,6 +311,7 @@ export default function Home() {
         onOpenOperations={() => setActiveTab('operations')}
       />
 
+      <main id="main-content" className="app-main" tabIndex={-1}>
       {errors[activeTab] && (
         <div className="global-error" role="alert"><span>!</span><strong>{errors[activeTab]}</strong><button onClick={() => setError('', activeTab)}>关闭</button></div>
       )}
@@ -362,6 +366,7 @@ export default function Home() {
         />
       )}
 
+      </main>
       {modalOpen && (
         <AddStockModal
           query={addQuery}
@@ -375,6 +380,6 @@ export default function Home() {
       )}
 
       {toast && <div className="toast" role="status"><span>✓</span>{toast}</div>}
-    </main></StockDetailProvider>
+    </div></StockDetailProvider>
   );
 }

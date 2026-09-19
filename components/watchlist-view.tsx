@@ -54,21 +54,12 @@ export function WatchlistView({
 
   return (
     <section className="content page-enter">
-      {!loading && missingAiCount > 0 && (
-        <aside className="setup-banner">
-          <span className="setup-icon">钥</span>
-          <div>
-            <strong>免费 A 股行情已启用</strong>
-            <p>自选股和公开策略不需要密钥；如需 AI 选股，再在 <code>.env.local</code> 填写对应模型密钥。</p>
-          </div>
-          <span className="setup-count">{3 - missingAiCount}/3 AI 已配置</span>
-        </aside>
-      )}
+
 
       <div className="hero-row">
         <div>
           <p className="eyebrow">我的投资清单</p>
-          <h1>看看今天的自选股</h1>
+          <h1>我的自选</h1>
           <p className="subtitle">{today} · 共关注 {stocks.length} 只股票</p>
         </div>
         <div className="hero-actions">
@@ -90,7 +81,7 @@ export function WatchlistView({
         <article className="summary-card">
           <span className="card-label">关注行业</span>
           <strong className="metric">{industryCount}<small> 个</small></strong>
-          <p className="card-note">持久保存在本地 SQLite</p>
+          <p className="card-note">按行业查看关注方向</p>
         </article>
         <button className="summary-card accent-card signal-card" onClick={onOpenStrategies}>
           <span className="card-label">每日策略 <i>→</i></span>
@@ -99,43 +90,57 @@ export function WatchlistView({
         </button>
       </div>
 
-      <section className="panel">
-        <div className="research-filters"><select aria-label="自选分组" value={group} onChange={event => setGroup(event.target.value)}><option value="">全部分组</option>{groups.map(value => <option key={value}>{value}</option>)}</select><select aria-label="自选排序" value={sort} onChange={event => setSort(event.target.value)}><option value="added">按关注时间</option><option value="change">按涨跌幅</option><option value="name">按名称</option></select></div>
+      <section className="panel watchlist-panel">
         <div className="panel-heading">
-          <div><h2>自选股</h2><p>盘中行情快照，缓存 15 分钟；异常时切换备用线路，再自动读取最近日线</p></div>
+          <div><h2>关注列表 <span className="list-count">{filteredStocks.length}</span></h2><p>点击股票查看详情 · 行情每 15 分钟缓存</p></div>
+        </div>
+        <div className="watch-toolbar">
+          <div className="research-filters"><select aria-label="自选分组" value={group} onChange={event => setGroup(event.target.value)}><option value="">全部分组</option>{groups.map(value => <option key={value}>{value}</option>)}</select><select aria-label="自选排序" value={sort} onChange={event => setSort(event.target.value)}><option value="added">按关注时间</option><option value="change">按涨跌幅</option><option value="name">按名称</option></select></div>
           <label className="search-box">
-            <span>⌕</span>
+            <span aria-hidden="true">⌕</span>
             <input value={query} onChange={(event) => onQueryChange(event.target.value)} aria-label="搜索自选股" placeholder="搜索代码或名称" />
           </label>
         </div>
         {loading && !stocks.length ? (
           <div className="empty-state"><span className="loading-ring" /><strong>正在读取自选股</strong></div>
         ) : filteredStocks.length ? (
-          <div className="stock-table" role="table" aria-label="自选股列表">
-            <div className="stock-row table-head" role="row"><span>股票</span><span>收盘价</span><span>涨跌幅</span><span>行业</span><span>交易日</span><span /></div>
+          <div className="watch-table-wrap" role="region" aria-label="自选股行情" tabIndex={0}><table className="watch-table" role="table" aria-label="自选股列表">
+            <thead><tr role="row"><th scope="col">股票</th><th scope="col">行情价</th><th scope="col">涨跌幅</th><th scope="col">行业</th><th scope="col">交易日</th><th scope="col"><span className="sr-only">操作</span></th></tr></thead>
+            <tbody>
             {filteredStocks.map((stock) => (
-              <div className="stock-row" role="row" key={stock.tsCode}>
-                <div className="stock-name">
+              <tr role="row" key={stock.tsCode}>
+                <th scope="row" role="rowheader"><div className="stock-name">
                   <span className="market-tag">{marketLabel(stock.exchange)}</span>
                   <div><StockLink code={stock.symbol}><strong>{stock.name}</strong></StockLink><small>{stock.symbol} · {stock.groupName || '未分组'}</small><button className="watch-note-button" onClick={() => setEditing(stock)}>编辑分组与笔记{stock.note || stock.reason ? ' · 已记录' : ''}</button>{stock.referencePrice != null && <small>关注参考价 {stock.referencePrice.toFixed(2)} · 行情 {shortTradeDate(stock.referenceDate)}</small>}</div>
-                </div>
-                <strong className="price">{stock.quote ? stock.quote.close.toLocaleString('zh-CN', { minimumFractionDigits: 2 }) : '—'}</strong>
-                <span className={`change ${(stock.quote?.pctChg ?? 0) >= 0 ? 'up' : 'down'}`}>
+                </div></th>
+                <td role="cell" data-label="行情价"><strong className="price">{stock.quote ? stock.quote.close.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—'}</strong></td>
+                <td role="cell" data-label="涨跌幅"><span className={`change ${stock.quote?.pctChg == null || stock.quote.pctChg === 0 ? 'neutral' : stock.quote.pctChg > 0 ? 'up' : 'down'}`}>
                   {stock.quote?.pctChg === null || stock.quote?.pctChg === undefined
                     ? '待更新'
                     : `${stock.quote.pctChg >= 0 ? '+' : ''}${stock.quote.pctChg.toFixed(2)}%`}
-                </span>
-                <span className="industry">{stock.industry ?? '未分类'}</span>
-                <span className="trade-date-cell">{shortTradeDate(stock.quote?.tradeDate)}</span>
-                <button className="remove-button" onClick={() => onRemove(stock)} disabled={loading} aria-label={`移除${stock.name}`}>×</button>
-              </div>
+                </span></td>
+                <td role="cell" data-label="行业"><span className="industry">{stock.industry ?? '未分类'}</span></td>
+                <td role="cell" data-label="交易日"><span className="trade-date-cell">{shortTradeDate(stock.quote?.tradeDate)}</span></td>
+                <td role="cell" className="watch-row-actions"><button className="remove-button" onClick={() => onRemove(stock)} disabled={loading} aria-label={`移除${stock.name}`}>×</button></td>
+              </tr>
             ))}
-          </div>
+            </tbody>
+          </table></div>
         ) : (
-          <div className="empty-state"><span>⌕</span><strong>没有找到匹配的股票</strong><p>换一个名称或股票代码试试</p></div>
+          <div className="empty-state"><span aria-hidden="true">⌕</span><strong>{stocks.length ? '没有找到匹配的股票' : '建立你的关注列表'}</strong><p>{stocks.length ? '试试其他名称、代码或分组' : '添加第一只股票，开始跟踪行情与研究记录'}</p><button className="refresh-button" onClick={stocks.length ? () => { onQueryChange(''); setGroup(''); } : onOpenAdd}>{stocks.length ? '清除筛选' : '添加股票'}</button></div>
         )}
       </section>
       {editing && <WatchNoteEditor key={editing.tsCode} stock={editing} close={() => setEditing(null)} saved={data => { onUpdated?.(data); setEditing(null); }} />}
+      {!loading && missingAiCount > 0 && (
+        <aside className="setup-banner">
+          <span className="setup-icon">钥</span>
+          <div>
+            <strong>自选行情与规则策略免费使用</strong>
+            <p>AI 选股需配置对应模型，生成状态可在「数据与任务」查看。</p>
+          </div>
+          <span className="setup-count">{3 - missingAiCount}/3 AI 已配置</span>
+        </aside>
+      )}
       <p className="data-note">实时行情优先使用东方财富备用线路，并保留 AKShare 与 BaoStock 降级；免费源不提供可用性承诺，请在交易前向券商核对。内容仅供研究，不构成投资建议。</p>
     </section>
   );

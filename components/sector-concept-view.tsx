@@ -139,23 +139,18 @@ function LeaderBoardCard({ board, index }: { board: SectorBoard; index: number }
 
 export function SectorConceptView({ today, data, loading, onRefresh }: SectorConceptViewProps) {
   const [mode, setMode] = useState<'industry' | 'concept'>('industry');
-
-  if (!data && loading) {
-    return (
-      <section className="content market-page page-enter">
-        <ConceptRecommendations />
-        <RotationPanel />
-        <div className="market-loading"><span className="loading-ring" /><strong>正在扫描行业与概念板块</strong><p>合并板块强度、成交额、涨跌广度、资金流和龙头股</p></div>
-      </section>
-    );
-  }
+  const hero = <div className="market-hero"><div><p className="eyebrow">板块雷达</p><h1>板块与概念</h1>
+    <p className="subtitle">{today}{data && ` · 行情 ${shortTradeDate(data.tradeDate)}`}</p>
+    {data && <details className="data-provenance"><summary>数据来源</summary><p>{data.source}</p></details>}
+  </div><button className="refresh-button market-refresh" onClick={onRefresh} disabled={loading}>{loading ? '更新中…' : '↻ 更新板块'}</button></div>;
 
   if (!data) {
     return (
       <section className="content market-page page-enter">
+        {hero}
+        <div className="market-loading" role="status">{loading ? <><span className="loading-ring" /><strong>正在扫描行业与概念板块</strong><p>合并板块强度、成交额、涨跌广度、资金流和龙头股</p></> : <><strong>板块概念数据暂未加载</strong><button className="refresh-button" onClick={onRefresh}>重新加载</button></>}</div>
         <ConceptRecommendations />
         <RotationPanel />
-        <div className="market-loading"><strong>板块概念数据暂未加载</strong><button className="refresh-button" onClick={onRefresh}>重新加载</button></div>
       </section>
     );
   }
@@ -166,14 +161,7 @@ export function SectorConceptView({ today, data, loading, onRefresh }: SectorCon
 
   return (
     <section className="content market-page sector-page page-enter">
-      <div className="market-hero">
-        <div>
-          <p className="eyebrow">板块雷达</p>
-          <h1>行业与概念，谁在带动今天的行情</h1>
-          <p className="subtitle">{today} · {shortTradeDate(data.tradeDate)} · {data.source}</p>
-        </div>
-        <button className="refresh-button market-refresh" onClick={onRefresh} disabled={loading}>{loading ? '更新中…' : '↻ 更新板块'}</button>
-      </div>
+      {hero}
 
       <div className="market-kpi-grid sector-kpi-grid">
         <article className="market-kpi market-kpi-dark"><span className="market-kpi-icon">行</span><div><small>上涨行业</small><strong>{data.summary.risingIndustryCount}<i> / {data.summary.industryCount}</i></strong><p>东方财富行业板块口径</p></div></article>

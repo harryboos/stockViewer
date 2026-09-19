@@ -112,7 +112,7 @@ export function ConceptForecast() {
     <div className="content forecast-content">
       <section className="concept-ai-section forecast-section" aria-labelledby="concept-forecast-title" aria-busy={busy}>
         <div className="concept-ai-heading">
-          <div><p className="eyebrow">AI 概念预测</p><h2 id="concept-forecast-title">未来半个月强势概念预测</h2><p>结合技术面、基本面与时事新闻，推演未来 15 个自然日的机会与失效条件。</p></div>
+          <div><p className="eyebrow">AI 概念预测</p><h1 id="concept-forecast-title">未来半个月强势概念预测</h1><p>结合技术面、基本面与时事新闻，推演未来 15 个自然日的机会与失效条件。</p></div>
           <button className="concept-ai-generate" onClick={generate} disabled={busy || !current || current.status === 'not_configured'}>{busy ? '正在预测…' : result ? '重新生成预测' : '生成半个月预测'}</button>
         </div>
         <div aria-live="polite">

@@ -55,18 +55,16 @@ function friendlyWarnings(warnings: string[]): string[] {
 }
 
 export function MarketOverviewView({ today, data, loading, onRefresh }: MarketOverviewViewProps) {
-  if (!data && loading) {
-    return (
-      <section className="content market-page page-enter">
-        <div className="market-loading"><span className="loading-ring" /><strong>正在汇总全市场行情</strong><p>计算量能、涨跌家数和大盘资金流</p></div>
-      </section>
-    );
-  }
+  const hero = <div className="market-hero"><div><p className="eyebrow">全市场脉搏</p><h1>大盘观察</h1>
+    <p className="subtitle">{today}{data && ` · 行情 ${shortTradeDate(data.tradeDate)}`}</p>
+    {data && <details className="data-provenance"><summary>数据来源</summary><p>{data.source}</p></details>}
+  </div><button className="refresh-button market-refresh" onClick={onRefresh} disabled={loading}>{loading ? '更新中…' : '↻ 更新大盘'}</button></div>;
 
   if (!data) {
     return (
       <section className="content market-page page-enter">
-        <div className="market-loading"><strong>大盘数据暂未加载</strong><button className="refresh-button" onClick={onRefresh}>重新加载</button></div>
+        {hero}
+        <div className="market-loading" role="status">{loading ? <><span className="loading-ring" /><strong>正在汇总全市场行情</strong><p>计算量能、涨跌家数和大盘资金流</p></> : <><strong>大盘数据暂未加载</strong><button className="refresh-button" onClick={onRefresh}>重新加载</button></>}</div>
       </section>
     );
   }
@@ -82,14 +80,7 @@ export function MarketOverviewView({ today, data, loading, onRefresh }: MarketOv
 
   return (
     <section className="content market-page page-enter">
-      <div className="market-hero">
-        <div>
-          <p className="eyebrow">全市场脉搏</p>
-          <h1>今天的大盘，量能与资金在说什么</h1>
-          <p className="subtitle">{today} · {shortTradeDate(data.tradeDate)} · {data.source}</p>
-        </div>
-        <button className="refresh-button market-refresh" onClick={onRefresh} disabled={loading}>{loading ? '更新中…' : '↻ 更新大盘'}</button>
-      </div>
+      {hero}
 
       <div className="market-kpi-grid">
         <article className="market-kpi market-kpi-dark">
