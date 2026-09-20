@@ -114,9 +114,11 @@ def operations_payload() -> dict:
     from .data_sources import market_data
     from .config import SCHEDULER
     now = datetime.now(database.CHINA_TZ)
+    day = database.china_date()
+    next_day = (datetime.fromisoformat(day) + timedelta(days=1)).date().isoformat()
     with database.connection() as db:
         quote = db.execute("SELECT MAX(fetched_at) AS fetched,MAX(trade_date) AS day,COUNT(*) AS count FROM quote_snapshots").fetchone()
-        attempts = [dict(row) for row in db.execute("SELECT * FROM ai_attempts WHERE substr(started_at,1,10)=? ORDER BY started_at DESC", (database.china_date(),))]
+        attempts = [dict(row) for row in db.execute("SELECT * FROM ai_attempts WHERE started_at>=? AND started_at<? ORDER BY started_at DESC", (day, next_day))]
     for attempt in attempts:
         if attempt['status'] == 'running' and attempt['started_at'] <= database._ai_lease_cutoff(attempt['provider']):
             attempt.update(status='failed', stage='已中断或超时')
@@ -130,7 +132,9 @@ def operations_payload() -> dict:
         cached = cache_get(key) or {}
         source(key, name, cached.get("updatedAt"), "；".join(cached.get("warnings", [])) or None,
                cached.get("tradeDate") or cached.get("asOf"))
-    runs = get_daily_ai_runs()["runs"] + [{**get_concept_run(), "provider": "concept:glm"}, {**get_forecast_run(), "provider": "forecast:glm"}]
+    runs = get_daily_ai_runs(include_result=False)["runs"] + [
+        {**get_concept_run(include_result=False), "provider": "concept:glm"},
+        {**get_forecast_run(include_result=False), "provider": "forecast:glm"}]
     stage_by_provider = {}
     for attempt in attempts:
         stage_by_provider.setdefault(attempt["provider"], attempt["stage"])
@@ -148,21 +152,18 @@ def operations_payload() -> dict:
 
 
 def daily_digest() -> dict:
-    from .research_data import rotation_payload
     from .forecast_history import history_payload
-    from .selection_history import history_payload as selection_payload
+    from .selection_history import recent_entries
     watches = database.get_watchlist_rows()
     market = cache_get("latest-market")
     sectors = cache_get("latest-sectors")
-    rotation = rotation_payload()
     forecasts = history_payload(page_size=1)
-    selections = selection_payload()
     latest_quote_day = max((stock["quote"]["tradeDate"] for stock in watches if stock.get("quote")), default=None)
     movers = sorted((stock for stock in watches if stock.get("quote") and stock["quote"]["tradeDate"] == latest_quote_day
                      and stock["quote"].get("pctChg") is not None), key=lambda stock: abs(stock["quote"]["pctChg"]), reverse=True)[:5]
     return {"asOf": database.now_iso(), "quoteDate": latest_quote_day, "watchMovers": movers,
             "market": {key: market[key] for key in ("tradeDate", "updatedAt", "snapshot", "warnings")} if market else None,
             "strongBoards": (sectors or {}).get("conceptBoards", [])[:3], "sectorAsOf": (sectors or {}).get("updatedAt"),
-            "rotationLeaders": sorted(rotation["items"], key=lambda row: row["ranks"]["5"])[:3],
-            "recentSelections": selections["entries"][:5], "forecastSummaries": forecasts["summaries"],
+            "sectorTradeDate": (sectors or {}).get("tradeDate"),
+            "recentSelections": recent_entries(), "forecastSummaries": forecasts["summaries"],
             "note": "依据已取得的数据自动汇总，不额外调用 AI；涨跌表现不等于预测依据已被证实"}

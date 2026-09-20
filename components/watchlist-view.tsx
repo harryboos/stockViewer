@@ -4,8 +4,8 @@ import { marketLabel, shortTradeDate } from '@/lib/format';
 import type { WatchlistStock } from '@/lib/types';
 import { summarizeWatchlist } from '@/lib/watchlist-summary';
 import { StockLink } from './stock-detail';
-import { errorMessage, jsonFetch } from '@/lib/client-api';
-import type { WatchlistResponse } from '@/lib/types';
+import { errorMessage } from '@/lib/client-api';
+import type { WatchNote } from '@/lib/use-watchlist';
 
 
 type WatchlistViewProps = {
@@ -20,7 +20,7 @@ type WatchlistViewProps = {
   onOpenAdd: () => void;
   onOpenStrategies: () => void;
   onRemove: (stock: WatchlistStock) => void;
-  onUpdated?: (data: WatchlistResponse) => void;
+  onSaveNote: (note: WatchNote) => Promise<void>;
 };
 
 export function WatchlistView({
@@ -35,7 +35,7 @@ export function WatchlistView({
   onOpenAdd,
   onOpenStrategies,
   onRemove,
-  onUpdated,
+  onSaveNote,
 }: WatchlistViewProps) {
   const [group, setGroup] = useState('');
   const [sort, setSort] = useState('added');
@@ -130,7 +130,7 @@ export function WatchlistView({
           <div className="empty-state"><span aria-hidden="true">⌕</span><strong>{stocks.length ? '没有找到匹配的股票' : '建立你的关注列表'}</strong><p>{stocks.length ? '试试其他名称、代码或分组' : '添加第一只股票，开始跟踪行情与研究记录'}</p><button className="refresh-button" onClick={stocks.length ? () => { onQueryChange(''); setGroup(''); } : onOpenAdd}>{stocks.length ? '清除筛选' : '添加股票'}</button></div>
         )}
       </section>
-      {editing && <WatchNoteEditor key={editing.tsCode} stock={editing} close={() => setEditing(null)} saved={data => { onUpdated?.(data); setEditing(null); }} />}
+      {editing && <WatchNoteEditor key={editing.tsCode} stock={editing} close={() => setEditing(null)} save={onSaveNote} />}
       {!loading && missingAiCount > 0 && (
         <aside className="setup-banner">
           <span className="setup-icon">钥</span>
@@ -146,7 +146,7 @@ export function WatchlistView({
   );
 }
 
-function WatchNoteEditor({ stock, close, saved }: { stock: WatchlistStock; close: () => void; saved: (data: WatchlistResponse) => void }) {
+function WatchNoteEditor({ stock, close, save }: { stock: WatchlistStock; close: () => void; save: (note: WatchNote) => Promise<void> }) {
   const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     const element = dialog.current;
@@ -158,7 +158,7 @@ function WatchNoteEditor({ stock, close, saved }: { stock: WatchlistStock; close
   const [note, setNote] = useState(stock.note || ''); const [busy, setBusy] = useState(false); const [error, setError] = useState<string | null>(null);
   async function submit(event: React.FormEvent) {
     event.preventDefault(); if (busy) return; setBusy(true); setError(null);
-    try { saved(await jsonFetch<WatchlistResponse>('/api/watchlist', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tsCode: stock.tsCode, groupName: group, reason, note }) })); }
+    try { await save({ tsCode: stock.tsCode, groupName: group, reason, note }); close(); }
     catch (cause) { setError(errorMessage(cause, '保存失败')); }
     finally { setBusy(false); }
   }

@@ -56,6 +56,9 @@ export type ConceptRun = {
   result: ConceptResearch | null;
   error: string | null;
   finishedAt: string | null;
+  startedAt?: string | null;
+  stage?: string | null;
+  maxRunSeconds?: number;
   previousResult?: ConceptResearch | null;
   previousFinishedAt?: string | null;
 };

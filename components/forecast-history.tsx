@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { percent, timestamp, tone } from '@/components/concept-recommendations';
+import { percent, timestamp, tone } from '@/lib/format';
 import { errorMessage, jsonFetch } from '@/lib/client-api';
 import type { ForecastResearch } from '@/lib/forecast-types';
 import type { BenchmarkCode, FeedbackRefresh, FeedbackSummary, ForecastHistoryData, ForecastOutcome, HistoryEntry, Horizon } from '@/lib/forecast-history-types';

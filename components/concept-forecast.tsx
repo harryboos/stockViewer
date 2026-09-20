@@ -1,9 +1,10 @@
 'use client';
+
+import { amount, percent, timestamp, tone, shortTradeDate } from '@/lib/format';
 import { StockLink } from './stock-detail';
 
-import { SourceLinks, amount, percent, timestamp, tone } from '@/components/concept-recommendations';
+import { SourceLinks } from '@/components/concept-recommendations';
 import type { ForecastResearch } from '@/lib/forecast-types';
-import { shortTradeDate } from '@/lib/format';
 import { useDailyConceptRun } from '@/lib/use-daily-concept-run';
 import { ForecastHistory } from '@/components/forecast-history';
 
@@ -119,7 +120,7 @@ export function ConceptForecast() {
           {!current && !requestError && <p className="concept-ai-state">正在读取当天预测…</p>}
           {current?.status === 'idle' && !submitting && <div className="concept-ai-state"><strong>寻找接下来可能走强的方向</strong><p>GLM 5.3 MAX 将比较近期走势与估值线索，检索产业、政策、供需等新闻，选出最多 3 个概念及相关强势股。预测从生成日次日起算，当天结果会保存。</p></div>}
           {current?.status === 'not_configured' && <div className="concept-ai-state"><strong>尚未配置 GLM 5.3 MAX</strong><p>请在服务配置中填写 GLM 的密钥，重启服务后即可生成预测。</p><button className="refresh-button" onClick={refresh}>重新检查</button></div>}
-          {busy && <div className="concept-ai-state concept-ai-progress"><span className="loading-ring" /><div><strong>正在结合三方面进行 MAX 深度预测</strong><p>正在收集行情与现实事件，推演未来半个月的影响。高峰期遇到临时限流会自动等待并重试，总等待不超过 10 分钟。可以切换其他 Tab，返回后继续查看结果。</p></div></div>}
+          {busy && <div className="concept-ai-state concept-ai-progress"><span className="loading-ring" /><div><strong>{current?.status === 'running' && current.stage ? current.stage : '正在准备 MAX 深度预测'}</strong><p>高峰时自动排队重试，接入后保留完整的深度分析时间。{current?.maxRunSeconds ? `整个任务最长约 ${Math.ceil(current.maxRunSeconds / 60)} 分钟。` : ''}可以切换页面，返回后继续查看进度和结果。</p>{current?.status === 'running' && current.startedAt && <small>开始于 {timestamp(current.startedAt)} · 仅展示完整核对后的预测</small>}</div></div>}
           {current?.status === 'failed' && <p className="concept-ai-error" role="alert">{current.error || '预测未完成，请重新生成。'}</p>}
           {requestError && <p className="concept-ai-error" role="alert">{requestError} <button onClick={refresh}>重新读取</button></p>}
         </div>

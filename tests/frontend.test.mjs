@@ -33,6 +33,78 @@ before(async () => {
 
 after(async () => { await server?.close(); });
 
+test('superseded reads cannot overwrite newer watchlist mutations even if cancellation arrives late', async () => {
+  const { createRequestGate } = await server.ssrLoadModule('/lib/request-gate.ts');
+  const gate = createRequestGate();
+  const read = gate.begin();
+  const mutation = gate.begin();
+  let stocks = ['new stock'];
+  await Promise.resolve().then(() => { if (read.isCurrent()) stocks = ['stale stock']; });
+  assert.deepEqual(stocks, ['new stock']);
+  assert.equal(read.signal.aborted, true);
+  assert.equal(mutation.isCurrent(), true);
+  gate.cancel();
+  assert.equal(mutation.isCurrent(), false);
+});
+
+test('JSON request deadline includes a stalled response body and preserves explicit cancellation', async (t) => {
+  t.mock.method(globalThis, 'fetch', async (_url, { signal }) => ({
+    ok: true, status: 200,
+    text: () => new Promise((_resolve, reject) => {
+      if (signal.aborted) reject(signal.reason);
+      else signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    }),
+  }));
+  await assert.rejects(client.jsonFetch('/slow-body', { timeoutMs: 20 }), /请求等待超时/);
+  const controller = new AbortController();
+  const request = client.jsonFetch('/cancel', { signal: controller.signal });
+  controller.abort();
+  await assert.rejects(request, cause => client.isAbortError(cause));
+});
+
+test('shared numeric formatters never show missing or nonfinite data as zero', async () => {
+  const format = await server.ssrLoadModule('/lib/format.ts');
+  for (const value of [null, undefined, NaN, Infinity]) {
+    assert.equal(format.percent(value), '—');
+    assert.equal(format.amount(value), '—');
+    assert.equal(format.tone(value), '');
+  }
+  assert.equal(format.percent(0), '+0.00%');
+  assert.equal(format.percent(-3.5), '-3.50%');
+  assert.equal(format.timestamp('invalid'), '时间暂缺');
+});
+
+test('daily digest formats market units and dates and distinguishes completed and tracking feedback', async () => {
+  const { DailyDigestContent } = await server.ssrLoadModule('/components/daily-digest.tsx');
+  const html = renderToStaticMarkup(createElement(DailyDigestContent, {
+    refresh() {}, navigate() {}, data: {
+      asOf: '2026-09-20T12:00:00+08:00', quoteDate: '20260918',
+      market: { tradeDate: '20260918', updatedAt: '2026-09-20T10:00:00+08:00', snapshot: { breadth: 78.6, turnover: 2092915000000 }, warnings: ['测试行情缺口'] },
+      watchMovers: [{ tsCode: '688981.SH', symbol: '688981', name: '中芯国际', quote: { pctChg: -2.85 } }],
+      strongBoards: [{ code: 'BK1001', name: '测试概念', pctChg: 4.96, breadth: 85.2 }], sectorAsOf: null, sectorTradeDate: '20260917',
+      recentSelections: [{ id: 1, name: '空名单策略', runDate: '2026-09-20', picks: [] },
+        { id: 2, name: '测试策略', runDate: '2026-09-19', picks: [{ code: '688981', name: '中芯国际' }] }],
+      forecastSummaries: { '15': { sampleCount: 2, averageReturnPct: 9, trackingCount: 3, missingCount: 1 },
+        '30': { sampleCount: 0, averageReturnPct: null, trackingCount: 5, missingCount: 0 } },
+      note: '不额外调用 AI',
+    },
+  }));
+  for (const text of ['2.09 万亿', '78.6%', '2026-09-18', '2026-09-17', '-2.85%', '+9.00%', '本次未选出股票',
+    '等待样本到期', '2 个到期样本', '延伸观察', '测试行情缺口', '查看 688981 个股详情']) assert.ok(html.includes(text), text);
+  assert.ok(!html.includes('20260918'));
+});
+
+test('daily digest missing data never becomes zero returns or zero market breadth', async () => {
+  const { DailyDigestContent } = await server.ssrLoadModule('/components/daily-digest.tsx');
+  const html = renderToStaticMarkup(createElement(DailyDigestContent, {
+    data: null, error: '摘要读取失败', refresh() {}, navigate() {},
+  }));
+  for (const text of ['摘要读取失败', '尚未取得大盘快照', '暂无可比较行情', '暂无策略名单']) assert.ok(html.includes(text), text);
+  assert.ok(!html.includes('0.00%'));
+  assert.ok(!html.includes('>0.0%'));
+  assert.ok(!html.includes('正在读取摘要'));
+});
+
 test('research job requests preserve the job key and block cross-site execution', async (t) => {
   const fetch = t.mock.method(globalThis, 'fetch', async (url, options) => {
     assert.equal(new URL(url).searchParams.get('key'), 'comparison');

@@ -190,6 +190,68 @@ class GlmTransportTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(RuntimeError, "超时"):
                 await self.call(timeout=0.02)
 
+    async def test_queue_delay_does_not_consume_accepted_generation_budget(self):
+        class FinalReport(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                await asyncio.sleep(0.025)
+                yield delta('{"summary":"排队后完成"}', 'stop')
+
+        async def handle(request):
+            await asyncio.sleep(0.06)  # Header wait exceeds the entire model budget.
+            return httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=FinalReport())
+
+        with mock_http(handle), patch.object(transport, "QUEUE_TIMEOUT_SECONDS", 0.2):
+            self.assertEqual(await self.call(timeout=0.05), {"summary": "排队后完成"})
+
+    async def test_retry_wait_does_not_consume_model_budget(self):
+        responses = [httpx.Response(429, json={"error": {"code": "1302"}}), success()]
+        real_sleep = asyncio.sleep
+
+        async def simulated_backoff(seconds):
+            await real_sleep(0.06)
+
+        with (mock_http(lambda request: responses.pop(0)),
+              patch.object(transport.asyncio, "sleep", side_effect=simulated_backoff)):
+            self.assertEqual(await self.call(timeout=0.04), {"summary": "完整结果"})
+        self.assertEqual(responses, [])
+
+    async def test_queue_has_separate_deadline_and_no_blind_replay(self):
+        requests = []
+
+        async def handle(request):
+            requests.append(request)
+            await asyncio.sleep(1)
+            return success()
+
+        with mock_http(handle), patch.object(transport, "QUEUE_TIMEOUT_SECONDS", 0.02):
+            with self.assertRaisesRegex(RuntimeError, "接入等待超时"):
+                await self.call(timeout=1)
+        self.assertEqual(len(requests), 1)
+
+    async def test_progress_exposes_phases_not_reasoning_and_deduplicates_updates(self):
+        from backend import research_jobs
+        raw = (delta('', reasoning_content="private thoughts") + delta('', reasoning_content="more private thoughts") +
+               delta('{"summary":') + delta('"完成"}', 'stop'))
+        context = research_jobs.ai_token.set("test-token")
+        try:
+            with (mock_http(lambda request: httpx.Response(200, headers={"content-type": "text/event-stream"}, content=raw)),
+                  patch.object(research_jobs, "record_ai_stage") as record):
+                await self.call()
+            labels = [call.args[1] for call in record.call_args_list]
+            self.assertEqual(labels, ["等待 GLM 接入 · 第 1 次请求", "GLM 已接入，等待分析输出", "GLM MAX 深度推理中", "正在整理预测报告"])
+            self.assertEqual(sum(call.kwargs.get("call", False) for call in record.call_args_list), 1)
+        finally:
+            research_jobs.ai_token.reset(context)
+
+    async def test_stalled_accepted_stream_is_not_retried(self):
+        stream = Chunks([delta(reasoning_content="private"), httpx.ReadTimeout("stalled")])
+        with (mock_http(lambda request: httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=stream)),
+              patch.object(transport.asyncio, "sleep", new_callable=AsyncMock) as sleep):
+            with self.assertRaisesRegex(RuntimeError, "连续 3 分钟未收到数据"):
+                await self.call()
+            sleep.assert_not_awaited()
+        self.assertTrue(stream.closed)
+
     async def test_cancellation_is_not_retried(self):
         started = asyncio.Event()
 

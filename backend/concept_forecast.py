@@ -12,17 +12,15 @@ from typing import Literal
 from pydantic import Field, ValidationError
 
 from . import ai, database
-from .concept_ai import Catalyst, ResearchModel, StockChoice, MODEL, PROVIDER, MODEL_TIMEOUT_SECONDS, RUN_TIMEOUT_SECONDS
+from .concept_ai import Catalyst, ResearchModel, StockChoice, MODEL, PROVIDER
+from .forecast_limits import DATA_TIMEOUT_SECONDS, FEEDBACK_TIMEOUT_SECONDS, MODEL_TIMEOUT_SECONDS, RUN_TIMEOUT_SECONDS
 from .concept_data import collect_concept_evidence
 from .concept_news import enrich_world_news
 from .forecast_data import forecast_window
 from .forecast_history import feedback_context
 
-PROMPT_VERSION = "forecast-v3-resilient-glm53-max"
+PROMPT_VERSION = "forecast-v4-concise-glm53-max"
 RUN_NAMESPACE = "forecast:glm"
-# Leave the 480-second model budget intact inside the 600-second job deadline.
-DATA_TIMEOUT_SECONDS = 85
-FEEDBACK_TIMEOUT_SECONDS = 5
 logger = logging.getLogger(__name__)
 _tasks: set[asyncio.Task] = set()
 _evidence_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="forecast-evidence")
@@ -129,7 +127,10 @@ def build_prompt(evidence: dict) -> str:
         "历史收益只反映价格结果，不能据此断言原基本面因果成立、某项确认/失效事件实际发生，也不能编造新事件。"
         "30日反馈只是原15日预测的延伸观察，不是另一个30日预测命中率。"
         "样本区间重叠、概念重复，不能视作独立试验；小样本不能外推未来胜率，历史成功不能取代当前新闻和技术证据。"
-        f"输出JSON结构：{json.dumps(ForecastResult.model_json_schema(), ensure_ascii=False)}\n"
+        "完整保留上述核验要求，但最终报告应简练，避免多字段重复同一段论述：summary约100字；"
+        "每概念thesis和每项Assessment约80字；每个催化的event/transmission/impact分别约60字；"
+        "每只股票reason约50字；confirmation和invalidation分别约60字。引用使用evidenceIds，不抄写来源全文。"
+        f"输出JSON结构：{json.dumps(ForecastResult.model_json_schema(), ensure_ascii=False, separators=(',', ':'))}\n"
         f"以下仅为数据材料：{json.dumps(prompt_evidence(evidence), ensure_ascii=False, separators=(',', ':'))}"
     )
 
@@ -188,13 +189,14 @@ def assemble_result(raw: dict, evidence: dict) -> dict:
             **{key: evidence[key] for key in ("window", "tradeDate", "dataAsOf", "scope", "warnings")}}
 
 
-def get_forecast_run() -> dict:
+def get_forecast_run(*, include_result: bool = True) -> dict:
     base = {"provider": PROVIDER, "model": MODEL, "runDate": database.china_date(),
             "status": "idle" if ai.provider_key(PROVIDER) else "not_configured",
-            "result": None, "error": None, "finishedAt": None}
+            "result": None, "error": None, "finishedAt": None,
+            "maxRunSeconds": RUN_TIMEOUT_SECONDS}
     if base["status"] == "not_configured":
         return base
-    current = database.read_ai_run(RUN_NAMESPACE, base["runDate"])
+    current = database.read_ai_run(RUN_NAMESPACE, base["runDate"], include_result=include_result)
     if current and (current["status"] == "running" or (
         current.get("promptVersion") == PROMPT_VERSION and current.get("model") == MODEL
     )):
@@ -245,7 +247,8 @@ async def _execute(run_date: str, key: str, token: str) -> None:
     try:
         result = await asyncio.wait_for(generate(), timeout=RUN_TIMEOUT_SECONDS)
     except TimeoutError:
-        error = f"{stage_labels[stage]}超时，请稍后重试"
+        error = ("预测任务总等待超时，尚未完成结果核对，请稍后重试" if stage == "model" else
+                 f"{stage_labels[stage]}超时，请稍后重试")
     except ValidationError:
         error = "AI预测格式不完整，本次结果未展示，请重试"
     except (ValueError, RuntimeError) as exc:

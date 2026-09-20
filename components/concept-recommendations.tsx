@@ -3,30 +3,10 @@ import { StockLink } from './stock-detail';
 
 import { useDailyConceptRun } from '@/lib/use-daily-concept-run';
 import type { ConceptResearch, ConceptSource } from '@/lib/concept-types';
-import { shortTradeDate } from '@/lib/format';
+import { shortTradeDate, percent, amount, tone, timestamp } from '@/lib/format';
 
 const endpoint = '/api/market/concepts/ai';
 const driverLabels = { data: '行情依据', news: '资讯线索', hypothesis: '待验证推测' };
-
-export function percent(value: number | null) {
-  return value === null ? '—' : `${value >= 0 ? '+' : ''}${value.toFixed(2)}%`;
-}
-
-export function amount(value: number | null, signed = false) {
-  if (value === null) return '—';
-  return `${signed && value > 0 ? '+' : ''}${(value / 100_000_000).toFixed(2)} 亿`;
-}
-
-export function tone(value: number | null) {
-  return value === null || value === 0 ? '' : value > 0 ? 'up-text' : 'down-text';
-}
-
-export function timestamp(value: string) {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? '时间暂缺' : new Intl.DateTimeFormat('zh-CN', {
-    timeZone: 'Asia/Shanghai', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false,
-  }).format(date);
-}
 
 export function SourceLinks({ sources }: { sources: ConceptSource[] }) {
   return sources.map((source) => (

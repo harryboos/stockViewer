@@ -141,7 +141,7 @@ def assemble_result(raw: dict, evidence: dict) -> dict:
             **{key: evidence[key] for key in ("tradeDate", "dataAsOf", "scope", "warnings")}}
 
 
-def get_concept_run() -> dict:
+def get_concept_run(*, include_result: bool = True) -> dict:
     configured = bool(ai.provider_key(PROVIDER))
     run_date = database.china_date()
     base = {"provider": PROVIDER, "model": MODEL,
@@ -149,7 +149,7 @@ def get_concept_run() -> dict:
             "result": None, "error": None, "finishedAt": None}
     if not configured:
         return base
-    current = database.read_ai_run(f"concept:{PROVIDER}", run_date)
+    current = database.read_ai_run(f"concept:{PROVIDER}", run_date, include_result=include_result)
     if current and (current["status"] == "running" or (
         current.get("promptVersion") == PROMPT_VERSION and current.get("model") == base["model"]
     )):

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import threading
-from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timedelta, time
 from weakref import WeakValueDictionary
 
@@ -12,6 +11,7 @@ from .concept_data import ConceptResearchClient
 from .data_sources import market_data
 from .forecast_prices import FeedbackPriceClient
 from .research_store import cache_get, cache_put
+from .research_pool import fetch_batch
 
 _locks_guard = threading.Lock()
 _locks: WeakValueDictionary = WeakValueDictionary()
@@ -48,18 +48,23 @@ def index_history(code: str, start: str, end: str) -> dict:
                        lambda: FeedbackPriceClient().history(code, start, end), 3600)
 
 
-def stock_profile(symbol: str) -> dict:
+def stock_basic(symbol: str) -> dict:
     with database.connection() as db:
         basic = db.execute("SELECT ts_code FROM stock_basics WHERE symbol=?", (symbol,)).fetchone()
-        selections = db.execute("SELECT * FROM selection_reports ORDER BY published_at DESC LIMIT 1000").fetchall()
-        forecasts = db.execute("SELECT result_json, published_at FROM forecast_reports ORDER BY id DESC LIMIT 100").fetchall()
     if not basic:
         market_data.sync_catalog()
         with database.connection() as db:
             basic = db.execute("SELECT ts_code FROM stock_basics WHERE symbol=?", (symbol,)).fetchone()
         if not basic:
             raise ValueError("未找到该股票的基本资料，日线仍可独立查看")
-    stock = database.get_stock_basics([basic["ts_code"]])[0]
+    return database.get_stock_basics([basic["ts_code"]])[0]
+
+
+def stock_profile(symbol: str) -> dict:
+    stock = stock_basic(symbol)
+    with database.connection() as db:
+        selections = db.execute("SELECT * FROM selection_reports ORDER BY published_at DESC LIMIT 1000").fetchall()
+        forecasts = db.execute("SELECT result_json, published_at FROM forecast_reports ORDER BY id DESC LIMIT 100").fetchall()
     hits = []
     for report in selections:
         pick = next((pick for pick in json.loads(report["picks_json"]) if pick["code"] == symbol), None)
@@ -90,9 +95,9 @@ def stock_series(symbol: str) -> dict:
 
 
 def stock_news(symbol: str) -> dict:
-    profile = stock_profile(symbol)
     def fetch():
-        return {"items": ConceptResearchClient().news(profile["stock"]["name"], symbol),
+        stock = stock_basic(symbol)
+        return {"items": ConceptResearchClient().news(stock["name"], symbol),
                 "asOf": database.now_iso()}
     return shared_read(f"stock-news:{symbol}", fetch, 1800)
 
@@ -106,24 +111,6 @@ def latest_universe() -> dict | None:
     with database.connection() as db:
         row = db.execute("SELECT * FROM concept_universes ORDER BY as_of DESC LIMIT 1").fetchone()
     return {"asOf": row["as_of"], "boards": json.loads(row["boards_json"])} if row else None
-
-
-def fetch_batch(items: list, fetch, seconds: int = 180) -> dict:
-    pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="research-market")
-    futures = {pool.submit(fetch, item): item for item in items}
-    try:
-        done, pending = wait(futures, timeout=seconds)
-        for future in pending:
-            future.cancel()
-        values = {}
-        for future in done:
-            try:
-                values[futures[future]] = future.result()
-            except Exception:
-                continue
-        return values
-    finally:
-        pool.shutdown(wait=False, cancel_futures=True)
 
 
 def refresh_rotation(progress) -> dict:

@@ -1,10 +1,10 @@
 'use client';
 
+import { shortTradeDate, percent, timestamp } from '@/lib/format';
+
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useResearch } from '@/lib/use-research';
-import { shortTradeDate } from '@/lib/format';
 import type { Candle, StockNews, StockProfile, StockSeries } from '@/lib/research-types';
-import { percent, timestamp } from '@/components/concept-recommendations';
 import { ResearchError } from './research-common';
 
 const StockContext = createContext<(code: string) => void>(() => {});

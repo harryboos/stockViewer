@@ -10,9 +10,11 @@ import { SectorConceptView } from '@/components/sector-concept-view';
 import { StrategiesView } from '@/components/strategies-view';
 import { WatchlistView } from '@/components/watchlist-view';
 import { StockDetailProvider } from '@/components/stock-detail';
-import { DailyDigest, OperationsView } from '@/components/research-panels';
+import { OperationsView } from '@/components/research-panels';
+import { DailyDigest } from '@/components/daily-digest';
 import { errorMessage, isAbortError, jsonFetch } from '@/lib/client-api';
 import { formatChinaDate } from '@/lib/format';
+import { useWatchlist } from '@/lib/use-watchlist';
 import { buildStrategySummary } from '@/lib/strategy-summary';
 import {
   AI_PROVIDERS,
@@ -23,8 +25,6 @@ import {
   type SectorOverview,
   type StockBasic,
   type SystemStatus,
-  type WatchlistResponse,
-  type WatchlistStock,
 } from '@/lib/types';
 
 
@@ -33,7 +33,6 @@ type ActiveTab = 'watchlist' | 'strategies' | 'market' | 'sectors' | 'forecast' 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('watchlist');
   const [status, setStatus] = useState<SystemStatus | null>(null);
-  const [stocks, setStocks] = useState<WatchlistStock[]>([]);
   const [publicStrategies, setPublicStrategies] = useState<PublicStrategyResult[]>([]);
   const [aiRuns, setAiRuns] = useState<AiRunView[]>([]);
   const [marketOverview, setMarketOverview] = useState<MarketOverview | null>(null);
@@ -42,7 +41,6 @@ export default function Home() {
   const [addQuery, setAddQuery] = useState('');
   const [searchResults, setSearchResults] = useState<StockBasic[]>([]);
   const [modalOpen, setModalOpen] = useState(false);
-  const [loading, setLoading] = useState(true);
   const [strategyLoading, setStrategyLoading] = useState(false);
   const [marketLoading, setMarketLoading] = useState(false);
   const [sectorLoading, setSectorLoading] = useState(false);
@@ -52,37 +50,26 @@ export default function Home() {
   const setError = useCallback((value: string, tab: ActiveTab = 'watchlist') => setErrors(current => ({ ...current, [tab]: value })), []);
   const [aiSubmitting, setAiSubmitting] = useState(false);
   const aiSubmitLock = useRef(false);
-  const [watchlistBusy, setWatchlistBusy] = useState(false);
-  const watchlistLock = useRef(false);
   const strategyLock = useRef(false);
+  const marketLock = useRef(false);
+  const sectorLock = useRef(false);
   const today = formatChinaDate();
 
   useEffect(() => { window.scrollTo({ top: 0, behavior: 'instant' }); }, [activeTab]);
 
-  const applyWatchlist = useCallback((data: WatchlistResponse) => {
-    setStocks(data.stocks);
-    setStatus((current) => current ? { ...current, dataSource: data.dataSource } : current);
+  const updateSource = useCallback((dataSource: SystemStatus['dataSource']) => {
+    setStatus(current => current ? { ...current, dataSource } : current);
   }, []);
+  const watchlist = useWatchlist(updateSource, setError, setToast);
+  const { stocks, loading, busy: watchlistBusy } = watchlist;
 
   useEffect(() => {
     const controller = new AbortController();
     const options = { signal: controller.signal };
     void jsonFetch<SystemStatus>('/api/system', options).then(value => { if (!controller.signal.aborted) setStatus(value); }).catch(cause => { if (!controller.signal.aborted) setError(errorMessage(cause, '系统状态读取失败'), 'operations'); });
-    const readWatchlist = async () => {
-      try {
-        const cached = await jsonFetch<WatchlistResponse>('/api/watchlist?cached_only=true', options);
-        if (controller.signal.aborted) return;
-        applyWatchlist(cached); setLoading(false);
-        const latest = await jsonFetch<WatchlistResponse>('/api/watchlist', options);
-        if (!controller.signal.aborted) applyWatchlist(latest);
-      } catch (cause) {
-        if (!controller.signal.aborted) setError(errorMessage(cause, '自选行情读取失败'));
-      } finally { if (!controller.signal.aborted) setLoading(false); }
-    };
-    void readWatchlist();
     void jsonFetch<{ runs: AiRunView[] }>('/api/strategies/ai', options).then(value => { if (!controller.signal.aborted) setAiRuns(value.runs); }).catch(cause => { if (!controller.signal.aborted) setError(errorMessage(cause, 'AI 状态读取失败'), 'strategies'); });
     return () => controller.abort();
-  }, [applyWatchlist, setError]);
+  }, [setError]);
 
   useEffect(() => {
     if (!toast) return;
@@ -181,6 +168,8 @@ export default function Home() {
   }, [loadStrategies, publicStrategies.length, strategyLoading]);
 
   const loadMarketOverview = useCallback(async (force = false) => {
+    if (marketLock.current) return;
+    marketLock.current = true;
     setMarketLoading(true);
     setError('', 'market');
     try {
@@ -189,6 +178,7 @@ export default function Home() {
     } catch (reason) {
       setError(errorMessage(reason, '大盘数据加载失败'), 'market');
     } finally {
+      marketLock.current = false;
       setMarketLoading(false);
     }
   }, [setError]);
@@ -199,6 +189,8 @@ export default function Home() {
   }, [loadMarketOverview, marketLoading, marketOverview]);
 
   const loadSectorOverview = useCallback(async (force = false) => {
+    if (sectorLock.current) return;
+    sectorLock.current = true;
     setSectorLoading(true);
     setError('', 'sectors');
     try {
@@ -207,6 +199,7 @@ export default function Home() {
     } catch (reason) {
       setError(errorMessage(reason, '板块概念数据加载失败'), 'sectors');
     } finally {
+      sectorLock.current = false;
       setSectorLoading(false);
     }
   }, [setError]);
@@ -217,60 +210,10 @@ export default function Home() {
   }, [loadSectorOverview, sectorLoading, sectorOverview]);
 
   async function addStock(stock: StockBasic) {
-    if (watchlistLock.current || loading) return;
-    watchlistLock.current = true;
-    setWatchlistBusy(true);
     try {
-      const data = await jsonFetch<WatchlistResponse>('/api/watchlist', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tsCode: stock.tsCode }),
-      });
-      applyWatchlist(data);
-      setToast(`已将 ${stock.name} 加入自选`);
-      setAddQuery('');
-      setSearchResults([]);
-    } catch (reason) {
-      setToast(errorMessage(reason, '添加失败'));
-    } finally {
-      watchlistLock.current = false;
-      setWatchlistBusy(false);
-    }
-  }
-
-  async function removeStock(stock: WatchlistStock) {
-    if (watchlistLock.current || loading) return;
-    watchlistLock.current = true;
-    setWatchlistBusy(true);
-    try {
-      const data = await jsonFetch<WatchlistResponse>(
-        `/api/watchlist?tsCode=${encodeURIComponent(stock.tsCode)}`,
-        { method: 'DELETE' },
-      );
-      applyWatchlist(data);
-      setToast(`已将 ${stock.name} 移出自选`);
-    } catch (reason) {
-      setToast(errorMessage(reason, '移除失败'));
-    } finally {
-      watchlistLock.current = false;
-      setWatchlistBusy(false);
-    }
-  }
-
-  async function refreshData() {
-    if (watchlistLock.current || loading) return;
-    watchlistLock.current = true;
-    setLoading(true);
-    setError('');
-    try {
-      applyWatchlist(await jsonFetch<WatchlistResponse>('/api/watchlist?refresh=true'));
-      setToast('免费行情已检查更新');
-    } catch (reason) {
-      setError(errorMessage(reason, '刷新失败'));
-    } finally {
-      watchlistLock.current = false;
-      setLoading(false);
-    }
+      await watchlist.add(stock);
+      updateAddQuery('');
+    } catch (cause) { setToast(errorMessage(cause, '添加失败')); }
   }
 
   function updateAddQuery(value: string) {
@@ -325,11 +268,11 @@ export default function Home() {
           missingAiCount={missingAiCount}
           completedAiCount={completedAiCount}
           onQueryChange={setQuery}
-          onRefresh={() => void refreshData()}
+          onRefresh={() => void watchlist.refresh()}
           onOpenAdd={() => setModalOpen(true)}
           onOpenStrategies={openStrategies}
-          onRemove={(stock) => void removeStock(stock)}
-          onUpdated={applyWatchlist}
+          onRemove={(stock) => void watchlist.remove(stock)}
+          onSaveNote={watchlist.saveNote}
         />
       ) : activeTab === 'strategies' ? (
         <StrategiesView

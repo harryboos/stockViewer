@@ -13,6 +13,7 @@ from uuid import uuid4
 from .config import CHINA_TZ, DATABASE_PATH
 from .report_storage import decode_result, encode_result
 from . import storage_policy
+from .forecast_limits import RUN_LEASE_SECONDS as FORECAST_RUN_LEASE_SECONDS
 
 logger = logging.getLogger(__name__)
 STORAGE_SCHEMA_VERSION = "1"
@@ -473,19 +474,24 @@ def save_strategy_run(run_date: str, trade_date: str, result: list[dict[str, Any
         archive_rules(db, result, now_iso())
 
 
-def read_ai_run(provider: str, run_date: str) -> dict[str, Any] | None:
+def read_ai_run(provider: str, run_date: str, *, include_result: bool = True) -> dict[str, Any] | None:
+    payload = "result_json" if include_result else "NULL"
+    previous_payload = "previous_result_json" if include_result else "NULL"
     with connection() as db:
         row = db.execute(
-            """SELECT provider, model, status, prompt_version AS promptVersion, started_at AS startedAt,
-            result_json AS resultJson, error,
-            previous_result_json AS previousResultJson, previous_finished_at AS previousFinishedAt,
-            finished_at AS finishedAt FROM ai_runs WHERE run_date = ? AND provider = ?""",
+            f"""SELECT provider, model, status, prompt_version AS promptVersion, started_at AS startedAt,
+            {payload} AS resultJson, error,
+            {previous_payload} AS previousResultJson, previous_finished_at AS previousFinishedAt,
+            finished_at AS finishedAt,
+            (SELECT stage FROM ai_attempts WHERE token = ai_runs.run_token) AS stage
+            FROM ai_runs WHERE run_date = ? AND provider = ?""",
             (run_date, provider),
         ).fetchone()
     if not row:
         return None
     result = dict(row)
-    result["result"] = decode_result(result.pop("resultJson")) if result["resultJson"] else None
+    raw = result.pop("resultJson")
+    result["result"] = decode_result(raw) if raw else None
     previous = result.pop("previousResultJson")
     result["previousResult"] = decode_result(previous) if previous else None
     if result["status"] == "running" and result["startedAt"] <= _ai_lease_cutoff(provider):
@@ -494,7 +500,8 @@ def read_ai_run(provider: str, run_date: str) -> dict[str, Any] | None:
 
 
 def _ai_lease_cutoff(provider: str | None = None) -> str:
-    seconds = CONCEPT_AI_RUN_LEASE_SECONDS if provider in {"concept:glm", "forecast:glm"} else AI_RUN_LEASE_SECONDS
+    seconds = (FORECAST_RUN_LEASE_SECONDS if provider == "forecast:glm" else
+               CONCEPT_AI_RUN_LEASE_SECONDS if provider == "concept:glm" else AI_RUN_LEASE_SECONDS)
     return (datetime.now(CHINA_TZ) - timedelta(seconds=seconds)).isoformat(timespec="seconds")
 
 

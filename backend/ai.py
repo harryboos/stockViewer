@@ -119,8 +119,8 @@ def _empty_run(provider: Provider, status: str) -> dict[str, Any]:
     }
 
 
-def _current_run(provider: Provider, run_date: str) -> dict[str, Any] | None:
-    existing = database.read_ai_run(provider, run_date)
+def _current_run(provider: Provider, run_date: str, *, include_result: bool = True) -> dict[str, Any] | None:
+    existing = database.read_ai_run(provider, run_date, include_result=include_result)
     if existing and (existing["status"] == "running" or (
         existing.get("promptVersion") == PROMPT_VERSION and existing.get("model") == model_for(provider)
     )):
@@ -295,14 +295,14 @@ async def _execute_provider(
         ai_token.reset(context_token)
 
 
-def get_daily_ai_runs(run_date: str | None = None) -> dict[str, Any]:
+def get_daily_ai_runs(run_date: str | None = None, *, include_result: bool = True) -> dict[str, Any]:
     run_date = run_date or database.china_date()
     runs: list[dict[str, Any]] = []
     for provider in PROVIDERS:
         if not provider_key(provider):
             runs.append(_empty_run(provider, "not_configured"))
             continue
-        existing = _current_run(provider, run_date)
+        existing = _current_run(provider, run_date, include_result=include_result)
         runs.append(existing or _empty_run(provider, "pending"))
     return {"runDate": run_date, "runs": runs}
 

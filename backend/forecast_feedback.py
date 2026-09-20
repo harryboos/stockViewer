@@ -5,16 +5,17 @@ import asyncio
 import json
 import logging
 import threading
-from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, time, timedelta
 from uuid import uuid4
 
 from . import database
 from .forecast_history import BENCHMARKS, HORIZONS, REFRESH_KEY, reports_to_refresh, refresh_status
 from .forecast_prices import CalendarUnavailableError, FeedbackPriceClient
+from .research_pool import fetch_batch
 
 logger = logging.getLogger(__name__)
 _tasks: set[asyncio.Task] = set()
+_start: asyncio.Task | None = None
 _refresh_lock = threading.Lock()
 
 
@@ -125,18 +126,17 @@ def refresh_feedback(token: str) -> None:
             start, end = bounds(report, 30)
             for code in [*BENCHMARKS, *(c["code"] for c in report["result"]["concepts"])]:
                 requests.add((code, start.isoformat(), min(end, now.date()).isoformat()))
-        def fetch(item):
-            return item, client.history(*item)
-        with ThreadPoolExecutor(max_workers=6) as pool:
-            prices = dict(pool.map(fetch, sorted(requests)))
+        prices = fetch_batch(sorted(requests), lambda item: client.history(*item))
+        if len(prices) < len(requests):
+            error = "部分行情请求失败或等待超时，已核对可用数据并保留此前结果，可稍后重试"
         for report in reports:
             start, end = bounds(report, 30)
             span = (start.isoformat(), min(end, now.date()).isoformat())
-            indexes = {code: prices[(code, *span)] for code in BENCHMARKS}
+            indexes = {code: prices.get((code, *span), {"rows": []}) for code in BENCHMARKS}
             results = []
             for concept in report["result"]["concepts"]:
                 for days in HORIZONS:
-                    value = evaluate(report, days, prices[(concept["code"], *span)], indexes, calendar, now)
+                    value = evaluate(report, days, prices.get((concept["code"], *span), {"rows": []}), indexes, calendar, now)
                     results.append((concept["code"], days, value))
             with database._write_lock, database.connection() as db:
                 db.execute("BEGIN IMMEDIATE")
@@ -179,23 +179,40 @@ def refresh_feedback(token: str) -> None:
         logger.exception("历史预测反馈更新失败")
         error = "行情或交易日历暂不可用，已保留此前结果，可稍后重试"
     finally:
-        with database._write_lock, database.connection() as db:
-            row = db.execute("SELECT value FROM app_meta WHERE key = ?", (REFRESH_KEY,)).fetchone()
-            state = json.loads(row["value"]) if row else {}
-            if state.get("token") == token:
-                state.update(status="failed" if error else "succeeded", finishedAt=database.now_iso(),
-                             error=error, reportsChecked=checked)
-                db.execute("UPDATE app_meta SET value = ?, updated_at = ? WHERE key = ?",
-                           (json.dumps(state, ensure_ascii=False), database.now_iso(), REFRESH_KEY))
-        _refresh_lock.release()
+        try:
+            with database._write_lock, database.connection() as db:
+                row = db.execute("SELECT value FROM app_meta WHERE key = ?", (REFRESH_KEY,)).fetchone()
+                state = json.loads(row["value"]) if row else {}
+                if state.get("token") == token:
+                    state.update(status="failed" if error else "succeeded", finishedAt=database.now_iso(),
+                                 error=error, reportsChecked=checked)
+                    db.execute("UPDATE app_meta SET value = ?, updated_at = ? WHERE key = ?",
+                               (json.dumps(state, ensure_ascii=False), database.now_iso(), REFRESH_KEY))
+        finally:
+            _refresh_lock.release()
 
 
 async def start_feedback_refresh() -> dict:
-    if not reports_to_refresh(limit=1):
-        return refresh_status()
-    token = claim_refresh()
-    if token:
-        task = asyncio.create_task(asyncio.to_thread(refresh_feedback, token))
-        _tasks.add(task)
-        task.add_done_callback(_tasks.discard)
-    return refresh_status()
+    global _start
+
+    def finished(task):
+        _tasks.discard(task)
+        if not task.cancelled() and task.exception():
+            logger.error("forecast_feedback_worker_failed error_type=%s", type(task.exception()).__name__)
+
+    async def dispatch():
+        if _refresh_lock.locked() or any(not task.done() for task in _tasks):
+            return await asyncio.to_thread(refresh_status)
+        if await asyncio.to_thread(reports_to_refresh, limit=1):
+            token = await asyncio.to_thread(claim_refresh)
+            if token:
+                task = asyncio.create_task(asyncio.to_thread(refresh_feedback, token))
+                _tasks.add(task)
+                task.add_done_callback(finished)
+        return await asyncio.to_thread(refresh_status)
+
+    if _start is None or _start.done():
+        _start = asyncio.create_task(dispatch())
+        _start.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+    # Slow SQLite reads cannot block every request; disconnects cannot orphan a claimed job.
+    return await asyncio.shield(_start)

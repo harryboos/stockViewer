@@ -110,18 +110,28 @@ def history_payload(page: int = 1, page_size: int = 10, *, as_of: datetime | Non
     from .forecast_feedback import pending_outcome
     now = as_of or datetime.now(database.CHINA_TZ)
     refresh = refresh_status()
+    # Only first daily reports contribute to statistics. Extra versions are read
+    # only when they appear on this page; long stored price paths are not UI rows.
+    selected = """WITH primary_ids AS (SELECT MIN(id) AS id FROM forecast_reports GROUP BY run_date),
+        page_ids AS (SELECT id FROM forecast_reports ORDER BY id DESC LIMIT ? OFFSET ?),
+        selected_ids AS (SELECT id FROM primary_ids UNION SELECT id FROM page_ids) """
+    pagination = (page_size, (page - 1) * page_size)
     with database.connection() as db:
-        rows = db.execute(f"SELECT {OVERVIEW_COLUMNS} FROM forecast_reports ORDER BY id DESC").fetchall()
+        db.execute("BEGIN")
+        total = db.execute("SELECT COUNT(*) FROM forecast_reports").fetchone()[0]
+        rows = db.execute(selected + f"""SELECT {OVERVIEW_COLUMNS},
+            id IN (SELECT id FROM primary_ids) AS is_primary,
+            id IN (SELECT id FROM page_ids) AS on_page
+            FROM forecast_reports WHERE id IN (SELECT id FROM selected_ids) ORDER BY id DESC""", pagination).fetchall()
         saved = {(row["report_id"], row["concept_code"], row["horizon_days"]): json.loads(row["result_json"])
-                 for row in db.execute("SELECT * FROM forecast_feedback")}
-    first_ids = {}
-    for row in reversed(rows):
-        first_ids.setdefault(row["run_date"], row["id"])
+                 for row in db.execute(selected + """SELECT report_id, concept_code, horizon_days,
+                     json_remove(result_json, '$.path') AS result_json FROM forecast_feedback
+                     WHERE report_id IN (SELECT id FROM selected_ids)""", pagination)}
     cohorts = {str(days): [] for days in HORIZONS}
     entries, abstentions = [], 0
-    for index, row in enumerate(rows):
+    for row in rows:
         report = _report(row)
-        primary = first_ids[row["run_date"]] == row["id"]
+        primary = bool(row["is_primary"])
         abstentions += int(primary and not report["result"]["concepts"])
         concepts = []
         for concept in report["result"]["concepts"]:
@@ -146,12 +156,12 @@ def history_payload(page: int = 1, page_size: int = 10, *, as_of: datetime | Non
                 if primary:
                     cohorts[str(days)].append(outcome)
             concepts.append({"code": concept["code"], "name": concept["name"], "outcomes": outcomes})
-        if (page - 1) * page_size <= index < page * page_size:
+        if row["on_page"]:
             entries.append({key: value for key, value in report.items() if key != "result"} | {
                 "includedInStats": primary, "window": report["result"]["window"],
                 "summary": report["result"]["summary"], "concepts": concepts})
-    return {"reports": entries, "page": page, "pageSize": page_size, "totalReports": len(rows),
-            "forecastDays": len(first_ids), "abstentionDays": abstentions,
+    return {"reports": entries, "page": page, "pageSize": page_size, "totalReports": total,
+            "forecastDays": sum(row["is_primary"] for row in rows), "abstentionDays": abstentions,
             "summaries": {days: summarize(items) for days, items in cohorts.items()},
             "refresh": refresh, "asOf": now.isoformat(timespec="seconds")}
 

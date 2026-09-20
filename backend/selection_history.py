@@ -13,6 +13,16 @@ from .research_data import stock_history, index_history, last_closed_day, fetch_
 HORIZONS = (5, 10, 20)
 
 
+def recent_entries(limit: int = 5) -> list[dict]:
+    """Digest cards need recent names and picks, not every strategy's lifetime statistics."""
+    with database.connection() as db:
+        reports = db.execute("SELECT * FROM selection_reports ORDER BY published_at DESC,id DESC LIMIT ?", (limit,)).fetchall()
+    return [{"id": row["id"], "runDate": row["run_date"], "strategyKey": row["strategy_key"],
+             "name": row["name"], "publishedAt": row["published_at"], "origin": row["origin"],
+             "picks": [{"code": pick["code"], "name": pick["name"]} for pick in json.loads(row["picks_json"])]}
+            for row in reports]
+
+
 def selection_outcome(report: dict, sessions: int, rows: list, indexes: dict,
                       calendar: list[str], now: datetime) -> dict:
     published = datetime.fromisoformat(report["published_at"])

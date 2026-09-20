@@ -59,9 +59,6 @@
 .comparison-lead > div { padding: 16px; background: #fff; border: 1px solid var(--line); border-radius: 10px; }
 .comparison-lead strong, .comparison-lead b { display: block; font-size: 21px; font-variant-numeric: tabular-nums; }
 .comparison-lead span { color: var(--muted); font-size: 12px; }
-.digest-line { display: flex; justify-content: space-between; gap: 12px; padding: 14px 0; border-bottom: 1px solid var(--line); }
-.digest-selection { margin: 16px 0; padding-bottom: 12px; border-bottom: 1px solid var(--line); line-height: 1.8; }
-.digest-selection > strong { font-size: 13px; color: var(--muted); }
 @media (max-width: 850px) {
   .research-heading { flex-direction: column; gap: 14px; }
   .research-card-grid, .comparison-lead { grid-template-columns: 1fr; }

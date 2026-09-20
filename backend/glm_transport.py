@@ -8,9 +8,11 @@ import math
 import random
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 import httpx
+
+from .forecast_limits import QUEUE_TIMEOUT_SECONDS, STREAM_IDLE_SECONDS
 
 logger = logging.getLogger(__name__)
 MAX_ATTEMPTS = 5
@@ -98,7 +100,7 @@ async def read_json(response: httpx.Response) -> Any:
         raise RequestFailure("GLM 接口返回了无法解析的数据") from error
 
 
-async def read_stream(response: httpx.Response) -> dict[str, Any]:
+async def read_stream(response: httpx.Response, progress: Callable[[str], Awaitable[None]]) -> dict[str, Any]:
     parts: list[str] = []
     content_size = 0
     event: list[str] = []
@@ -129,13 +131,18 @@ async def read_stream(response: httpx.Response) -> dict[str, Any]:
                     delta = choice.get("delta") or {}
                     content = delta.get("content")
                     # Reasoning chunks keep the connection active; never retain or log them.
+                    if content:
+                        await progress("正在整理预测报告")
+                    elif delta.get("reasoning_content") and not parts:
+                        await progress("GLM MAX 深度推理中")
                     if content is not None:
                         if not isinstance(content, str):
                             raise ValueError("invalid content")
                         content_size += len(content)
                         if content_size > MAX_CONTENT_CHARS:
                             raise RequestFailure("GLM 响应超出安全长度，本次未生成预测")
-                        parts.append(content)
+                        if content:
+                            parts.append(content)
                     finish = choice.get("finish_reason")
                     if finish is not None:
                         check_finish(finish)
@@ -147,17 +154,31 @@ async def read_stream(response: httpx.Response) -> dict[str, Any]:
 
 async def post_research(url: str, headers: dict[str, str], payload: dict[str, Any], *,
                         timeout_seconds: float) -> dict[str, Any]:
-    """Retry explicit overload rejection or connection setup failure, never partial output."""
-    deadline = asyncio.get_running_loop().time() + timeout_seconds
+    """Give an accepted generation its full budget, independently of bounded queue retries."""
+    from .research_jobs import ai_token, record_ai_stage
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    queue_deadline = started + QUEUE_TIMEOUT_SECONDS
+    phase = "queue"
+    previous_stage = None
+
+    async def progress(label: str, *, call: bool = False) -> None:
+        nonlocal previous_stage
+        if label == previous_stage and not call:
+            return
+        previous_stage = label
+        logger.info("forecast_glm_stage phase=%s elapsed=%.1fs", label, loop.time() - started)
+        if ai_token.get():
+            await asyncio.to_thread(record_ai_stage, ai_token.get(), label, call=call)
+
     try:
-        # This deadline includes all requests AND backoff, so retries cannot extend the job lease.
-        async with asyncio.timeout(timeout_seconds):
-            async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_seconds, connect=20.0)) as client:
+        # Until headers arrive the request shares the queue budget. Only a successful
+        # response starts the full model budget. An idle socket still fails promptly.
+        async with asyncio.timeout_at(queue_deadline) as deadline:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(STREAM_IDLE_SECONDS, connect=20.0, write=30.0, pool=20.0)) as client:
                 for attempt in range(1, MAX_ATTEMPTS + 1):
                     try:
-                        from .research_jobs import ai_token, record_ai_stage
-                        if ai_token.get():
-                            await asyncio.to_thread(record_ai_stage, ai_token.get(), f"GLM 深度分析 · 第 {attempt} 次请求", call=True)
+                        await progress(f"等待 GLM 接入 · 第 {attempt} 次请求", call=True)
                         async with client.stream("POST", url, headers=headers, json={**payload, "stream": True}) as response:
                             if response.status_code >= 400:
                                 try:
@@ -165,8 +186,11 @@ async def post_research(url: str, headers: dict[str, str], payload: dict[str, An
                                 except RequestFailure:
                                     body = None  # Gateways may send an HTML 502/503 response.
                                 raise response_failure(response, body)
+                            phase = "generation"
+                            deadline.reschedule(loop.time() + timeout_seconds)
+                            await progress("GLM 已接入，等待分析输出")
                             if "text/event-stream" in response.headers.get("content-type", "").lower():
-                                return await read_stream(response)
+                                return await read_stream(response, progress)
                             # Some compatible gateways ignore stream=True and return normal JSON.
                             body = await read_json(response)
                             if isinstance(body, dict) and "error" in body:
@@ -181,21 +205,28 @@ async def post_research(url: str, headers: dict[str, str], payload: dict[str, An
                         failure.__cause__ = error
                     except RequestFailure as error:
                         failure = error
+                    except httpx.ReadTimeout as error:
+                        raise RequestFailure(f"GLM 连接等待超时（连续 {STREAM_IDLE_SECONDS // 60} 分钟未收到数据），本次未自动重复调用，请稍后重试") from error
                     except httpx.TimeoutException as error:
-                        raise RequestFailure("等待 GLM 响应超时，请稍后重新生成") from error
+                        raise RequestFailure("GLM 请求传输超时，本次未自动重复调用，请稍后重试") from error
                     except httpx.HTTPError as error:
                         raise RequestFailure("GLM 连接中断，预测未完整生成，请稍后重新生成") from error
                     if not failure.retryable or attempt == MAX_ATTEMPTS:
                         raise failure
+                    # A compatible JSON endpoint can also explicitly reject with a
+                    # transient business error. Return to the original queue budget.
+                    phase = "queue"
+                    deadline.reschedule(queue_deadline)
                     delay = max(5 * 2 ** (attempt - 1) + random.uniform(0, 1), failure.retry_after or 0)
-                    remaining = deadline - asyncio.get_running_loop().time()
-                    if delay + 30 >= remaining:
+                    remaining = queue_deadline - loop.time()
+                    if delay + 20 >= remaining:
                         raise failure  # Honor Retry-After; never retry earlier to fit our budget.
                     logger.warning("forecast_glm_retry attempt=%s/%s delay=%.1fs reason=%s",
                                    attempt, MAX_ATTEMPTS, delay, failure)
-                    if ai_token.get():
-                        await asyncio.to_thread(record_ai_stage, ai_token.get(), f"高峰等待 {delay:.0f} 秒后重试")
+                    await progress(f"高峰排队 · {delay:.0f} 秒后重试（第 {attempt + 1} 次）")
                     await asyncio.sleep(delay)
     except TimeoutError as error:
-        raise RequestFailure("GLM 深度分析及高峰重试等待超时，请稍后重新生成") from error
+        message = (f"GLM 高峰接入等待超时（超过 {QUEUE_TIMEOUT_SECONDS / 60:g} 分钟），请稍后重试" if phase == "queue" else
+                   f"GLM MAX 分析超时（超过 {timeout_seconds / 60:g} 分钟），尚未返回完整报告，请稍后重试")
+        raise RequestFailure(message) from error
     raise AssertionError("unreachable")

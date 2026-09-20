@@ -163,6 +163,22 @@ class ForecastRunTests(unittest.IsolatedAsyncioTestCase):
             self.addCleanup(target.stop)
         database.initialize()
 
+    def test_deadlines_cover_all_stages_and_status_tracks_current_attempt(self):
+        from backend import forecast_limits as limits, research_jobs
+        from backend.concept_news import NEWS_BUDGET_SECONDS
+        self.assertGreater(limits.RUN_TIMEOUT_SECONDS, limits.DATA_TIMEOUT_SECONDS + limits.FEEDBACK_TIMEOUT_SECONDS
+                           + NEWS_BUDGET_SECONDS + limits.QUEUE_TIMEOUT_SECONDS + limits.MODEL_TIMEOUT_SECONDS)
+        self.assertGreater(database.FORECAST_RUN_LEASE_SECONDS, limits.RUN_TIMEOUT_SECONDS)
+        day = database.china_date()
+        old = database.start_ai_run(forecast.RUN_NAMESPACE, forecast.MODEL, day, forecast.PROMPT_VERSION)
+        research_jobs.record_ai_stage(old, "GLM MAX 深度推理中")
+        self.assertEqual(forecast.get_forecast_run()["stage"], "GLM MAX 深度推理中")
+        self.assertEqual(forecast.get_forecast_run()["maxRunSeconds"], limits.RUN_TIMEOUT_SECONDS)
+        database.finish_ai_run(forecast.RUN_NAMESPACE, day, None, "超时", old)
+        current = database.start_ai_run(forecast.RUN_NAMESPACE, forecast.MODEL, day, forecast.PROMPT_VERSION)
+        self.assertNotEqual(old, current)
+        self.assertEqual(forecast.get_forecast_run()["stage"], "准备数据")
+
     async def test_concurrent_generate_uses_glm_max_once_and_separate_daily_cache(self):
         day = database.china_date()
         token = database.start_ai_run("concept:glm", "glm-5.3", day, concept_ai.PROMPT_VERSION)
@@ -299,12 +315,12 @@ class ForecastRunTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("超时", forecast.get_forecast_run()["error"])
         day = database.china_date()
         token = database.start_ai_run(forecast.RUN_NAMESPACE, "glm-5.3", day, forecast.PROMPT_VERSION)
-        five_minutes_ago = (datetime.now(database.CHINA_TZ) - timedelta(minutes=5)).isoformat(timespec="seconds")
+        fifteen_minutes_ago = (datetime.now(database.CHINA_TZ) - timedelta(minutes=15)).isoformat(timespec="seconds")
         with database.connection() as db:
-            db.execute("UPDATE ai_runs SET started_at = ? WHERE provider = ?", (five_minutes_ago, forecast.RUN_NAMESPACE))
+            db.execute("UPDATE ai_runs SET started_at = ? WHERE provider = ?", (fifteen_minutes_ago, forecast.RUN_NAMESPACE))
         self.assertEqual(forecast.get_forecast_run()["status"], "running")
         self.assertIsNone(database.start_ai_run(forecast.RUN_NAMESPACE, "glm-5.3", day, forecast.PROMPT_VERSION, True))
-        expired = (datetime.now(database.CHINA_TZ) - timedelta(minutes=12)).isoformat(timespec="seconds")
+        expired = (datetime.now(database.CHINA_TZ) - timedelta(seconds=database.FORECAST_RUN_LEASE_SECONDS + 1)).isoformat(timespec="seconds")
         with database.connection() as db:
             db.execute("UPDATE ai_runs SET started_at = ? WHERE provider = ?", (expired, forecast.RUN_NAMESPACE))
         new_token = database.start_ai_run(forecast.RUN_NAMESPACE, "glm-5.3", day, forecast.PROMPT_VERSION)

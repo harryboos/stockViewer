@@ -41,6 +41,8 @@ def initialize(db) -> None:
             finished_at TEXT, status TEXT NOT NULL, stage TEXT, calls INTEGER NOT NULL DEFAULT 0);
         CREATE INDEX IF NOT EXISTS idx_selection_reports_published ON selection_reports(published_at DESC,id DESC);
         CREATE INDEX IF NOT EXISTS idx_selection_outcomes_sessions ON selection_outcomes(sessions,report_id,code);
+        CREATE INDEX IF NOT EXISTS idx_research_cache_updated ON research_cache(updated_at);
+        CREATE INDEX IF NOT EXISTS idx_ai_attempts_started ON ai_attempts(started_at);
     """
     for statement in schema.split(";"):
         if statement.strip():

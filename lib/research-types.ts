@@ -31,5 +31,6 @@ export type ConceptComparison = { reportId: number; days: number; status: string
   selected: { code: string; name: string; rank: number; returnPct: number; gapPct: number }[] };
 export type DailyDigestData = { asOf: string; quoteDate: string | null; watchMovers: WatchlistStock[];
   market: { tradeDate: string; updatedAt: string; snapshot: { breadth: number; turnover: number }; warnings: string[] } | null;
-  strongBoards: SectorBoard[]; sectorAsOf: string | null; rotationLeaders: RotationItem[];
-  recentSelections: SelectionHistory['entries']; forecastSummaries: Record<'15' | '30', FeedbackSummary>; note: string };
+  strongBoards: SectorBoard[]; sectorAsOf: string | null; sectorTradeDate: string | null;
+  recentSelections: (Omit<SelectionHistory['entries'][number], 'picks'> & { picks: { code: string; name: string }[] })[];
+  forecastSummaries: Record<'15' | '30', FeedbackSummary>; note: string };

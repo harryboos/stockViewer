@@ -2,8 +2,8 @@
 
 import { useState } from 'react';
 import { useResearch } from '@/lib/use-research';
-import type { ConceptComparison, Operations, Rotation, SelectionHistory, DailyDigestData } from '@/lib/research-types';
-import { percent, timestamp, tone, amount } from './concept-recommendations';
+import type { ConceptComparison, Operations, Rotation, SelectionHistory } from '@/lib/research-types';
+import { percent, timestamp, tone } from '@/lib/format';
 import { JobButton, ResearchError } from './research-common';
 import { StockLink } from './stock-detail';
 import { jsonFetch, errorMessage } from '@/lib/client-api';
@@ -73,15 +73,5 @@ export function OperationsView() {
     <div className="research-card-grid">{data?.sources.map(source => <article className="research-card" key={source.key}><h3>{source.name}</h3><strong>{({ fresh: '最近取得数据', cached: '已有缓存', degraded: '部分来源异常', unavailable: '尚无成功数据' })[source.state]}</strong><p>行情日期 {source.tradeDate || '—'}<br />最近成功 {source.updatedAt ? timestamp(source.updatedAt) : '—'}</p>{source.error && <p className="research-error">{source.error}</p>}</article>)}</div>
     <section className="research-panel"><h2>后台数据任务</h2><div className="research-card-grid">{data?.jobs.map(job => <article className="research-card" key={job.key}><h3>{job.name}</h3><p>{statusText[job.status]} · {job.finishedAt ? timestamp(job.finishedAt) : '尚未完成'}</p><JobButton jobKey={job.key} label={job.status === 'failed' ? '重试此任务' : '更新此模块'} /></article>)}</div><p className="data-note">下一次规则策略：{data?.nextRulesAt ? timestamp(data.nextRulesAt) : '未启用定时规则策略'} · {data?.researchSchedule}</p></section>
     <section className="research-panel"><h2>AI 分析任务</h2><p>今日生成任务 {data?.aiUsage.runsToday ?? 0} 次 · 分析请求 {data?.aiUsage.requestsToday ?? 0} 次 · 失败任务 {data?.aiUsage.failedToday ?? 0} 次</p><p className="data-note">{data?.aiUsage.note}</p><div className="research-card-grid">{data?.aiRuns.map(run => <article className="research-card" key={run.provider}><h3>{run.provider === 'forecast:glm' ? '半个月预测' : run.provider === 'concept:glm' ? '近期概念推荐' : `${run.provider} 选股`}</h3><small>{run.provider.endsWith(':glm') ? 'GLM 5.3 MAX' : run.model}</small><p>{statusText[run.status]}{run.status === 'running' && run.stage ? ` · ${run.stage}` : ''}</p>{run.error && <p className="research-error">{run.error}</p>}<button className="refresh-button" disabled={!!busy || run.status === 'running' || run.status === 'not_configured'} onClick={() => runAi(run.provider, run.status === 'succeeded')}>{busy === run.provider ? '提交中…' : run.status === 'failed' ? '仅重试此 AI 任务' : run.status === 'succeeded' ? '重新生成' : '生成'}</button></article>)}</div></section>
-  </div>;
-}
-
-export function DailyDigest({ navigate }: { navigate: (tab: 'watchlist' | 'market' | 'sectors' | 'strategies' | 'forecast') => void }) {
-  const { data, error, refresh } = useResearch<DailyDigestData>('/api/research/digest', 15000);
-  return <div className="content"><header className="research-heading"><div><p className="eyebrow">每日观察摘要</p><h1>每日摘要</h1><p>把自选、大盘、板块与研究结果放在一起。</p></div><button className="refresh-button" onClick={refresh}>刷新摘要</button></header><ResearchError error={error} retry={refresh} />
-    <div className="research-card-grid"><section className="research-panel"><h2>自选股波动</h2><small>行情日期 {data?.quoteDate || '—'}</small>{data?.watchMovers.map(stock => <p className="digest-line" key={stock.symbol}><StockLink code={stock.symbol}>{stock.name}</StockLink><strong className={tone(stock.quote?.pctChg ?? null)}>{percent(stock.quote?.pctChg ?? null)}</strong></p>)}{data && !data.watchMovers.length && <p>暂无可比较行情。</p>}<button className="text-button" onClick={() => navigate('watchlist')}>查看全部自选 →</button></section>
-    <section className="research-panel"><h2>大盘与热点</h2>{data?.market ? <><p>上涨广度 {data.market.snapshot.breadth.toFixed(1)}% · 成交额 {amount(data.market.snapshot.turnover)}</p><small>大盘更新于 {timestamp(data.market.updatedAt)}</small></> : <p>尚未取得大盘快照。</p>}{data?.strongBoards.map(board => <p key={board.code}>{board.name} <b className={tone(board.pctChg)}>{percent(board.pctChg)}</b></p>)}<small>板块更新于 {data?.sectorAsOf ? timestamp(data.sectorAsOf) : '—'}</small><p><button className="text-button" onClick={() => navigate('market')}>大盘观察 →</button> <button className="text-button" onClick={() => navigate('sectors')}>板块与轮动 →</button></p></section>
-    <section className="research-panel"><h2>近期策略名单</h2>{data?.recentSelections.map(entry => <article className="digest-selection" key={entry.id}><strong>{entry.runDate} · {entry.name}</strong><p>{entry.picks.map(pick => <StockLink key={pick.code} code={pick.code}>{pick.name}　</StockLink>)}</p></article>)}<button className="text-button" onClick={() => navigate('strategies')}>查看策略和历史成绩 →</button></section>
-    <section className="research-panel"><h2>预测复盘进展</h2>{(['15', '30'] as const).map(days => { const summary = data?.forecastSummaries[days]; return <p key={days}>{days === '15' ? '半个月' : '一个月'}：{summary?.sampleCount ?? 0} 个已核对样本 · 平均涨幅 {percent(summary?.averageReturnPct ?? null)}<small>{summary?.trackingCount ?? 0} 个跟踪中 · {summary?.missingCount ?? 0} 个到期待补数据</small></p>; })}<button className="text-button" onClick={() => navigate('forecast')}>查看预测与同期最强对照 →</button></section></div><p className="data-note">{data?.note}</p>
   </div>;
 }
