@@ -60,7 +60,8 @@ def _run(key: str, token: str) -> None:
             calculate_public_strategies(True)
             progress(1, 1, "规则策略已完成")
         elif key == "market":
-            market_data.market_overview(True)
+            if market_data.market_overview(True).get("stale"):
+                raise RuntimeError("实时行情暂不可用，已保留最近成功快照，稍后可重试")
             progress(1, 1, "大盘行情已更新")
         elif key == "sectors":
             market_data.sector_overview(True)
@@ -130,7 +131,8 @@ def operations_payload() -> dict:
     source("quotes", "个股行情", quote["fetched"], market_data.status().get("error"), quote["day"])
     for key, name in (("latest-market", "大盘观察"), ("latest-sectors", "板块概念"), ("rotation", "板块轮动")):
         cached = cache_get(key) or {}
-        source(key, name, cached.get("updatedAt"), "；".join(cached.get("warnings", [])) or None,
+        error = database.get_meta("market_overview_error") if key == "latest-market" else None
+        source(key, name, cached.get("updatedAt"), error or "；".join(cached.get("warnings", [])) or None,
                cached.get("tradeDate") or cached.get("asOf"))
     runs = get_daily_ai_runs(include_result=False)["runs"] + [
         {**get_concept_run(include_result=False), "provider": "concept:glm"},

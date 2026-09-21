@@ -105,6 +105,26 @@ test('daily digest missing data never becomes zero returns or zero market breadt
   assert.ok(!html.includes('正在读取摘要'));
 });
 
+test('market fallback prominently labels old data and preserves the actual quote date', async () => {
+  const { MarketOverviewView } = await server.ssrLoadModule('/components/market-overview-view.tsx');
+  const data = { tradeDate: '20260921', updatedAt: '2026-09-21T15:10:00+08:00', source: '测试源', stale: true,
+    snapshot: { turnover: 100, breadth: 50, advancers: 1, decliners: 1, flat: 0 },
+    turnoverHistory: [], fundFlowHistory: [], latestFlow: null, topTurnover: [], warnings: [] };
+  const render = () => renderToStaticMarkup(createElement(MarketOverviewView, {
+    today: '2026年9月22日', data, loading: false, onRefresh() {},
+  }));
+  const cached = render();
+  assert.ok(cached.includes('2026-09-21'));
+  assert.ok(cached.includes('并非最新行情'));
+  assert.ok(cached.includes('最近成功快照汇总'));
+  assert.ok(!cached.includes('全市场最新快照汇总'));
+  data.stale = false;
+  data.dataStatus = { quotes: { state: 'fallback' }, turnoverComparison: {}, fundFlow: {} };
+  const fallback = render();
+  assert.ok(fallback.includes('已自动切换腾讯证券行情'));
+  assert.ok(!fallback.includes('并非最新行情'));
+});
+
 test('research job requests preserve the job key and block cross-site execution', async (t) => {
   const fetch = t.mock.method(globalThis, 'fetch', async (url, options) => {
     assert.equal(new URL(url).searchParams.get('key'), 'comparison');

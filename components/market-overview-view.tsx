@@ -1,4 +1,4 @@
-import { shortTradeDate } from '@/lib/format';
+import { shortTradeDate, timestamp } from '@/lib/format';
 import { StockLink } from './stock-detail';
 import type { MarketOverview } from '@/lib/types';
 
@@ -50,6 +50,7 @@ function friendlyWarnings(warnings: string[]): string[] {
     if (warning.startsWith('资金流已使用腾讯')) return '资金流已使用腾讯证券当日缓存';
     if (warning.startsWith('资金流暂用')) return '资金流已使用最近成功缓存';
     if (warning.startsWith('资金流暂不可用')) return '资金流暂不可用';
+    if (warning.startsWith('实时行情暂不可用')) return '实时行情暂不可用，当前展示最近成功快照';
     return '部分扩展数据暂不可用';
   }))];
 }
@@ -75,17 +76,20 @@ export function MarketOverviewView({ today, data, loading, onRefresh }: MarketOv
   const flowPositive = (latestFlow?.mainNetInflow ?? 0) >= 0;
   const breadthPositive = snapshot.breadth >= 50;
   const warnings = friendlyWarnings(data.warnings);
-  const turnoverSource = data.dataStatus?.turnoverComparison.source;
-  const flowSource = latestFlow?.source ?? data.dataStatus?.fundFlow.source;
+  const turnoverSource = data.dataStatus?.turnoverComparison?.source;
+  const flowSource = latestFlow?.source ?? data.dataStatus?.fundFlow?.source;
 
   return (
     <section className="content market-page page-enter">
       {hero}
 
+      {data.stale ? <p className="market-warning" role="status">实时行情暂不可用，当前展示 {shortTradeDate(data.tradeDate)} 的缓存快照（取得于 {timestamp(data.updatedAt)}），并非最新行情。</p>
+        : data.dataStatus?.quotes?.state === 'fallback' && <p className="market-warning" role="status">东方财富暂不可用，已自动切换腾讯证券行情。</p>}
+
       <div className="market-kpi-grid">
         <article className="market-kpi market-kpi-dark">
           <span className="market-kpi-icon">量</span>
-          <div><small>A 股成交额</small><strong>{formatAmount(snapshot.turnover)}</strong><p>全市场最新快照汇总</p></div>
+          <div><small>A 股成交额</small><strong>{formatAmount(snapshot.turnover)}</strong><p>{data.stale ? '最近成功快照汇总' : '全市场最新快照汇总'}</p></div>
         </article>
         <article className="market-kpi">
           <span className="market-kpi-icon">增</span>
@@ -135,7 +139,7 @@ export function MarketOverviewView({ today, data, loading, onRefresh }: MarketOv
 
       <div className="market-secondary-grid">
         <article className="market-panel turnover-panel">
-          <div className="market-panel-heading"><div><small>量能趋势</small><h2>近 {data.turnoverHistory.length} 个交易日成交额</h2></div><span>沪深历史 + 今日快照</span></div>
+          <div className="market-panel-heading"><div><small>量能趋势</small><h2>近 {data.turnoverHistory.length} 个交易日成交额</h2></div><span>沪深历史 + {data.stale ? '缓存快照' : '最新快照'}</span></div>
           <div className="turnover-chart" role="img" aria-label="近期市场成交额柱状图">
             {data.turnoverHistory.map((item) => (
               <div className="turnover-column" key={item.date} title={`${shortTradeDate(item.date)} ${formatAmount(item.turnover)}`}>
@@ -147,7 +151,7 @@ export function MarketOverviewView({ today, data, loading, onRefresh }: MarketOv
         </article>
 
         <article className="market-panel focus-panel">
-          <div className="market-panel-heading"><div><small>量能焦点</small><h2>成交额前列</h2></div><span>最新快照</span></div>
+          <div className="market-panel-heading"><div><small>量能焦点</small><h2>成交额前列</h2></div><span>{data.stale ? '缓存快照' : '最新快照'}</span></div>
           <div className="turnover-focus-list">
             {data.topTurnover.map((item, index) => (
               <div key={item.code}><span>{index + 1}</span><div><StockLink code={item.code}><strong>{item.name}</strong></StockLink><small>{item.code}</small></div><b className={(item.pctChg ?? 0) >= 0 ? 'up-text' : 'down-text'}>{formatPct(item.pctChg)}</b><em>{formatAmount(item.amount)}</em></div>
@@ -158,7 +162,7 @@ export function MarketOverviewView({ today, data, loading, onRefresh }: MarketOv
 
       <div className="market-footnote">
         <p>主力资金流优先使用东方财富，失败时使用腾讯证券逐股资金汇总；不同来源口径不完全一致，图中按实际来源标注。A 股成交额为全市场行情快照汇总。实时量能同比优先使用东方财富指数分时，失败时切换腾讯指数分时，盘中对比前一交易日同一时点累计成交额；涨跌停数量按不同板块常用阈值估算。</p>
-        {warnings.length > 0 && <p className="market-warning">部分扩展数据已降级：{warnings.join('；')}</p>}
+        {warnings.length > 0 && <p className="market-warning">数据提示：{warnings.join('；')}</p>}
       </div>
     </section>
   );

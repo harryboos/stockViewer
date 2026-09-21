@@ -85,7 +85,9 @@ class MarketDataServiceTests(unittest.TestCase):
     def test_spot_frame_uses_akshare_if_delay_route_fails(self) -> None:
         client = Mock()
         client.spot_frame.side_effect = RuntimeError("blocked")
-        service = MarketDataService(eastmoney_client=client)
+        tencent = Mock()
+        tencent.spot_frame.side_effect = RuntimeError("blocked")
+        service = MarketDataService(eastmoney_client=client, tencent_client=tencent)
         frame = pd.DataFrame([{"代码": "600519", "名称": "贵州茅台", "最新价": 1500.0}])
         akshare = Mock()
         akshare.stock_zh_a_spot_em.return_value = frame

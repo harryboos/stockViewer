@@ -4,6 +4,7 @@ import json
 import logging
 import math
 import threading
+from copy import deepcopy
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
@@ -26,7 +27,8 @@ CATALOG_CACHE_SECONDS = 24 * 60 * 60
 MARKET_TURNOVER_CACHE_KEY = "market_turnover:v1"
 MARKET_TURNOVER_COMPAT_KEYS = ("market_turnover:v2",)
 MARKET_FUND_FLOW_EAST_CACHE_KEY = "market_fund_flow:eastmoney:v1"
-MARKET_FUND_FLOW_TENCENT_CACHE_KEY = "market_fund_flow:tencent:v1"
+# v1 used incorrect rank parameters and could omit STAR/BSE stocks.
+MARKET_FUND_FLOW_TENCENT_CACHE_KEY = "market_fund_flow:tencent:v2"
 MARKET_FUND_FLOW_COMPAT_KEYS = ("market_fund_flow:v2", "market_fund_flow:v1")
 SECTOR_DISPLAY_LIMIT = 6
 SECTOR_TURNOVER_LIMIT = 6
@@ -97,6 +99,7 @@ class MarketDataService:
         self._trade_date: str | None = None
         self._trade_date_checked_on: date | None = None
         self._spot_failed_at: datetime | None = None
+        self._eastmoney_spot_failed_at: datetime | None = None
         self._overview_cache: dict[str, Any] | None = None
         self._overview_fetched_at: datetime | None = None
         self._sector_cache: dict[str, Any] | None = None
@@ -140,21 +143,49 @@ class MarketDataService:
             self._trade_date_checked_on = today
             return self._trade_date
 
+    def _eastmoney_cooling_down(self) -> bool:
+        return bool(
+            self._eastmoney_spot_failed_at
+            and (datetime.now(database.CHINA_TZ) - self._eastmoney_spot_failed_at).total_seconds()
+            < MARKET.primary_failure_backoff_seconds
+        )
+
     def _spot_frame(self) -> tuple[Any, str, str]:
         errors: list[str] = []
-        if MARKET.eastmoney_delay_enabled:
+        eastmoney_cooling = self._eastmoney_cooling_down()
+        if MARKET.eastmoney_delay_enabled and not eastmoney_cooling:
             try:
+                frame = self._eastmoney_client.spot_frame()
+                if frame.empty:
+                    raise RuntimeError("东方财富没有返回有效行情")
+                self._eastmoney_spot_failed_at = None
                 return (
-                    self._eastmoney_client.spot_frame(),
+                    frame,
                     "AKShare 兼容 · 东方财富备用线路",
                     "push2delay 直连（自动绕过异常系统代理）",
                 )
             except Exception as error:
                 errors.append(f"备用线路：{error}")
+                self._eastmoney_spot_failed_at = datetime.now(database.CHINA_TZ)
+        # AKShare's *_em endpoint also uses Eastmoney. Try an independent
+        # provider first so a provider/IP outage does not take down the page.
         try:
-            return self._akshare().stock_zh_a_spot_em(), "AKShare · 东方财富", "AKShare 标准线路"
+            frame = self._tencent_client.spot_frame()
+            if frame.empty:
+                raise RuntimeError("腾讯证券没有返回有效行情")
+            return frame, "腾讯证券 · 沪深京 A 股", "腾讯独立行情线路（指数报价校准交易日期）"
         except Exception as error:
-            errors.append(f"AKShare：{error}")
+            errors.append(f"腾讯证券：{error}")
+        if not eastmoney_cooling:
+            try:
+                frame = self._akshare().stock_zh_a_spot_em()
+                if frame.empty:
+                    raise RuntimeError("AKShare 没有返回有效行情")
+                self._eastmoney_spot_failed_at = None
+                return frame, "AKShare · 东方财富", "AKShare 标准线路"
+            except Exception as error:
+                errors.append(f"AKShare：{error}")
+                self._eastmoney_spot_failed_at = datetime.now(database.CHINA_TZ)
         raise RuntimeError("；".join(errors) or "实时行情获取失败")
 
     def _normalize_spot(self, frame: Any, source: str) -> list[dict[str, Any]]:
@@ -1174,6 +1205,8 @@ class MarketDataService:
         east_rows = east_rows or legacy_rows
         east_at = east_at or legacy_at
         try:
+            if self._eastmoney_cooling_down():
+                raise RuntimeError("东方财富行情连接失败，暂用独立来源")
             rows = self._fund_flow_frame_rows(self._eastmoney_client.market_fund_flow_frame())
             if not rows:
                 raise RuntimeError("大盘资金流接口没有返回有效数据")
@@ -1244,6 +1277,8 @@ class MarketDataService:
         today = datetime.now(database.CHINA_TZ).date()
         start = today - timedelta(days=45)
         try:
+            if self._eastmoney_cooling_down():
+                raise RuntimeError("东方财富行情连接失败，暂缓重复请求")
             by_index: list[dict[str, float]] = []
             for symbol in ("sh000001", "sz399106"):
                 by_date: dict[str, float] = {}
@@ -1300,6 +1335,8 @@ class MarketDataService:
         for secid in ("1.000001", "0.399106"):
             cache_key = f"market_intraday_index:{secid}:v{MARKET_INTRADAY_INDEX_CACHE_VERSION}"
             try:
+                if self._eastmoney_cooling_down():
+                    raise RuntimeError("东方财富行情连接失败，暂用独立来源")
                 points = self._eastmoney_client.index_intraday_turnover_points(secid)
                 points_by_index[secid] = points
                 fetched_at = database.now_iso()
@@ -1388,6 +1425,28 @@ class MarketDataService:
                     "unavailable", None, None, "两个指数分时来源均不可用"
                 )
 
+    def _cached_market_overview(self, error: Exception) -> dict[str, Any]:
+        from .research_store import cache_get
+        database.set_meta("market_overview_error", "实时行情暂不可用，尚未更新大盘快照")
+        cached = self._overview_cache or cache_get("latest-market")
+        if not isinstance(cached, dict) or not cached.get("snapshot") or not cached.get("tradeDate"):
+            logger.warning("market_snapshot_unavailable: %s", error)
+            raise RuntimeError("大盘行情来源暂不可用，且尚无成功快照，请稍后重试") from error
+        result = deepcopy(cached)
+        # Keep the real quote date and last successful update time. Never write
+        # this degraded response back as a fresh snapshot.
+        result["stale"] = True
+        message = f"实时行情暂不可用，正在展示 {result['tradeDate']} 最近成功快照"
+        result["warnings"] = list(dict.fromkeys([*result.get("warnings", []), message]))
+        statuses = result.setdefault("dataStatus", {})
+        statuses["quotes"] = self._metric_status("cached", result.get("source"), result.get("updatedAt"), message)
+        for key in ("turnoverComparison", "fundFlow"):
+            if key in statuses and statuses[key].get("state") != "unavailable":
+                statuses[key].update(state="cached", message="沿用最近成功快照，尚未更新")
+        self._overview_cache = result
+        self._overview_fetched_at = None
+        return result
+
     def market_overview(self, force: bool = False) -> dict[str, Any]:
         requested_at = datetime.now(database.CHINA_TZ)
         with self._overview_lock:
@@ -1400,7 +1459,10 @@ class MarketDataService:
             ):
                 return self._overview_cache
 
-            snapshot = self.market_snapshot(force=force)
+            try:
+                snapshot = self.market_snapshot(force=force)
+            except Exception as error:
+                return self._cached_market_overview(error)
             pct_values = [
                 float(row["pctChg"])
                 for row in snapshot
@@ -1502,6 +1564,7 @@ class MarketDataService:
                 "tradeDate": trade_date,
                 "updatedAt": database.now_iso(),
                 "source": source,
+                "stale": False,
                 "snapshot": {
                     "turnover": current_turnover,
                     "previousTurnover": previous_turnover,
@@ -1529,6 +1592,10 @@ class MarketDataService:
                 "fundFlowHistory": fund_flow_history[-12:],
                 "latestFlow": latest_flow,
                 "dataStatus": {
+                    "quotes": self._metric_status(
+                        "fallback" if source.startswith("腾讯") else "live", source, database.now_iso(),
+                        "东方财富不可用，已切换腾讯独立行情" if source.startswith("腾讯") else None,
+                    ),
                     "turnoverComparison": comparison_status,
                     "fundFlow": flow_status,
                 },
@@ -1541,13 +1608,14 @@ class MarketDataService:
             }
             self._overview_cache = result
             self._overview_fetched_at = datetime.now(database.CHINA_TZ)
+            database.set_meta("market_overview_error", "")
             from .research_store import cache_put
             cache_put("latest-market", result)
             return result
 
     def status(self) -> dict[str, Any]:
         source = database.get_meta("market_data_source") or "等待首次获取"
-        using_fallback = source.startswith("BaoStock")
+        using_fallback = source.startswith(("BaoStock", "腾讯"))
         error = database.get_meta("market_data_error") or None
         retry_at: str | None = None
         if self._spot_failed_at:
@@ -1556,7 +1624,7 @@ class MarketDataService:
                 retry_at = candidate.isoformat(timespec="seconds")
         return {
             "primary": "AKShare / 东方财富备用线路",
-            "fallback": "BaoStock",
+            "fallback": "腾讯证券 / BaoStock",
             "source": source,
             "transport": database.get_meta("market_data_transport") or "等待首次获取",
             "updatedAt": database.get_meta("market_data_updated_at"),

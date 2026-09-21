@@ -2,10 +2,16 @@ from __future__ import annotations
 
 import math
 import random
+import re
+import threading
 import time
+from datetime import datetime
 from typing import Any
 
+import pandas as pd
 import requests
+
+from .config import CHINA_TZ
 
 
 class TencentClient:
@@ -13,6 +19,11 @@ class TencentClient:
 
     RANK_URL = "https://proxy.finance.qq.com/cgi/cgi-bin/rank/hs/getBoardRankList"
     INDEX_DAY_URL = "https://web.ifzq.gtimg.cn/appstock/app/day/query"
+
+    def __init__(self) -> None:
+        self._rank_lock = threading.Lock()
+        self._rank_cache: list[dict[str, Any]] = []
+        self._rank_fetched_at = 0.0
 
     @staticmethod
     def _session(trust_env: bool) -> requests.Session:
@@ -39,6 +50,7 @@ class TencentClient:
         params: dict[str, Any],
         *,
         post_json: bool = False,
+        deadline: float | None = None,
     ) -> dict[str, Any]:
         last_error: Exception | None = None
         # Server-side proxy variables are a frequent source of broken finance
@@ -48,11 +60,15 @@ class TencentClient:
             session = self._session(trust_env)
             try:
                 for attempt in range(attempts):
+                    remaining = deadline - time.monotonic() if deadline is not None else 40
+                    if remaining <= 0:
+                        raise RuntimeError("腾讯全市场行情获取超时")
+                    timeout = (min(5, remaining / 2), min(15, remaining / 2))
                     try:
                         response = (
-                            session.post(url, json=params, timeout=(5, 15))
+                            session.post(url, json=params, timeout=timeout)
                             if post_json
-                            else session.get(url, params=params, timeout=(5, 15))
+                            else session.get(url, params=params, timeout=timeout)
                         )
                         response.raise_for_status()
                         payload = response.json()
@@ -102,20 +118,33 @@ class TencentClient:
         return None
 
     def fetch_rank_rows(self) -> list[dict[str, Any]]:
+        # Quotes and fund flow share this complete snapshot within one refresh.
+        with self._rank_lock:
+            if self._rank_cache and time.monotonic() - self._rank_fetched_at < 60:
+                return self._rank_cache
+            rows = self._fetch_rank_rows()
+            self._rank_cache = rows
+            self._rank_fetched_at = time.monotonic()
+            return rows
+
+    def _fetch_rank_rows(self) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
+        codes: set[str] = set()
         page_size = 200
         total: int | None = None
+        deadline = time.monotonic() + 60
         for offset in range(0, 10_000, page_size):
             payload = self._request_json(
                 self.RANK_URL,
                 {
-                    "boardCode": "aStock",
-                    "sortType": "turnover",
+                    "_appver": "11.17.0",
+                    "board_code": "aStock",
+                    "sort_type": "price",
                     "direct": "down",
                     "offset": offset,
                     "count": page_size,
                 },
-                post_json=True,
+                deadline=deadline,
             )
             page_rows = self._find_dict_rows(payload)
             if not page_rows:
@@ -123,7 +152,10 @@ class TencentClient:
                     raise RuntimeError("腾讯 A 股排行没有返回有效数据")
                 break
             rows.extend(page_rows)
-            total = total or self._find_total(payload)
+            page_total = self._find_total(payload)
+            if page_total is None or (total is not None and page_total != total):
+                raise RuntimeError("腾讯 A 股排行总数缺失或发生变化，无法汇总完整行情")
+            total = page_total
             if len(page_rows) < page_size or (total is not None and len(rows) >= total):
                 break
             time.sleep(0.06)
@@ -131,7 +163,54 @@ class TencentClient:
             raise RuntimeError("腾讯 A 股排行没有返回有效数据")
         if total is not None and len(rows) < total:
             raise RuntimeError("腾讯 A 股排行返回了不完整数据，无法汇总全市场资金流")
-        return rows[:total] if total is not None else rows
+        for row in rows:
+            code = str(row.get("code", ""))
+            if not re.fullmatch(r"(?:sh|sz|bj)\d{6}", code) or code in codes:
+                raise RuntimeError("腾讯 A 股排行存在无效代码或重复分页，无法汇总完整行情")
+            codes.add(code)
+        if len(rows) != total:
+            raise RuntimeError("腾讯 A 股排行返回数量与总数不一致")
+        return rows
+
+    def _quote_timestamp(self) -> float:
+        """The rank feed has no date; anchor it to this provider's index quote."""
+        last_error: Exception | None = None
+        for trust_env in (False, True):
+            session = self._session(trust_env)
+            try:
+                response = session.get("https://qt.gtimg.cn/q=sh000001", timeout=(4, 8))
+                response.raise_for_status()
+                match = re.search(r'v_sh000001="([^"]+)"', response.text)
+                fields = match.group(1).split("~") if match else []
+                if len(fields) <= 30 or not re.fullmatch(r"\d{14}", fields[30]):
+                    raise RuntimeError("腾讯指数行情缺少交易日期")
+                return datetime.strptime(fields[30], "%Y%m%d%H%M%S").replace(tzinfo=CHINA_TZ).timestamp()
+            except (requests.RequestException, ValueError, RuntimeError) as error:
+                last_error = error
+            finally:
+                session.close()
+        raise RuntimeError(f"腾讯行情日期获取失败：{last_error}")
+
+    def spot_frame(self) -> pd.DataFrame:
+        rows = self.fetch_rank_rows()
+        quoted_at = self._quote_timestamp()
+        fields = {"名称": "name", "最新价": "zxj", "涨跌幅": "zdf", "涨跌额": "zd",
+                  "成交量": "volume", "换手率": "hsl", "量比": "lb", "振幅": "zf",
+                  "市盈率-动态": "pe_ttm", "市净率": "pn"}
+        normalized = []
+        for row in rows:
+            item = {key: row.get(field) for key, field in fields.items()}
+            item.update({"代码": row["code"][2:], "行情时间": quoted_at})
+            # Tencent's volume is in lots, turnover in 万元 and market caps in 亿元.
+            for key, field, scale in (("成交额", "turnover", 10_000),
+                                      ("总市值", "zsz", 100_000_000),
+                                      ("流通市值", "ltsz", 100_000_000)):
+                number = self._number(row.get(field))
+                item[key] = number * scale if number is not None else None
+            price, change = self._number(row.get("zxj")), self._number(row.get("zd"))
+            item["昨收"] = price - change if price is not None and change is not None else None
+            normalized.append(item)
+        return pd.DataFrame(normalized)
 
     @staticmethod
     def _number(value: Any) -> float | None:

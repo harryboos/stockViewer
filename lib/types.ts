@@ -157,6 +157,7 @@ export type MarketOverview = {
   tradeDate: string;
   updatedAt: string;
   source: string;
+  stale?: boolean;
   snapshot: {
     turnover: number;
     previousTurnover: number | null;
@@ -176,6 +177,7 @@ export type MarketOverview = {
   fundFlowHistory: MarketFundFlowPoint[];
   latestFlow: MarketFundFlowPoint | null;
   dataStatus?: {
+    quotes?: MarketMetricStatus;
     turnoverComparison: MarketMetricStatus;
     fundFlow: MarketMetricStatus;
   };
