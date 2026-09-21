@@ -61,8 +61,12 @@ def evaluate(report: dict, days: int, history: dict, benchmarks: dict,
     if not sessions:
         return {**outcome, "dataStatus": "waiting_for_close", "note": "预测发布后尚无可用的完整交易日"}
     rows = {row["date"]: row for row in history.get("rows", [])}
-    if any(day not in rows for day in sessions):
-        return {**outcome, "dataStatus": "unavailable", "note": "概念日线缺失或不连续，等待补齐后核对"}
+    missing = [day for day in sessions if day not in rows]
+    if missing:
+        reason = history.get("error") or "概念日线缺失或不连续"
+        dates = "、".join(missing[:4]) + (f" 等 {len(missing)} 个交易日" if len(missing) > 4 else "")
+        return {**outcome, "dataStatus": "unavailable", "missingDates": missing,
+                "note": f"{reason}；缺少 {dates}，等待补齐后核对"}
     entry, exit_day = sessions[0], sessions[-1]
     opening, closing = rows[entry]["open"], rows[exit_day]["close"]
     change = _return(opening, closing)
@@ -113,7 +117,7 @@ def refresh_feedback(token: str) -> None:
     # A process-local guard also prevents overlap if a stale lease is reclaimed.
     if not _refresh_lock.acquire(blocking=False):
         return
-    error, checked = None, 0
+    error, checked, ready, unavailable = None, 0, 0, 0
     try:
         reports = reports_to_refresh()
         if not reports:
@@ -126,7 +130,9 @@ def refresh_feedback(token: str) -> None:
             start, end = bounds(report, 30)
             for code in [*BENCHMARKS, *(c["code"] for c in report["result"]["concepts"])]:
                 requests.add((code, start.isoformat(), min(end, now.date()).isoformat()))
-        prices = fetch_batch(sorted(requests), lambda item: client.history(*item))
+        # Share successful same-symbol reads with comparison/rotation workers.
+        from .research_data import index_history
+        prices = fetch_batch(sorted(requests), lambda item: index_history(*item))
         if len(prices) < len(requests):
             error = "部分行情请求失败或等待超时，已核对可用数据并保留此前结果，可稍后重试"
         for report in reports:
@@ -136,7 +142,15 @@ def refresh_feedback(token: str) -> None:
             results = []
             for concept in report["result"]["concepts"]:
                 for days in HORIZONS:
-                    value = evaluate(report, days, prices.get((concept["code"], *span), {"rows": []}), indexes, calendar, now)
+                    history = prices.get((concept["code"], *span), {
+                        "rows": [], "error": "行情请求未完成（等待超时或后台任务繁忙）"})
+                    value = evaluate(report, days, history, indexes, calendar, now)
+                    if value.get("dataStatus") == "unavailable":
+                        unavailable += 1
+                    elif value.get("returnPct") is not None:
+                        ready += 1
+                        if any(item.get("returnPct") is None for item in value["benchmarks"].values()):
+                            unavailable += 1
                     results.append((concept["code"], days, value))
             with database._write_lock, database.connection() as db:
                 db.execute("BEGIN IMMEDIATE")
@@ -173,6 +187,8 @@ def refresh_feedback(token: str) -> None:
                                (report["id"], code, days, json.dumps(value, ensure_ascii=False), value["checkedAt"]))
                 db.execute("UPDATE forecast_reports SET checked_at = ? WHERE id = ?", (database.now_iso(), report["id"]))
             checked += 1
+        if unavailable:
+            error = f"本次核对 {ready} 项概念收益，仍有 {unavailable} 项概念或基准日线不完整，已保留此前结果，可稍后重试"
     except CalendarUnavailableError as exc:
         error = str(exc)
     except Exception:
@@ -185,7 +201,7 @@ def refresh_feedback(token: str) -> None:
                 state = json.loads(row["value"]) if row else {}
                 if state.get("token") == token:
                     state.update(status="failed" if error else "succeeded", finishedAt=database.now_iso(),
-                                 error=error, reportsChecked=checked)
+                                 error=error, reportsChecked=checked, outcomesReady=ready, outcomesMissing=unavailable)
                     db.execute("UPDATE app_meta SET value = ?, updated_at = ? WHERE key = ?",
                                (json.dumps(state, ensure_ascii=False), database.now_iso(), REFRESH_KEY))
         finally:

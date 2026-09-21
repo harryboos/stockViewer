@@ -103,6 +103,7 @@ class FeedbackPriceClient(ConceptResearchClient):
         if not re.fullmatch(r"BK\d+|sh000001|sh000688", code):
             raise ValueError("不支持的复盘标的")
         secid = f"90.{code}" if code.startswith("BK") else f"1.{code[2:]}"
+        failure = "历史接口未返回该区间的有效日线"
         try:
             payload = self._json([
                 "https://91.push2his.eastmoney.com/api/qt/stock/kline/get",
@@ -112,13 +113,13 @@ class FeedbackPriceClient(ConceptResearchClient):
                 "beg": start.replace("-", ""), "end": end.replace("-", "")})
             data = payload.get("data") or {}
             if str(data.get("code")) != code.removeprefix("sh"):
-                raise ValueError("history symbol mismatch")
+                raise ValueError("历史行情返回的标的代码不匹配")
             bars = normalize_bars([str(row).split(",") for row in data.get("klines", [])], start, end)
             if bars:
                 return {"rows": bars, "source": "东方财富日线（不复权）",
                         "url": f"https://quote.eastmoney.com/{'bk/90.' + code if code.startswith('BK') else 'zs' + code[2:]}.html"}
-        except (RuntimeError, ValueError, TypeError):
-            pass
+        except (RuntimeError, ValueError, TypeError) as error:
+            failure = str(error) if isinstance(error, (RuntimeError, ValueError)) else "历史行情格式异常"
         if code.startswith("sh"):
             try:
                 data = self._json([
@@ -129,5 +130,5 @@ class FeedbackPriceClient(ConceptResearchClient):
                 if bars:
                     return {"rows": bars, "source": "腾讯证券指数日线", "url": f"https://gu.qq.com/{code}/zs"}
             except (RuntimeError, ValueError, TypeError):
-                pass
-        return {"rows": [], "source": None, "url": None}
+                failure = "东方财富与腾讯指数日线均暂不可用"
+        return {"rows": [], "source": None, "url": None, "error": failure}

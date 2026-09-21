@@ -4,6 +4,7 @@ from __future__ import annotations
 import html
 import json
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timedelta
 from typing import Any
@@ -46,11 +47,22 @@ def clean_text(value: Any, limit: int = 300) -> str:
 
 class ConceptResearchClient(EastmoneyClient):
     def _json(self, urls: list[str], params: dict[str, Any], callback: str | None = None) -> dict:
-        # Bounded retries; do not inherit the much longer bulk-market retry loop.
-        for index, url in enumerate(urls):
-            with self._session(trust_env=index == len(urls) - 1) as session:
+        # Try every host directly before the environment proxy. Previously the
+        # last host was only tried via a potentially broken system proxy.
+        urls = list(dict.fromkeys(urls))
+        routes = [(url, False) for url in urls] + [
+            (url, True) for url in urls if requests.utils.get_environ_proxies(url)
+        ]
+        deadline = time.monotonic() + 25
+        reason = "没有可用响应"
+        for url, trust_env in routes:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                reason = "请求等待超时"
+                break
+            with self._session(trust_env=trust_env) as session:
                 try:
-                    response = session.get(url, params=params, timeout=(3, 8))
+                    response = session.get(url, params=params, timeout=(min(3, remaining / 2), min(8, remaining / 2)))
                     response.raise_for_status()
                     raw = response.text.strip().rstrip(";")
                     if callback and raw.startswith(f"{callback}(") and raw.endswith(")"):
@@ -59,9 +71,16 @@ class ConceptResearchClient(EastmoneyClient):
                     if not isinstance(payload, dict) or ("data" in payload and not payload["data"]):
                         raise ValueError("invalid payload")
                     return payload
+                except requests.Timeout:
+                    reason = "请求等待超时"
+                except requests.HTTPError as error:
+                    reason = f"服务返回 HTTP {error.response.status_code}" if error.response is not None else "服务响应异常"
+                except requests.ConnectionError:
+                    reason = "连接中断或网络不可达"
                 except (requests.RequestException, ValueError):
+                    reason = "未返回有效行情数据"
                     continue
-        raise RuntimeError("概念研究数据源暂不可用")
+        raise RuntimeError(f"概念研究数据源暂不可用：{reason}")
 
     def daily_history(self, code: str, trade_date: str) -> list[dict]:
         if not re.fullmatch(r"BK\d+", code):

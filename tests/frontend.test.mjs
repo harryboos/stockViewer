@@ -125,6 +125,21 @@ test('market fallback prominently labels old data and preserves the actual quote
   assert.ok(!fallback.includes('并非最新行情'));
 });
 
+test('comparison distinguishes attempted source failure from a never-started refresh', async () => {
+  const { ComparisonResult } = await server.ssrLoadModule('/components/research-panels.tsx');
+  const html = renderToStaticMarkup(createElement(ComparisonResult, { data: {
+    reportId: 9, days: 15, status: 'tracking', strongest: null, leaders: [], selected: [],
+    coveredCount: 0, totalCount: 456, missingCount: 3, staleCount: 0,
+    entryDate: '2026-09-18', exitDate: '2026-09-21', averageSelectedReturn: null,
+    scope: '原概念范围', universeAsOf: null, lastCheckedAt: '2026-09-22T08:00:00+08:00',
+    message: '概念日线连接中断；缺少 2026-09-18、2026-09-21',
+  } }));
+  for (const text of ['概念日线连接中断', '最近尝试核对', '缺少日线 3 个概念', '缺失值不会记作 0%']) {
+    assert.ok(html.includes(text), text);
+  }
+  assert.ok(!html.includes('尚无同区间的完整对照行情'));
+});
+
 test('research job requests preserve the job key and block cross-site execution', async (t) => {
   const fetch = t.mock.method(globalThis, 'fetch', async (url, options) => {
     assert.equal(new URL(url).searchParams.get('key'), 'comparison');

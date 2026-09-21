@@ -50,10 +50,14 @@ export function ComparisonPanel({ reportId, days }: { reportId: number; days: '1
 export function ComparisonResult({ data, error = null, refresh = () => {} }: { data: ConceptComparison | null; error?: string | null; refresh?: () => void }) {
   return <section className="comparison-panel"><h4>同期最强概念对照 <span>事后比较</span></h4><ResearchError error={error} retry={refresh} />
     <p>{data?.entryDate || '等待观察区间'} → {data?.exitDate || '—'} · 已核对 {data?.coveredCount ?? 0}/{data?.totalCount ?? 0} 个概念{data?.status === 'tracking' ? ' · 期间尚未结束' : ''}</p>
+    {data?.message && <p className="research-error" role="status">{data.message}</p>}
+    {data?.lastCheckedAt && <p className="data-note">最近尝试核对：{timestamp(data.lastCheckedAt)}{data.missingCount ? ` · 缺少日线 ${data.missingCount} 个概念` : ''}</p>}
     {data?.strongest ? <><div className="comparison-lead"><div><small>{data.fullCoverage ? '比较范围内最强' : '已覆盖范围最强'}</small><strong>{data.strongest.name}</strong><b className={tone(data.strongest.returnPct)}>{percent(data.strongest.returnPct)}</b></div><div><small>已核对预测概念均值</small><strong className={tone(data.averageSelectedReturn)}>{percent(data.averageSelectedReturn)}</strong><span>{data.selected.length}/{data.selectedCount} 个预测概念</span></div><div><small>与同期最强的差距</small><strong>{diff(data.averageSelectedReturn === null ? null : data.averageSelectedReturn - data.strongest.returnPct)}</strong></div></div>
       <div className="research-chips">{data.selected.map(row => <span key={row.code}>{row.name} · 第 {row.rank} 名<small>涨幅 {percent(row.returnPct)} · 差距 {diff(row.gapPct)}</small></span>)}</div>
       <details><summary>查看同期前五名及核对依据</summary>{data.leaders.map((row, index) => <p key={row.code}>{index + 1}. {row.name} {percent(row.returnPct)} · 首日开盘 {row.entryPrice.toFixed(2)} → 末日收盘 {row.exitPrice.toFixed(2)} <a href={row.url} target="_blank" rel="noreferrer">行情来源</a></p>)}</details>
-    </> : <p className="concept-ai-state">尚无同区间的完整对照行情。点击上方“核对同期最强”后分批更新。</p>}
+    </> : <p className="concept-ai-state">{data?.missingCount ? '行情尚未补齐，暂不能计算同期排名；缺失值不会记作 0%。行情恢复后点击“核对同期最强”继续补查。'
+      : data?.staleCount ? '正在等待新区间的行情核对。点击上方“核对同期最强”后分批更新。'
+      : '尚无同区间的完整对照行情。点击上方“核对同期最强”后分批更新。'}</p>}
     <p className="data-note">{data?.scope || '等待读取比较范围'}{data?.universeAsOf ? ` · 范围记录于 ${timestamp(data.universeAsOf)}` : ''}。统一首日开盘至末日收盘口径，缺失行情不计排名；事后最强不是当时可知的推荐，不计入预测命中率。</p>
   </section>;
 }

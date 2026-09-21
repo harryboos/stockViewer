@@ -28,6 +28,7 @@ export type ComparisonWinner = { code: string; name: string; returnPct: number; 
 export type ConceptComparison = { reportId: number; days: number; status: string; strongest: ComparisonWinner | null;
   leaders: ComparisonWinner[]; coveredCount: number; totalCount: number; scope: string; universeAsOf: string | null;
   entryDate: string | null; exitDate: string | null; fullCoverage?: boolean; averageSelectedReturn: number | null; selectedCount?: number;
+  missingCount?: number; staleCount?: number; lastCheckedAt?: string | null; message?: string | null;
   selected: { code: string; name: string; rank: number; returnPct: number; gapPct: number }[] };
 export type DailyDigestData = { asOf: string; quoteDate: string | null; watchMovers: WatchlistStock[];
   market: { tradeDate: string; updatedAt: string; snapshot: { breadth: number; turnover: number }; warnings: string[] } | null;

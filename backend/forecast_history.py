@@ -148,6 +148,7 @@ def history_payload(page: int = 1, page_size: int = 10, *, as_of: datetime | Non
                         if pending["dataStatus"] == "waiting_for_close":
                             outcome.update(dataStatus="waiting_for_close", note=pending["note"])
                         elif (refresh.get("status") == "failed" and refresh.get("error")
+                              and outcome.get("dataStatus") != "unavailable"
                               and (refresh.get("finishedAt") or "") >= report["publishedAt"]):
                             outcome.update(dataStatus="unavailable", note=refresh["error"])
                     elif pending["status"] == "missing_data" and outcome.get("dataStatus") != "unavailable":

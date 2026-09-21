@@ -76,13 +76,19 @@ def refresh_comparisons(progress) -> dict:
         return (checked, not selected, position, -report['id'], days)
     batch = sorted(pending, key=priority)[:64]
     progress(0, len(batch), "核对同期概念涨幅（每批最多 64 项）")
-    requests = list({(board["code"], *span) for _, _, board, _, span, _ in batch})
+    requests = list(dict.fromkeys((board["code"], *span) for _, _, board, _, span, _ in batch))
     prices = fetch_batch(requests, lambda item: index_history(*item))
+    ready, missing = 0, 0
     for index, (_, report, board, days, span, _) in enumerate(batch):
-        history = prices.get((board["code"], *span), {"rows": []})
+        history = prices.get((board["code"], *span), {
+            "rows": [], "error": "行情请求未完成（等待超时或后台任务繁忙）"})
         value = evaluate(report, days, history, {}, calendar, now)
+        if value.get("returnPct") is None:
+            missing += 1
+        else:
+            ready += 1
         # Only retain an auditable compact outcome; selected predictions already retain their paths.
-        value = {key: value[key] for key in ("status", "entryDate", "exitDate", "returnPct", "entryPrice", "exitPrice", "source", "url") if key in value}
+        value = {key: value[key] for key in ("status", "dataStatus", "note", "missingDates", "entryDate", "exitDate", "returnPct", "entryPrice", "exitPrice", "source", "url") if key in value}
         with database._write_lock, database.connection() as db:
             stored = db.execute("SELECT result_json FROM comparison_outcomes WHERE report_id=? AND code=? AND horizon_days=?",
                                 (report["id"], board["code"], days)).fetchone()
@@ -93,9 +99,11 @@ def refresh_comparisons(progress) -> dict:
                 value = old[0]  # Its original dates remain visible; it cannot enter another span's ranking.
             db.execute("INSERT OR REPLACE INTO comparison_outcomes VALUES (?,?,?,?,?)",
                        (report["id"], board["code"], days, json.dumps(value, ensure_ascii=False), database.now_iso()))
-        progress(index + 1, len(batch), "核对同期概念涨幅")
+        progress(index + 1, len(batch), f"已核对 {ready} 项，缺少完整日线 {missing} 项")
     if unavailable and not batch:
         raise RuntimeError("旧预测缺少概念范围，请先更新板块行情，再核对同期最强概念")
+    if missing:
+        raise RuntimeError(f"本批已核对 {ready}/{len(batch)} 项，{missing} 项概念日线缺失或不连续；已保留可用结果，请检查行情连接后重试")
     return {"checked": len(batch), "remaining": max(0, len(pending) - len(batch)), "missingUniverse": unavailable}
 
 
@@ -108,7 +116,8 @@ def comparison_payload(report_id: int, days: int, now: datetime | None = None) -
     base = {"reportId": report_id, "days": days, "strongest": None, "leaders": [], "selected": [],
             "coveredCount": 0, "totalCount": len(universe["boards"]) if universe else 0,
             "scope": universe["scope"] if universe else "等待建立比较范围", "universeAsOf": universe["asOf"] if universe else None,
-            "status": "pending", "entryDate": None, "exitDate": None, "averageSelectedReturn": None}
+            "status": "pending", "entryDate": None, "exitDate": None, "averageSelectedReturn": None,
+            "missingCount": 0, "staleCount": 0, "lastCheckedAt": None, "message": None}
     if not universe:
         return base
     from .forecast_prices import CALENDAR_KEY
@@ -120,9 +129,18 @@ def comparison_payload(report_id: int, days: int, now: datetime | None = None) -
         rows = db.execute("SELECT * FROM comparison_outcomes WHERE report_id=? AND horizon_days=?", (report_id, days)).fetchall()
     pool = {board["code"]: board["name"] for board in universe["boards"]}
     ranked = []
+    missing, stale, last_checked, reason = 0, 0, None, None
     for row in rows:
+        if row["code"] not in pool:
+            continue
         value = json.loads(row["result_json"])
-        if row["code"] in pool and value.get("returnPct") is not None and (value["entryDate"], value["exitDate"]) == span:
+        last_checked = max(last_checked or "", row["updated_at"])
+        if value.get("returnPct") is None:
+            missing += 1
+            reason = reason or value.get("note")
+        elif (value["entryDate"], value["exitDate"]) != span:
+            stale += 1
+        else:
             ranked.append({**value, "code": row["code"], "name": pool[row["code"]], "checkedAt": row["updated_at"]})
     ranked.sort(key=lambda value: (-value["returnPct"], value["code"]))
     strongest = ranked[0] if ranked else None
@@ -131,7 +149,13 @@ def comparison_payload(report_id: int, days: int, now: datetime | None = None) -
                  "gapPct": round(value["returnPct"] - strongest["returnPct"], 4)}
                 for index, value in enumerate(ranked) if value["code"] in selected_codes]
     mature = now >= datetime.combine(bounds(report, days)[1], time(15, 10), database.CHINA_TZ)
+    message = None
+    if missing:
+        message = f"最近核对有 {missing} 个概念缺少完整日线。{reason or '历史行情来源暂不可用，请检查数据与任务中的核对错误。'}"
+    elif stale:
+        message = f"有 {stale} 个概念仅有较早区间的核对结果，等待补齐至 {span[1]} 后参与本期排名。"
     return {**base, "status": "completed" if mature else "tracking", "entryDate": span[0], "exitDate": span[1],
             "strongest": strongest, "leaders": ranked[:5], "selected": selected, "coveredCount": len(ranked),
+            "missingCount": missing, "staleCount": stale, "lastCheckedAt": last_checked, "message": message,
             "selectedCount": len(selected_codes), "fullCoverage": len(ranked) == len(pool),
             "averageSelectedReturn": round(sum(item["returnPct"] for item in selected) / len(selected), 4) if selected else None}
