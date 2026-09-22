@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import re
 import shutil
 import subprocess
@@ -12,6 +11,7 @@ from datetime import date
 
 from . import database
 from .concept_data import ConceptResearchClient
+from .history_sources import TushareHistoryClient, normalize_bars, sina_index_history, validate_window
 
 CALENDAR_KEY = "forecast_trade_calendar:v1"
 logger = logging.getLogger(__name__)
@@ -48,23 +48,6 @@ def decode_calendar(encoded: str) -> list[str]:
     return sorted({date.fromisoformat(str(value)[:10]).isoformat() for value in raw})
 
 
-def normalize_bars(rows: list, start: str, end: str) -> list[dict]:
-    result = {}
-    for row in rows:
-        try:
-            day = date.fromisoformat(str(row[0])).isoformat()
-            values = [float(value) for value in row[1:5]]
-            if len(values) != 4 or not all(math.isfinite(value) and value > 0 for value in values):
-                continue
-            opening, close, high, low = values
-            if high < max(opening, close) or low > min(opening, close) or not start <= day <= end:
-                continue
-            result[day] = {"date": day, "open": opening, "close": close, "high": high, "low": low}
-        except (ValueError, TypeError, IndexError):
-            continue
-    return sorted(result.values(), key=lambda row: row["date"])
-
-
 class FeedbackPriceClient(ConceptResearchClient):
     def calendar(self) -> list[str]:
         # All consumers share the same durable calendar and initialization lock.
@@ -99,36 +82,63 @@ class FeedbackPriceClient(ConceptResearchClient):
                 return saved["dates"]
             raise CalendarUnavailableError(f"交易日历{stage}失败，暂时无法核对收益；请更新服务后重试，具体原因见服务日志") from error
 
+    def eastmoney_history(self, code: str, start: str, end: str) -> dict:
+        if not re.fullmatch(r"BK\d+|sh000001|sh000688", code):
+            raise ValueError("不支持的复盘标的")
+        validate_window(start, end)
+        secid = f"90.{code}" if code.startswith("BK") else f"1.{code[2:]}"
+        payload = self._json([
+            "https://91.push2his.eastmoney.com/api/qt/stock/kline/get",
+            "https://push2his.eastmoney.com/api/qt/stock/kline/get",
+        ], {"secid": secid, "klt": "101", "fqt": "0", "lmt": "1000",
+            "fields1": "f1,f2,f3,f4,f5,f6", "fields2": "f51,f52,f53,f54,f55,f56,f57",
+            "beg": start.replace("-", ""), "end": end.replace("-", "")})
+        data = payload.get("data") or {}
+        if not isinstance(data, dict) or str(data.get("code")) != code.removeprefix("sh"):
+            raise ValueError("历史行情返回的标的代码不匹配")
+        bars = normalize_bars([str(row).split(",") for row in data.get("klines", [])], start, end)
+        return {"rows": bars, "source": "东方财富日线（不复权）",
+                "url": f"https://quote.eastmoney.com/{'bk/90.' + code if code.startswith('BK') else 'zs' + code[2:]}.html"}
+
+    def tencent_history(self, code: str, start: str, end: str) -> dict:
+        if code not in ("sh000001", "sh000688"):
+            raise ValueError("腾讯备用源仅用于上证指数和科创50")
+        validate_window(start, end)
+        data = self._json([
+            "https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get",
+            "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get",
+        ], {"param": f"{code},day,{start},{end},640,"}).get("data", {}).get(code, {})
+        if not isinstance(data, dict):
+            raise ValueError("腾讯指数日线格式异常")
+        bars = normalize_bars(data.get("day") or [], start, end)
+        return {"rows": bars, "source": "腾讯证券指数日线", "url": f"https://gu.qq.com/{code}/zs"}
+
     def history(self, code: str, start: str, end: str) -> dict:
         if not re.fullmatch(r"BK\d+|sh000001|sh000688", code):
             raise ValueError("不支持的复盘标的")
-        secid = f"90.{code}" if code.startswith("BK") else f"1.{code[2:]}"
-        failure = "历史接口未返回该区间的有效日线"
-        try:
-            payload = self._json([
-                "https://91.push2his.eastmoney.com/api/qt/stock/kline/get",
-                "https://push2his.eastmoney.com/api/qt/stock/kline/get",
-            ], {"secid": secid, "klt": "101", "fqt": "0", "lmt": "1000",
-                "fields1": "f1,f2,f3,f4,f5,f6", "fields2": "f51,f52,f53,f54,f55,f56,f57",
-                "beg": start.replace("-", ""), "end": end.replace("-", "")})
-            data = payload.get("data") or {}
-            if str(data.get("code")) != code.removeprefix("sh"):
-                raise ValueError("历史行情返回的标的代码不匹配")
-            bars = normalize_bars([str(row).split(",") for row in data.get("klines", [])], start, end)
-            if bars:
-                return {"rows": bars, "source": "东方财富日线（不复权）",
-                        "url": f"https://quote.eastmoney.com/{'bk/90.' + code if code.startswith('BK') else 'zs' + code[2:]}.html"}
-        except (RuntimeError, ValueError, TypeError) as error:
-            failure = str(error) if isinstance(error, (RuntimeError, ValueError)) else "历史行情格式异常"
+        validate_window(start, end)
+        # Independent benchmark sources avoid waiting on the failing BK service.
         if code.startswith("sh"):
+            providers = [("腾讯", self.tencent_history), ("新浪", sina_index_history),
+                         ("东方财富", self.eastmoney_history)]
+        else:
+            providers = ([("Tushare", TushareHistoryClient().history)] if TushareHistoryClient.configured() else [])
+            providers.append(("东方财富", self.eastmoney_history))
+        failures, best = [], None
+        for name, read in providers:
             try:
-                data = self._json([
-                    "https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get",
-                    "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get",
-                ], {"param": f"{code},day,{start},{end},640,"}).get("data", {}).get(code, {})
-                bars = normalize_bars(data.get("day") or [], start, end)
-                if bars:
-                    return {"rows": bars, "source": "腾讯证券指数日线", "url": f"https://gu.qq.com/{code}/zs"}
-            except (RuntimeError, ValueError, TypeError):
-                failure = "东方财富与腾讯指数日线均暂不可用"
-        return {"rows": [], "source": None, "url": None, "error": failure}
+                result = read(code, start, end)
+                rows = result["rows"]
+                if rows:
+                    # Retain one provider's complete price series; never splice index bases.
+                    if best is None or len(rows) > len(best["rows"]):
+                        best = result
+                    if rows[-1]["date"] >= end:
+                        return result
+                else:
+                    failures.append(f"{name}未返回该区间的有效日线")
+            except (RuntimeError, ValueError, TypeError, KeyError) as error:
+                failures.append(str(error) if isinstance(error, (RuntimeError, ValueError)) else f"{name}日线格式异常")
+        if best:
+            return best
+        return {"rows": [], "source": None, "url": None, "error": "；".join(failures)}

@@ -14,6 +14,7 @@ import requests
 from . import database
 from .data_sources import market_data, number_or_none
 from .eastmoney import COMMON_PARAMS, SPOT_FIELD_MAP, EastmoneyClient
+from .history_sources import TushareHistoryClient
 from .storage_policy import CONCEPT_HISTORY_CACHE_VERSION
 
 MARKET_RESEARCH_LIMIT = 12
@@ -95,6 +96,21 @@ class ConceptResearchClient(EastmoneyClient):
         if (isinstance(saved, dict) and saved.get("closed") and saved.get("rows")
                 and trade_date < database.china_date().replace("-", "")):
             return saved["rows"]
+        if TushareHistoryClient.configured():
+            try:
+                result = TushareHistoryClient().history(code, (end - timedelta(days=60)).strftime("%Y-%m-%d"),
+                                                       end.strftime("%Y-%m-%d"))
+                rows = [{"date": r["date"].replace("-", ""), "close": r["close"], "amount": r.get("amount"),
+                         "pctChg": r.get("pctChg"), "historySource": result["source"], "historyUrl": result["url"]}
+                        for r in result["rows"]][-40:]
+                # A stale daily-only response must not suppress a fresher intraday source.
+                now = datetime.now(database.CHINA_TZ)
+                closed = trade_date < now.strftime("%Y%m%d") or now.strftime("%H:%M") >= "15:10"
+                if rows and rows[-1]["date"] == trade_date and closed:
+                    self._save_history(cache_key, trade_date, rows)
+                    return rows
+            except (RuntimeError, ValueError):
+                pass
         try:
             payload = self._json([
                 "https://91.push2his.eastmoney.com/api/qt/stock/kline/get",
@@ -114,6 +130,8 @@ class ConceptResearchClient(EastmoneyClient):
                 return saved["rows"]
             raise
         data = payload.get("data") or {}
+        if str(data.get("code")) != code:
+            raise RuntimeError("概念日线标的代码不匹配")
         rows = []
         for raw in data.get("klines") or []:
             fields = str(raw).split(",")
@@ -125,11 +143,15 @@ class ConceptResearchClient(EastmoneyClient):
                 rows.append({"date": date_key, "close": close, "amount": number_or_none(fields[6]),
                              "pctChg": number_or_none(fields[8])})
         rows = sorted({row["date"]: row for row in rows}.values(), key=lambda row: row["date"])
+        self._save_history(cache_key, trade_date, rows)
+        return rows
+
+    @staticmethod
+    def _save_history(cache_key: str, trade_date: str, rows: list[dict]) -> None:
         if rows and rows[-1]["date"] == trade_date:
             now = datetime.now(database.CHINA_TZ)
             closed = trade_date < now.strftime("%Y%m%d") or now.strftime("%H:%M") >= "15:10"
             database.set_meta(cache_key, json.dumps({"fetchedAt": now.isoformat(), "closed": closed, "rows": rows}))
-        return rows
 
     def strong_stocks(self, code: str, trade_date: str) -> list[dict]:
         urls = [f"https://{host}/api/qt/clist/get" for host in self._hosts("29")[:2]]
@@ -238,6 +260,10 @@ def collect_concept_evidence(*, forecast: bool = False) -> dict:
                           "source": "东方财富概念板块", "publishedAt": overview["updatedAt"],
                           "url": f"https://quote.eastmoney.com/bk/90.{code}.html", "excerpt": "见本卡片行情指标与成份股快照"}],
         }
+        if history and history[-1].get("historySource"):
+            candidate["evidence"].append({"id": f"{code}:history", "kind": "data", "title": "概念历史日线",
+                                          "source": history[-1]["historySource"], "publishedAt": overview["updatedAt"],
+                                          "url": history[-1]["historyUrl"], "excerpt": "东方财富同代码概念指数历史表现"})
         if forecast:
             from .forecast_data import add_forecast_metrics
             add_forecast_metrics(candidate, history, overview["updatedAt"])

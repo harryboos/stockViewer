@@ -13,6 +13,7 @@
     "start": "node --env-file-if-exists=.env.local scripts/local-stack.mjs start",
     "start:web": "vinext start",
     "daily": "node --env-file-if-exists=.env.local scripts/run-daily.mjs",
+    "probe:sources": "node --env-file-if-exists=.env.local scripts/probe-market-sources.mjs",
     "check:backend": ".venv/bin/python -m compileall -q backend",
     "test:backend": ".venv/bin/python -m unittest discover backend -p 'test_*.py'",
     "typecheck": "tsc --noEmit",
