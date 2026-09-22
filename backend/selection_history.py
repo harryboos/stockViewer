@@ -81,15 +81,22 @@ def refresh_selections(progress) -> dict:
     end = last_closed_day(now)
     index_requests = list({(code, report["published_at"][:10], end) for _, report, _ in batch for code in BENCHMARKS})
     index_prices = fetch_batch(index_requests, lambda item: index_history(*item))
+    missing = 0
     for index, (_, report, pick) in enumerate(batch):
         start = report["published_at"][:10]
         indexes = {code: index_prices.get((code, start, end), {"rows": []}) for code in BENCHMARKS}
         for n in HORIZONS:
             value = selection_outcome(report, n, histories.get(pick["code"], []), indexes, calendar, now)
+            if (value.get("dataStatus") == "unavailable" or value["status"] == "missing_data"
+                    or (value.get("returnPct") is not None and any(
+                        value.get("benchmarks", {}).get(code, {}).get("returnPct") is None for code in BENCHMARKS))):
+                missing += 1
             old = saved.get((report["id"], pick["code"], n))
             if old and old[0].get("returnPct") is not None:
                 if value.get("returnPct") is None:
-                    value = {**old[0], "dataStatus": "unavailable", "note": "行情暂不可用，保留上次核对日期与价格"}
+                    value = old[0] if old[0]["status"] == "completed" else {
+                        **old[0], "status": value["status"], "dataStatus": "unavailable",
+                        "note": "行情暂不可用，保留上次核对日期与价格；阶段表现不计入最终统计"}
                 elif old[0]["status"] == "completed":
                     original = old[0]
                     if value["entryDate"] == original["entryDate"] and value["exitDate"] == original["exitDate"]:
@@ -105,10 +112,13 @@ def refresh_selections(progress) -> dict:
                 db.execute("INSERT OR REPLACE INTO selection_outcomes VALUES (?,?,?,?,?)",
                            (report["id"], pick["code"], n, json.dumps(value, ensure_ascii=False), database.now_iso()))
         progress(index + 1, len(batch), "核对选股后的真实日线")
+    if missing:
+        raise RuntimeError(f"本批有 {missing} 项选股观察缺少完整个股或基准日线，已保留此前结果，可稍后重试")
     return {"checked": len(batch), "remaining": max(0, len(pending) - len(batch))}
 
 
 def history_payload(sessions: int = 10, page: int = 1, strategy: str = "") -> dict:
+    now = datetime.now(database.CHINA_TZ)
     with database.connection() as db:
         reports = [dict(row) for row in db.execute("SELECT * FROM selection_reports ORDER BY published_at DESC,id DESC")]
         saved = {(row["report_id"], row["code"]): json.loads(row["result_json"])
@@ -122,6 +132,9 @@ def history_payload(sessions: int = 10, page: int = 1, strategy: str = "") -> di
         for pick in json.loads(report["picks_json"]):
             item = saved.get((report["id"], pick["code"])) or {
                 "status": "pending", "returnPct": None, "benchmarks": {}, "note": "等待核对行情"}
+            if (item["status"] != "completed" and item.get("targetDate")
+                    and now >= datetime.combine(date.fromisoformat(item["targetDate"]), time(15, 10), database.CHINA_TZ)):
+                item = {**item, "status": "missing_data", "note": "观察期已结束，等待完整日线核对；上次阶段表现不计入最终统计"}
             group["outcomes"].append(item)
             picks.append({**pick, "outcome": item})
         if not strategy or strategy == key:

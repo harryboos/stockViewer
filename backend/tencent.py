@@ -196,7 +196,7 @@ class TencentClient:
         quoted_at = self._quote_timestamp()
         fields = {"名称": "name", "最新价": "zxj", "涨跌幅": "zdf", "涨跌额": "zd",
                   "成交量": "volume", "换手率": "hsl", "量比": "lb", "振幅": "zf",
-                  "市盈率-动态": "pe_ttm", "市净率": "pn"}
+                  "市盈率-TTM": "pe_ttm", "市净率": "pn"}
         normalized = []
         for row in rows:
             item = {key: row.get(field) for key, field in fields.items()}

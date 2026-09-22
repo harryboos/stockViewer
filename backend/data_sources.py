@@ -233,7 +233,9 @@ class MarketDataService:
                     "turnoverRate": number_or_none(row.get("换手率")),
                     "volumeRatio": number_or_none(row.get("量比")),
                     "amplitude": number_or_none(row.get("振幅")),
-                    "peTtm": number_or_none(row.get("市盈率-动态")),
+                    # Dynamic annualised earnings and trailing-twelve-month
+                    # earnings are different denominators; never interchange.
+                    "peTtm": number_or_none(row.get("市盈率-TTM")),
                     "pb": number_or_none(row.get("市净率")),
                     "totalMv": number_or_none(row.get("总市值")),
                     "floatMv": number_or_none(row.get("流通市值")),

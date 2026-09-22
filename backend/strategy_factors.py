@@ -13,8 +13,15 @@ ScoreFunction = Callable[[FactorRow], float]
 
 
 def _recent_bars(spot: FactorRow, history: list[FactorRow]) -> list[FactorRow]:
-    bars = [dict(row) for row in history]
-    spot_date = str(spot.get("tradeDate") or "")
+    spot_date = str(spot.get("tradeDate") or "").replace("-", "")
+    # A historical snapshot must never acquire future prices from a newer cache.
+    # Canonical dates also prevent duplicated sessions across ISO/compact providers.
+    dated = {str(row["date"]).replace("-", ""): dict(row) for row in history if row.get("date")}
+    bars = [{**dated[day], "date": day} for day in sorted(dated) if not spot_date or day <= spot_date]
+    if spot_date and any(day > spot_date for day in dated):
+        # Newer forward-adjusted history may have rebased this older snapshot.
+        # Keep one adjustment basis; an old raw quote cannot replace its OHLC.
+        return bars if bars and bars[-1]["date"] == spot_date else []
     if not spot_date or spot.get("close") is None:
         return bars
     spot_bar = {

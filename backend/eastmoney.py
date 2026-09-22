@@ -89,11 +89,16 @@ class EastmoneyClient:
         session: requests.Session,
         params: dict[str, str],
         page: int,
+        *,
+        deadline: float | None = None,
     ) -> dict[str, Any]:
+        remaining = deadline - time.monotonic() if deadline is not None else 24
+        if remaining <= 0:
+            raise RuntimeError("东方财富分页行情获取超时")
         response = session.get(
             url,
             params={**params, "pn": str(page), "pz": "100"},
-            timeout=(6, 18),
+            timeout=(min(6, remaining / 2), min(18, remaining / 2)),
         )
         response.raise_for_status()
         payload = response.json()
@@ -103,19 +108,21 @@ class EastmoneyClient:
         return data
 
     def fetch_pages(self, node: str, params: dict[str, str]) -> list[dict[str, Any]]:
-        routes = [
-            (f"https://{host}{API_PATH}", trust_env)
-            for trust_env in (False, True)
-            for host in self._hosts(node)
+        urls = [f"https://{host}{API_PATH}" for host in self._hosts(node)]
+        routes = [(url, False) for url in urls] + [
+            (url, True) for url in urls if requests.utils.get_environ_proxies(url)
         ]
+        deadline = time.monotonic() + 60
         last_error: Exception | None = None
         active: tuple[str, requests.Session] | None = None
         first_payload: dict[str, Any] | None = None
 
         for url, trust_env in routes:
+            if time.monotonic() >= deadline:
+                break
             session = self._session(trust_env)
             try:
-                first_payload = self._request_page(url, session, params, 1)
+                first_payload = self._request_page(url, session, params, 1, deadline=deadline)
                 active = (url, session)
                 break
             except (requests.RequestException, ValueError, RuntimeError) as error:
@@ -130,11 +137,29 @@ class EastmoneyClient:
             rows = list(first_payload["diff"])
             if not rows:
                 raise RuntimeError("东方财富备用线路没有返回行情")
-            total = int(first_payload.get("total") or len(rows))
-            if total > 20_000 or total < 0:
+            total = int(first_payload.get("total") or 0)
+            if total > 20_000 or total < len(rows):
                 raise RuntimeError("东方财富备用线路分页总数异常")
+            identities: set[str] = set()
+            check_identity = "f12" in params.get("fields", "").split(",")
+
+            def check_page(items: list[dict[str, Any]]) -> None:
+                for row in items:
+                    if not isinstance(row, dict):
+                        raise RuntimeError("东方财富备用线路分页格式异常")
+                    # All production callers request f12; reject overlap before
+                    # it can inflate breadth, turnover or constituent counts.
+                    if check_identity:
+                        identity = str(row.get("f12") or "")
+                        if not identity or identity in identities:
+                            raise RuntimeError("东方财富备用线路存在无效代码或重复分页")
+                        identities.add(identity)
+
+            check_page(rows)
             page_count = max(1, math.ceil(total / max(len(rows), 1)))
             for page in range(2, page_count + 1):
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("东方财富分页行情获取超时")
                 if self.settings.eastmoney_page_delay_seconds:
                     jitter = random.uniform(
                         0,
@@ -143,11 +168,12 @@ class EastmoneyClient:
                     time.sleep(self.settings.eastmoney_page_delay_seconds + jitter)
                 page_error: Exception | None = None
                 for attempt in range(3):
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError("东方财富分页行情获取超时")
                     try:
-                        payload = self._request_page(url, session, params, page)
+                        payload = self._request_page(url, session, params, page, deadline=deadline)
                         if not payload["diff"]:
                             raise RuntimeError("分页提前结束，行情数据不完整")
-                        rows.extend(payload["diff"])
                         page_error = None
                         break
                     except (requests.RequestException, ValueError, RuntimeError) as error:
@@ -157,7 +183,11 @@ class EastmoneyClient:
                     raise RuntimeError(
                         f"东方财富备用线路第 {page} 页获取失败：{page_error}"
                     ) from page_error
-            if len(rows) < total:
+                if int(payload.get("total") or 0) != total:
+                    raise RuntimeError("东方财富备用线路分页总数发生变化，请重新获取")
+                check_page(payload["diff"])
+                rows.extend(payload["diff"])
+            if len(rows) != total:
                 raise RuntimeError("东方财富备用线路返回了不完整行情")
             return rows
         finally:
@@ -196,7 +226,7 @@ class EastmoneyClient:
             "fid0": "f62",
             "stat": "1",
             "fs": f"m:90 t:{'2' if sector_type == 'industry' else '3'}",
-            "fields": ",".join(SECTOR_FUND_FLOW_FIELD_MAP.values()),
+            "fields": ",".join(("f12", *SECTOR_FUND_FLOW_FIELD_MAP.values())),
         }
         return self._frame(self.fetch_pages("79", params), SECTOR_FUND_FLOW_FIELD_MAP)
 
@@ -209,38 +239,46 @@ class EastmoneyClient:
             "iscr": "0",
             "iscca": "0",
         }
-        hosts = (
-            "push2his.eastmoney.com",
-            "91.push2his.eastmoney.com",
-            "7.push2his.eastmoney.com",
-        )
-        last_error: Exception | None = None
-        for trust_env, attempts in ((False, 3), (True, 1)):
-            for host in hosts:
-                session = self._session(trust_env)
-                try:
-                    for attempt in range(attempts):
-                        try:
-                            response = session.get(
-                                f"https://{host}/api/qt/stock/trends2/get",
-                                params=trend_params,
-                                timeout=(4, 10),
-                            )
-                            response.raise_for_status()
-                            payload = response.json()
-                            data = payload.get("data") if isinstance(payload, dict) else None
-                            trends = data.get("trends") if isinstance(data, dict) else None
-                            if not isinstance(trends, list) or not trends:
-                                raise RuntimeError("东方财富分时历史没有返回有效数据")
-                            return [str(item) for item in trends]
-                        except (requests.RequestException, ValueError, RuntimeError) as error:
-                            last_error = error
-                            if attempt + 1 < attempts:
-                                time.sleep(0.3 * (attempt + 1) + random.uniform(0, 0.15))
-                finally:
-                    session.close()
+        return self._history_rows("stock/trends2/get", trend_params, "trends")
 
-        raise RuntimeError(f"东方财富分时历史连接失败：{last_error or '未知错误'}")
+    def _history_rows(self, path: str, params: dict[str, str], key: str) -> list[str]:
+        # One budget across hosts and proxy routes replaces minutes of retries
+        # per enrichment. A failed host must not starve independent fallbacks.
+        urls = [f"https://{host}/api/qt/{path}" for host in (
+            "push2his.eastmoney.com", "91.push2his.eastmoney.com", "7.push2his.eastmoney.com",
+        )]
+        routes = [(url, False) for url in urls] + [
+            (url, True) for url in urls if requests.utils.get_environ_proxies(url)
+        ]
+        deadline = time.monotonic() + 25
+        reason = "没有返回有效数据"
+        for url, trust_env in routes:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                reason = "请求等待超时"
+                break
+            session = self._session(trust_env)
+            try:
+                response = session.get(url, params=params, timeout=(min(3, remaining / 2), min(8, remaining / 2)))
+                response.raise_for_status()
+                payload = response.json()
+                data = payload.get("data") if isinstance(payload, dict) else None
+                rows = data.get(key) if isinstance(data, dict) else None
+                if not isinstance(rows, list) or not rows or not all(isinstance(row, str) for row in rows):
+                    raise ValueError("invalid history rows")
+                expected_code = params["secid"].split(".", 1)[1]
+                if data.get("code") is not None and str(data["code"]) != expected_code:
+                    raise ValueError("wrong history symbol")
+                return rows
+            except requests.Timeout:
+                reason = "请求等待超时"
+            except requests.ConnectionError:
+                reason = "连接中断或网络不可达"
+            except (requests.RequestException, ValueError):
+                reason = "没有返回有效数据"
+            finally:
+                session.close()
+        raise RuntimeError(f"东方财富历史行情暂不可用：{reason}")
 
     @staticmethod
     def _turnover_points(rows: list[str]) -> list[tuple[str, str, float]]:
@@ -360,44 +398,7 @@ class EastmoneyClient:
             "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65",
             "ut": "b2884a393a59ad64002292a3e90d46a5",
         }
-        hosts = (
-            "push2his.eastmoney.com",
-            "91.push2his.eastmoney.com",
-            "7.push2his.eastmoney.com",
-        )
-        last_error: Exception | None = None
-        klines: list[str] | None = None
-        for trust_env, attempts in ((False, 3), (True, 1)):
-            for host in hosts:
-                session = self._session(trust_env)
-                try:
-                    for attempt in range(attempts):
-                        try:
-                            response = session.get(
-                                f"https://{host}/api/qt/stock/fflow/daykline/get",
-                                params=params,
-                                timeout=(5, 15),
-                            )
-                            response.raise_for_status()
-                            payload = response.json()
-                            data = payload.get("data") if isinstance(payload, dict) else None
-                            raw = data.get("klines") if isinstance(data, dict) else None
-                            if not isinstance(raw, list) or not raw:
-                                raise RuntimeError("东方财富大盘资金流没有返回有效数据")
-                            klines = [str(item) for item in raw]
-                            break
-                        except (requests.RequestException, ValueError, RuntimeError) as error:
-                            last_error = error
-                            if attempt + 1 < attempts:
-                                time.sleep(0.3 * (attempt + 1) + random.uniform(0, 0.15))
-                    if klines:
-                        break
-                finally:
-                    session.close()
-            if klines:
-                break
-        if not klines:
-            raise RuntimeError(f"东方财富大盘资金流连接失败：{last_error or '未知错误'}")
+        klines = self._history_rows("stock/fflow/daykline/get", params, "klines")
 
         columns = [
             "日期", "主力净流入-净额", "小单净流入-净额", "中单净流入-净额",

@@ -11,11 +11,14 @@ from datetime import date
 
 from . import database
 from .concept_data import ConceptResearchClient
-from .history_sources import TushareHistoryClient, normalize_bars, sina_index_history, validate_window
+from .history_sources import (
+    TushareHistoryClient, history_covers_window, normalize_bars, sina_index_history, validate_window,
+)
 
 CALENDAR_KEY = "forecast_trade_calendar:v1"
 logger = logging.getLogger(__name__)
 _calendar_lock = threading.Lock()
+_known_calendar: tuple[str, ...] = ()
 _DECODER = """
 const fs = require('node:fs');
 const vm = require('node:vm');
@@ -51,14 +54,19 @@ def decode_calendar(encoded: str) -> list[str]:
 class FeedbackPriceClient(ConceptResearchClient):
     def calendar(self) -> list[str]:
         # All consumers share the same durable calendar and initialization lock.
+        global _known_calendar
         with _calendar_lock:
-            return self._calendar()
+            dates = self._calendar()
+            _known_calendar = tuple(dates)
+            return dates
 
     def _calendar(self) -> list[str]:
         try:
             saved = json.loads(database.get_meta(CALENDAR_KEY) or "{}")
             if not isinstance(saved, dict) or not isinstance(saved.get("dates"), list):
                 saved = {}
+            else:
+                saved["dates"] = sorted({date.fromisoformat(value).isoformat() for value in saved["dates"]})
         except (ValueError, TypeError):
             saved = {}
         if saved.get("fetchedOn") == database.china_date() and saved.get("dates"):
@@ -104,10 +112,12 @@ class FeedbackPriceClient(ConceptResearchClient):
         if code not in ("sh000001", "sh000688"):
             raise ValueError("腾讯备用源仅用于上证指数和科创50")
         validate_window(start, end)
-        data = self._json([
+        payload = self._json([
             "https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get",
             "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get",
-        ], {"param": f"{code},day,{start},{end},640,"}).get("data", {}).get(code, {})
+        ], {"param": f"{code},day,{start},{end},640,"})
+        outer = payload.get("data")
+        data = outer.get(code) if isinstance(outer, dict) else None
         if not isinstance(data, dict):
             raise ValueError("腾讯指数日线格式异常")
         bars = normalize_bars(data.get("day") or [], start, end)
@@ -131,9 +141,9 @@ class FeedbackPriceClient(ConceptResearchClient):
                 rows = result["rows"]
                 if rows:
                     # Retain one provider's complete price series; never splice index bases.
-                    if best is None or len(rows) > len(best["rows"]):
+                    if best is None or (len(rows), rows[-1]["date"]) > (len(best["rows"]), best["rows"][-1]["date"]):
                         best = result
-                    if rows[-1]["date"] >= end:
+                    if history_covers_window(rows, start, end, _known_calendar):
                         return result
                 else:
                     failures.append(f"{name}未返回该区间的有效日线")

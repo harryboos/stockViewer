@@ -18,6 +18,7 @@ export async function jsonFetch<T>(url: string, options: RequestInit & { timeout
     }
     if (!response.ok) throw new Error(body?.error || `请求失败（${response.status}）`);
     if (body === null) throw new Error('服务没有返回数据');
+    if (typeof body !== 'object') throw new Error('服务返回了无效的数据格式');
     return body;
   } catch (cause) {
     if (controller.signal.aborted && controller.signal.reason?.name === 'TimeoutError') {

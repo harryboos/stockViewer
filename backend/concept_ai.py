@@ -159,7 +159,7 @@ def get_concept_run(*, include_result: bool = True) -> dict:
 
 async def _execute(run_date: str, key: str, token: str) -> None:
     from .research_jobs import ai_token, record_ai_stage
-    ai_token.set(token)
+    context_token = ai_token.set(token)
     result, error = None, None
 
     async def generate() -> dict:
@@ -189,20 +189,31 @@ async def _execute(run_date: str, key: str, token: str) -> None:
         # Avoid persisting upstream response bodies or credentials in user-visible errors.
         error = "概念分析暂时不可用，请稍后重试"
     finally:
-        database.finish_ai_run(f"concept:{PROVIDER}", run_date, result, error, token)
+        try:
+            await asyncio.to_thread(database.finish_ai_run, f"concept:{PROVIDER}", run_date, result, error, token)
+        finally:
+            ai_token.reset(context_token)
 
 
 async def start_concept_run(force: bool = False) -> dict:
-    current = get_concept_run()
+    current = await asyncio.to_thread(get_concept_run)
     if current["status"] in ("not_configured", "running") or (current["status"] == "succeeded" and not force):
         return current
     run_date = current["runDate"]
     key = ai.provider_key(PROVIDER)
     if not key:
-        return get_concept_run()
-    token = database.start_ai_run(f"concept:{PROVIDER}", MODEL, run_date, PROMPT_VERSION, force)
-    if token:
-        task = asyncio.create_task(_execute(run_date, key, token))
-        _tasks.add(task)
-        task.add_done_callback(_tasks.discard)
-    return get_concept_run()
+        return await asyncio.to_thread(get_concept_run)
+
+    async def claim_and_launch() -> dict:
+        token = await asyncio.to_thread(database.start_ai_run, f"concept:{PROVIDER}", MODEL, run_date, PROMPT_VERSION, force)
+        if token:
+            task = asyncio.create_task(_execute(run_date, key, token))
+            _tasks.add(task)
+            task.add_done_callback(_tasks.discard)
+        return await asyncio.to_thread(get_concept_run)
+
+    # Complete the durable claim/worker handoff even if the browser disconnects.
+    launch = asyncio.create_task(claim_and_launch())
+    _tasks.add(launch)
+    launch.add_done_callback(_tasks.discard)
+    return await asyncio.shield(launch)

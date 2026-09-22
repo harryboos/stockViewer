@@ -206,25 +206,25 @@ def get_forecast_run(*, include_result: bool = True) -> dict:
 
 async def _execute(run_date: str, key: str, token: str) -> None:
     from .research_jobs import ai_token, record_ai_stage
-    ai_token.set(token)
+    context_token = ai_token.set(token)
     result, error = None, None
     stage = "market_data"
     started = asyncio.get_running_loop().time()
     stage_labels = {"market_data": "概念行情收集", "feedback": "历史反馈读取", "news": "时事新闻检索",
                     "model": "GLM 深度分析及高峰重试等待", "validation": "预测结果核对"}
 
-    def set_stage(value: str) -> None:
+    async def set_stage(value: str) -> None:
         nonlocal stage
         stage = value
-        record_ai_stage(token, stage_labels[value])
+        await asyncio.to_thread(record_ai_stage, token, stage_labels[value])
         logger.info("forecast_stage run_date=%s stage=%s elapsed=%.1fs", run_date, stage,
                     asyncio.get_running_loop().time() - started)
 
     async def generate() -> dict:
-        set_stage("market_data")
+        await set_stage("market_data")
         evidence = await asyncio.wait_for(collect_evidence(), timeout=DATA_TIMEOUT_SECONDS)
         evidence["window"] = forecast_window(run_date)
-        set_stage("feedback")
+        await set_stage("feedback")
         try:
             evidence["historicalFeedback"] = await asyncio.wait_for(
                 asyncio.to_thread(feedback_context), timeout=FEEDBACK_TIMEOUT_SECONDS)
@@ -235,13 +235,13 @@ async def _execute(run_date: str, key: str, token: str) -> None:
         if not evidence["candidates"]:
             return {**{key: evidence[key] for key in ("window", "tradeDate", "dataAsOf", "scope", "warnings")},
                     "summary": "暂未取得足够的概念行情，当前无法形成有依据的半个月预测。", "concepts": []}
-        set_stage("news")
+        await set_stage("news")
         evidence = await enrich_world_news(evidence, key, forecast=True)
-        set_stage("model")
+        await set_stage("model")
         raw = await ai._call_compatible(PROVIDER, build_prompt(evidence), MODEL, key,
                                         system_instruction=SYSTEM_INSTRUCTION, reasoning_effort="max",
                                         timeout_seconds=MODEL_TIMEOUT_SECONDS, resilient_stream=True)
-        set_stage("validation")
+        await set_stage("validation")
         return assemble_result(raw, evidence)
 
     try:
@@ -263,7 +263,10 @@ async def _execute(run_date: str, key: str, token: str) -> None:
         if error:
             logger.warning("forecast_failed run_date=%s stage=%s elapsed=%.1fs reason=%s", run_date, stage,
                            asyncio.get_running_loop().time() - started, error)
-        await asyncio.to_thread(database.finish_ai_run, RUN_NAMESPACE, run_date, result, error, token)
+        try:
+            await asyncio.to_thread(database.finish_ai_run, RUN_NAMESPACE, run_date, result, error, token)
+        finally:
+            ai_token.reset(context_token)
 
 
 async def start_forecast_run(force: bool = False) -> dict:

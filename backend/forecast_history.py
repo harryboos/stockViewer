@@ -173,7 +173,8 @@ def feedback_context(as_of: datetime | None = None) -> dict:
     cohorts = {str(days): [] for days in HORIZONS}
     cases, reports = [], {}
     with database.connection() as db:
-        rows = db.execute("""SELECT f.*, r.run_date, r.published_at
+        rows = db.execute("""SELECT f.report_id, f.concept_code, f.horizon_days, f.updated_at,
+            json_remove(f.result_json, '$.path') AS result_json, r.run_date, r.published_at
             FROM forecast_feedback f JOIN forecast_reports r ON r.id = f.report_id
             WHERE r.id = (SELECT MIN(r2.id) FROM forecast_reports r2 WHERE r2.run_date = r.run_date)
             ORDER BY f.updated_at DESC, r.id DESC""").fetchall()
@@ -203,7 +204,8 @@ def reports_to_refresh(limit: int = 12) -> list[dict]:
     with database.connection() as db:
         rows = db.execute(f"SELECT {OVERVIEW_COLUMNS} FROM forecast_reports ORDER BY checked_at IS NOT NULL, checked_at, id").fetchall()
         saved = {(row["report_id"], row["concept_code"], row["horizon_days"]): json.loads(row["result_json"])
-                 for row in db.execute("SELECT * FROM forecast_feedback")}
+                 for row in db.execute("""SELECT report_id, concept_code, horizon_days,
+                     json_remove(result_json, '$.path') AS result_json FROM forecast_feedback""")}
     result = []
     today = database.china_date()
     for row in rows:

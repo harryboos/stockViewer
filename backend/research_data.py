@@ -135,6 +135,7 @@ def refresh_rotation(progress) -> dict:
     pending.sort(key=lambda board: attempted.get(board["code"], ""))
     progress(0, min(40, len(pending)), "核对概念轮动日线")
     prices = fetch_batch([board["code"] for board in pending[:40]], lambda code: index_history(code, start, end))
+    refreshed = 0
     # Incremental batches keep hundreds of concept histories from blocking other modules.
     for index, board in enumerate(pending[:40]):
         data = prices.get(board["code"], {})
@@ -142,6 +143,7 @@ def refresh_rotation(progress) -> dict:
         rows = {row["date"]: row for row in data.get("rows", [])}
         expected = closed[-26:]
         if all(day in rows for day in expected):
+            refreshed += 1
             closes = [rows[day]["close"] for day in expected]
             returns = {str(n): round((closes[-1] / closes[-n-1] - 1) * 100, 4) for n in (5, 10, 20)}
             previous = {str(n): round((closes[-6] / closes[-n-6] - 1) * 100, 4) for n in (5, 10, 20)}
@@ -154,8 +156,9 @@ def refresh_rotation(progress) -> dict:
               "totalCount": len(allowed), "universeAsOf": universe["asOf"], "updatedAt": database.now_iso(),
               "attempted": {code: value for code, value in attempted.items() if code in allowed}}
     cache_put("rotation", result)
-    if pending and not updated:
-        raise RuntimeError('本批概念日线暂不可用，已保留此前结果，稍后可继续分批核对')
+    missing = min(40, len(pending)) - refreshed
+    if missing:
+        raise RuntimeError(f'本批已核对 {refreshed} 项，仍有 {missing} 项概念日线不完整；已保留此前结果，稍后可继续分批核对')
     return result
 
 

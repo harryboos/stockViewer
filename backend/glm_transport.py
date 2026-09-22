@@ -6,9 +6,10 @@ import json
 import logging
 import math
 import random
+import re
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
-from typing import Any, Awaitable, Callable
+from typing import Any, AsyncIterator, Awaitable, Callable
 
 import httpx
 
@@ -100,12 +101,32 @@ async def read_json(response: httpx.Response) -> Any:
         raise RequestFailure("GLM 接口返回了无法解析的数据") from error
 
 
+async def bounded_lines(response: httpx.Response) -> AsyncIterator[str]:
+    """Enforce the event limit before a malformed upstream can buffer a huge line."""
+    pending = ""
+    async for chunk in response.aiter_text():
+        pending += chunk
+        consumed = 0
+        # Keep a trailing CR until the next chunk, so a split CRLF is one newline.
+        for ending in re.finditer(r"\r\n|\n|\r(?!$)", pending):
+            line = pending[consumed:ending.start()]
+            if len(line) > MAX_EVENT_CHARS + len("data: "):
+                raise RequestFailure("GLM 响应片段超出安全长度")
+            yield line
+            consumed = ending.end()
+        pending = pending[consumed:]
+        if len(pending) > MAX_EVENT_CHARS + len("data: "):
+            raise RequestFailure("GLM 响应片段超出安全长度")
+    if pending:
+        yield pending.removesuffix("\r")
+
+
 async def read_stream(response: httpx.Response, progress: Callable[[str], Awaitable[None]]) -> dict[str, Any]:
     parts: list[str] = []
     content_size = 0
     event: list[str] = []
     event_size = 0
-    async for line in response.aiter_lines():
+    async for line in bounded_lines(response):
         if line.startswith("data:"):
             text = line[5:].lstrip(" ")
             event.append(text)

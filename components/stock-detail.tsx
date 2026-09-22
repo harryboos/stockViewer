@@ -15,7 +15,14 @@ export function StockLink({ code, children }: { code: string; children: ReactNod
 }
 
 export function CandleChart({ rows }: { rows: Candle[] }) {
-  const bars = rows.slice(-60).filter(row => row.open != null && row.high != null && row.low != null);
+  const bars = rows.filter(row => {
+    const prices = [row.open, row.high, row.low, row.close];
+    return prices.every(value => typeof value === 'number' && Number.isFinite(value) && value > 0)
+      && row.high! >= Math.max(row.open!, row.close)
+      && row.low! <= Math.min(row.open!, row.close);
+  }).slice(-60).map(row => ({ ...row,
+    vol: typeof row.vol === 'number' && Number.isFinite(row.vol) && row.vol >= 0 ? row.vol : null,
+  }));
   if (!bars.length) return <p className="concept-ai-state">尚无可展示的完整日线。</p>;
   const low = Math.min(...bars.map(row => row.low!));
   const high = Math.max(...bars.map(row => row.high!));

@@ -202,6 +202,25 @@ test('stock candle chart renders verified OHLC and no fake bars for missing valu
   assert.ok(!missing.includes('<svg'));
 });
 
+test('stock charts omit invalid OHLC and never turn invalid volume into a chart coordinate', async () => {
+  const { CandleChart } = await server.ssrLoadModule('/components/stock-detail.tsx');
+  const bar = { date: '20260917', open: 100, high: 112, low: 99, close: 110, vol: 2500 };
+  for (const invalid of [
+    { close: null }, { close: NaN }, { close: Infinity }, { low: 101 },
+    { high: 105 }, { open: -10 }, { high: 0 },
+  ]) {
+    const html = renderToStaticMarkup(createElement(CandleChart, { rows: [{ ...bar, ...invalid }] }));
+    assert.ok(html.includes('尚无可展示的完整日线'), JSON.stringify(invalid));
+    assert.ok(!html.includes('<svg'));
+  }
+  for (const vol of [NaN, Infinity, -100]) {
+    const html = renderToStaticMarkup(createElement(CandleChart, { rows: [{ ...bar, vol }] }));
+    assert.ok(html.includes('成交量 缺失 股'));
+    assert.ok(!html.includes('NaN') && !html.includes('Infinity'));
+    assert.ok(html.includes('<svg'), 'valid prices remain visible when only volume is missing');
+  }
+});
+
 test('watchlist excludes missing changes, flat stocks and stale trading dates from gains', () => {
   const values = [
     { tradeDate: '20260907', pctChg: 2 }, { tradeDate: '20260907', pctChg: -1 },
@@ -275,6 +294,52 @@ test('proxy distinguishes timeouts from connection failures', async (t) => {
   const response = await backend.forwardToBackend(new NextRequest('http://localhost:3000/api/system'), '/api/system');
   assert.equal(response.status, 504);
   assert.match((await response.json()).error, /响应超时/);
+});
+
+test('proxy cancels an upstream response body when the client disconnects', async (t) => {
+  const controller = new AbortController();
+  let upstreamSignal;
+  let bodyStarted;
+  const started = new Promise(resolve => { bodyStarted = resolve; });
+  t.mock.method(globalThis, 'fetch', async (_url, options) => {
+    upstreamSignal = options.signal;
+    return { ok: true, status: 200, text: () => new Promise((_resolve, reject) => {
+      options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true });
+      bodyStarted();
+    }) };
+  });
+  const pending = backend.forwardToBackend(new NextRequest('http://localhost:3000/api/system', {
+    signal: controller.signal,
+  }), '/api/system');
+  await started;
+  controller.abort();
+  const response = await pending;
+  assert.equal(upstreamSignal.aborted, true);
+  assert.equal(response.status, 499);
+  assert.equal(response.headers.get('cache-control'), 'no-store');
+  assert.match((await response.json()).error, /已取消/);
+});
+
+test('proxy never contacts the backend for an already cancelled request', async (t) => {
+  const controller = new AbortController();
+  controller.abort();
+  const fetch = t.mock.method(globalThis, 'fetch', async () => { throw new Error('must not fetch'); });
+  const response = await backend.forwardToBackend(new NextRequest('http://localhost:3000/api/system', {
+    signal: controller.signal,
+  }), '/api/system');
+  assert.equal(response.status, 499);
+  assert.equal(fetch.mock.callCount(), 0);
+});
+
+test('JSON API boundaries reject empty and primitive successful payloads before rendering', async (t) => {
+  const fetch = t.mock.method(globalThis, 'fetch', async () => new Response(''));
+  for (const value of ['', 'null', 'true', '1', '"temporarily unavailable"']) {
+    fetch.mock.mockImplementation(async () => new Response(value));
+    const response = await backend.forwardToBackend(new NextRequest('http://localhost:3000/api/system'), '/api/system');
+    assert.equal(response.status, 502, value);
+    assert.equal(response.headers.get('cache-control'), 'no-store');
+    await assert.rejects(client.jsonFetch('/api/system'), /没有返回数据|无效的数据格式/, value);
+  }
 });
 
 test('proxy accepts browser same-origin requests behind HTTPS termination', async (t) => {

@@ -16,7 +16,7 @@ from .strategy_factors import (
 )
 
 
-STRATEGY_VERSION = "6"
+STRATEGY_VERSION = "7"
 _strategy_lock = threading.Lock()
 CORE_CANDIDATES = [
     "600519.SH", "300750.SZ", "601318.SH", "000858.SZ", "600036.SH", "688981.SH",

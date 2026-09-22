@@ -519,6 +519,9 @@ def start_ai_run(provider: str, model: str, run_date: str, prompt_version: str, 
             if (not force and existing["status"] == "succeeded"
                     and existing["model"] == model and existing["prompt_version"] == prompt_version):
                 return None
+            if existing["status"] == "running":
+                db.execute("""UPDATE ai_attempts SET status='failed',finished_at=?,stage='已中断或超时'
+                    WHERE token=? AND status='running'""", (now_iso(), existing["run_token"]))
         db.execute(
             """INSERT INTO ai_runs (run_date, provider, model, status, started_at, prompt_version, run_token)
             VALUES (?, ?, ?, 'running', ?, ?, ?)

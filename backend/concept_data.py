@@ -14,7 +14,7 @@ import requests
 from . import database
 from .data_sources import market_data, number_or_none
 from .eastmoney import COMMON_PARAMS, SPOT_FIELD_MAP, EastmoneyClient
-from .history_sources import TushareHistoryClient
+from .history_sources import TushareHistoryClient, normalize_bars
 from .storage_policy import CONCEPT_HISTORY_CACHE_VERSION
 
 MARKET_RESEARCH_LIMIT = 12
@@ -130,19 +130,24 @@ class ConceptResearchClient(EastmoneyClient):
                 return saved["rows"]
             raise
         data = payload.get("data") or {}
-        if str(data.get("code")) != code:
+        if not isinstance(data, dict) or str(data.get("code")) != code:
             raise RuntimeError("概念日线标的代码不匹配")
-        rows = []
+        by_date = {}
+        first, last = (end - timedelta(days=60)).strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
         for raw in data.get("klines") or []:
             fields = str(raw).split(",")
             if len(fields) < 9:
                 continue
-            date_key = fields[0].replace("-", "")
-            close = number_or_none(fields[2])
-            if re.fullmatch(r"\d{8}", date_key) and date_key <= trade_date and close and close > 0:
-                rows.append({"date": date_key, "close": close, "amount": number_or_none(fields[6]),
-                             "pctChg": number_or_none(fields[8])})
-        rows = sorted({row["date"]: row for row in rows}.values(), key=lambda row: row["date"])
+            valid = normalize_bars([fields[:5]], first, last)
+            if not valid:
+                continue
+            row = valid[0]
+            day = row["date"].replace("-", "")
+            amount = number_or_none(fields[6])
+            by_date[day] = {"date": day, "close": row["close"],
+                            "amount": amount if amount is not None and amount >= 0 else None,
+                            "pctChg": number_or_none(fields[8])}
+        rows = [by_date[day] for day in sorted(by_date)][-40:]
         self._save_history(cache_key, trade_date, rows)
         return rows
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from typing import Any, Literal
 
@@ -11,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from . import database
 from .strategies import candidate_snapshot
 
+logger = logging.getLogger(__name__)
 
 Provider = Literal["deepseek", "glm", "qwen"]
 PROVIDERS: tuple[Provider, ...] = ("deepseek", "glm", "qwen")
@@ -255,11 +257,21 @@ async def _execute_provider(
     key = provider_key(provider)
     if not key:
         return _empty_run(provider, "not_configured")
-    token = database.start_ai_run(provider, model, run_date, PROMPT_VERSION, force)
+    # A cancellation while SQLite waits for a writer must not leave a claimed
+    # run without a worker. Finish that claim before propagating cancellation.
+    claim = asyncio.create_task(asyncio.to_thread(database.start_ai_run, provider, model, run_date, PROMPT_VERSION, force))
+    try:
+        token = await asyncio.shield(claim)
+    except asyncio.CancelledError:
+        token = await claim
+        if token:
+            await asyncio.to_thread(database.finish_ai_run, provider, run_date, None, "模型运行已中断，请重试", token)
+        raise
     if token is None:
-        return database.read_ai_run(provider, run_date) or _empty_run(provider, "pending")
+        return await asyncio.to_thread(database.read_ai_run, provider, run_date) or _empty_run(provider, "pending")
     from .research_jobs import ai_token
     context_token = ai_token.set(token)
+    saved, message = None, None
     try:
         prompt = _build_prompt(candidates)
         raw = await asyncio.wait_for(_call_compatible(provider, prompt, model, key), timeout=100)
@@ -273,26 +285,25 @@ async def _execute_provider(
                 raise RuntimeError(f"模型返回了候选池外代码 {pick.code}")
             pick.name = allowed[pick.code]
         saved = result.model_dump()
-        database.finish_ai_run(provider, run_date, saved, None, token)
-        return database.read_ai_run(provider, run_date) or _empty_run(provider, "failed")
     except ValidationError as error:
         message = f"模型返回格式不符合约定（{len(error.errors())} 处），请点击重试"
-        database.finish_ai_run(provider, run_date, None, message, token)
-        return database.read_ai_run(provider, run_date) or _empty_run(provider, "failed")
     except (RuntimeError, json.JSONDecodeError) as error:
-        database.finish_ai_run(provider, run_date, None, str(error), token)
-        return database.read_ai_run(provider, run_date) or _empty_run(provider, "failed")
+        message = str(error)
     except asyncio.CancelledError:
-        database.finish_ai_run(provider, run_date, None, "模型运行已中断，请重试", token)
+        message = "模型运行已中断，请重试"
         raise
     except TimeoutError:
-        database.finish_ai_run(provider, run_date, None, "模型接口响应超时，请重试", token)
-        return database.read_ai_run(provider, run_date) or _empty_run(provider, "failed")
+        message = "模型接口响应超时，请重试"
     except Exception as error:
-        database.finish_ai_run(provider, run_date, None, f"未预期错误：{error}", token)
-        return database.read_ai_run(provider, run_date) or _empty_run(provider, "failed")
+        # Exception details may contain request headers or provider response data.
+        logger.warning("daily_ai_failed provider=%s error_type=%s", provider, type(error).__name__)
+        message = "模型分析暂时不可用，请稍后重试"
     finally:
-        ai_token.reset(context_token)
+        try:
+            await asyncio.to_thread(database.finish_ai_run, provider, run_date, saved, message, token)
+        finally:
+            ai_token.reset(context_token)
+    return await asyncio.to_thread(database.read_ai_run, provider, run_date) or _empty_run(provider, "failed")
 
 
 def get_daily_ai_runs(run_date: str | None = None, *, include_result: bool = True) -> dict[str, Any]:
@@ -327,7 +338,7 @@ async def run_daily_ai(force: bool = False, provider: Provider | None = None, fa
 
 async def _run_daily_ai(force: bool, provider: Provider | None = None, failed_only: bool = False) -> dict[str, Any]:
     run_date = database.china_date()
-    current = get_daily_ai_runs(run_date)
+    current = await asyncio.to_thread(get_daily_ai_runs, run_date)
     needed = [run for run in current["runs"] if run["status"] in {"pending", "failed"}
               or (force and run["status"] == "succeeded")]
     needed = [run for run in needed if (provider is None or run["provider"] == provider)
@@ -341,4 +352,4 @@ async def _run_daily_ai(force: bool, provider: Provider | None = None, failed_on
     if len(candidates) < 3:
         raise RuntimeError("真实行情不足，无法执行今日 AI 选股")
     await asyncio.gather(*(_execute_provider(run["provider"], candidates, force, run_date) for run in needed))
-    return get_daily_ai_runs(run_date)
+    return await asyncio.to_thread(get_daily_ai_runs, run_date)

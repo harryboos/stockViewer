@@ -21,6 +21,10 @@ try {
   const result = await readJson(await fetch(`${backendUrl}/api/daily`, { method: 'POST', headers, signal: AbortSignal.timeout(600_000) }));
   const aiSummary = result.ai.runs.map((run) => `${run.provider}:${run.status}`).join(', ');
   process.stdout.write(`公开策略 ${result.public.strategies.length} 组；AI ${aiSummary}\n`);
+  const failed = result.ai.runs.filter((run) => run.status === 'failed');
+  if (failed.length) {
+    throw new Error(`AI 任务失败：${failed.map((run) => run.provider).join('、')}。已保留成功结果，可在页面重试失败任务`);
+  }
 } catch (error) {
   process.stderr.write(`每日策略运行失败：${error instanceof Error ? error.message : String(error)}\n`);
   process.exitCode = 1;

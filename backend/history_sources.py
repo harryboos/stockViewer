@@ -8,7 +8,7 @@ import os
 import re
 import threading
 import time
-from datetime import date
+from datetime import date, timedelta
 
 import requests
 
@@ -36,6 +36,24 @@ def validate_window(start: str, end: str) -> None:
     first, last = date.fromisoformat(start), date.fromisoformat(end)
     if first > last or (last - first).days > 730:
         raise ValueError("日线查询区间必须有序且不超过两年")
+
+
+def history_covers_window(rows: list[dict], start: str, end: str, calendar: tuple[str, ...] = ()) -> bool:
+    """Conservative fast path only; actual returns still use the exchange calendar.
+
+    Reaching the last date does not prove the first/interior sessions exist.
+    Prefer an already loaded exchange calendar; this check itself does not
+    query a database or remote service. Without a calendar covering the range,
+    weekday holidays may conservatively trigger another provider read.
+    """
+    available = {row["date"] for row in rows}
+    if calendar and calendar[0] <= start and calendar[-1] >= end:
+        return bool(rows) and all(day in available for day in calendar if start <= day <= end)
+    first, last = date.fromisoformat(start), date.fromisoformat(end)
+    return bool(rows) and all(
+        day.weekday() >= 5 or day.isoformat() in available
+        for day in (first + timedelta(days=offset) for offset in range((last - first).days + 1))
+    )
 
 
 def _get_text(url: str, params: dict, referer: str) -> str:
