@@ -17,7 +17,7 @@ CLOSE = "2026-09-11T15:10:00+08:00"
 
 class ConceptFreshnessTests(unittest.TestCase):
     def test_current_day_keeps_existing_path_without_calendar_request(self):
-        with (patch.object(database, "china_date", return_value="2026-09-11"),
+        with (patch.object(database, "now_iso", return_value="2026-09-11T16:00:00+08:00"),
               patch.object(FeedbackPriceClient, "calendar") as calendar):
             self.assertIsNone(concept_data.concept_snapshot_warning("20260911", "2026-09-11T10:00:00+08:00"))
         calendar.assert_not_called()
@@ -26,7 +26,7 @@ class ConceptFreshnessTests(unittest.TestCase):
         for today in ("2026-09-12", "2026-09-13"):
             for snapshot in (CLOSE, "2026-09-11T07:10:00Z", "2026-09-11T15:10:00"):
                 with (self.subTest(today=today, snapshot=snapshot),
-                      patch.object(database, "china_date", return_value=today),
+                      patch.object(database, "now_iso", return_value=f"{today}T16:00:00+08:00"),
                       patch.object(FeedbackPriceClient, "calendar", return_value=CALENDAR)):
                     note = concept_data.concept_snapshot_warning("20260911", snapshot)
                 self.assertIn("今日休市", note)
@@ -35,7 +35,7 @@ class ConceptFreshnessTests(unittest.TestCase):
     def test_weekday_holiday_uses_exchange_calendar_instead_of_weekday_guess(self):
         # Synthetic closure schedule: freshness must follow supplied exchange dates.
         calendar = ["2026-09-30", "2026-10-08"]
-        with (patch.object(database, "china_date", return_value="2026-10-05"),
+        with (patch.object(database, "now_iso", return_value="2026-10-05T16:00:00+08:00"),
               patch.object(FeedbackPriceClient, "calendar", return_value=calendar)):
             self.assertIn("2026-09-30", concept_data.concept_snapshot_warning("20260930", "2026-09-30T16:00:00+08:00"))
 
@@ -47,14 +47,14 @@ class ConceptFreshnessTests(unittest.TestCase):
             ("20260911", "2026-09-14T16:00:00+08:00"),
             ("20260911", None), ("invalid", CLOSE),
         ]
-        with (patch.object(database, "china_date", return_value="2026-09-13"),
+        with (patch.object(database, "now_iso", return_value="2026-09-13T16:00:00+08:00"),
               patch.object(FeedbackPriceClient, "calendar", return_value=CALENDAR)):
             for session, snapshot in cases:
                 with self.subTest(session=session, snapshot=snapshot), self.assertRaisesRegex(RuntimeError, "旧缓存"):
                     concept_data.concept_snapshot_warning(session, snapshot)
 
     def test_reopening_day_does_not_accept_previous_session_cache(self):
-        with (patch.object(database, "china_date", return_value="2026-09-14"),
+        with (patch.object(database, "now_iso", return_value="2026-09-14T16:00:00+08:00"),
               patch.object(FeedbackPriceClient, "calendar", return_value=CALENDAR)):
             with self.assertRaisesRegex(RuntimeError, "旧缓存"):
                 concept_data.concept_snapshot_warning("20260911", CLOSE, forecast=True)
@@ -62,7 +62,7 @@ class ConceptFreshnessTests(unittest.TestCase):
     def test_missing_or_short_calendar_cannot_prove_a_holiday(self):
         responses = ([], CALENDAR[:2], ["2026-09-14"], ["invalid"], RuntimeError("upstream details"))
         for response in responses:
-            with (self.subTest(response=response), patch.object(database, "china_date", return_value="2026-09-13"),
+            with (self.subTest(response=response), patch.object(database, "now_iso", return_value="2026-09-13T16:00:00+08:00"),
                   patch.object(FeedbackPriceClient, "calendar") as calendar):
                 if isinstance(response, Exception):
                     calendar.side_effect = response
@@ -77,7 +77,7 @@ class ConceptFreshnessTests(unittest.TestCase):
         overview = {"tradeDate": "20260911", "updatedAt": CLOSE, "conceptBoards": [board],
                     "warnings": ["板块数据已使用最近成功缓存"]}
         original = copy.deepcopy(overview)
-        with (patch.object(database, "china_date", return_value="2026-09-13"),
+        with (patch.object(database, "now_iso", return_value="2026-09-13T16:00:00+08:00"),
               patch.object(FeedbackPriceClient, "calendar", return_value=CALENDAR),
               patch.object(concept_data.market_data, "sector_overview", return_value=overview),
               patch.object(concept_data.ConceptResearchClient, "daily_history", return_value=[]),
@@ -96,7 +96,7 @@ class ConceptFreshnessTests(unittest.TestCase):
 class SharedEvidenceFreshnessTests(unittest.IsolatedAsyncioTestCase):
     async def test_shared_forecast_result_is_accepted_on_closed_day_without_duplicate_warning(self):
         evidence = {**evidence_fixture(), "dataAsOf": CLOSE}
-        with (patch.object(database, "china_date", return_value="2026-09-13"),
+        with (patch.object(database, "now_iso", return_value="2026-09-13T16:00:00+08:00"),
               patch.object(FeedbackPriceClient, "calendar", return_value=CALENDAR)):
             note = concept_data.concept_snapshot_warning(evidence["tradeDate"], CLOSE, forecast=True)
             evidence["warnings"] = [note]
@@ -112,12 +112,12 @@ class SharedEvidenceFreshnessTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_slow_shared_result_is_rechecked_after_reopening_date_changes(self):
         shared = Future()
-        with (patch.object(database, "china_date", return_value="2026-09-13") as today,
+        with (patch.object(database, "now_iso", return_value="2026-09-13T16:00:00+08:00") as today,
               patch.object(FeedbackPriceClient, "calendar", return_value=CALENDAR),
               patch.object(concept_forecast, "_evidence_future", shared)):
             task = asyncio.create_task(concept_forecast.collect_evidence())
             await asyncio.sleep(0)
-            today.return_value = "2026-09-14"
+            today.return_value = "2026-09-14T16:00:00+08:00"
             shared.set_result({**evidence_fixture(), "dataAsOf": CLOSE})
             with self.assertRaisesRegex(RuntimeError, "旧缓存"):
                 await task

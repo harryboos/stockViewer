@@ -230,22 +230,30 @@ def recent_metrics(history: list[dict], trade_date: str) -> dict:
             "historySessions": len(bars), "historyAsOf": bars[-1]["date"] if bars else None}
 
 
-def concept_snapshot_warning(trade_date: str, updated_at: str, *, forecast: bool = False) -> str | None:
-    """Allow prior-date snapshots only for a verified, most recent closed session."""
+def concept_snapshot_warning(
+    trade_date: str, updated_at: str, *, forecast: bool = False, now: datetime | None = None,
+) -> str | None:
+    """Check quote session as well as fetch time; refetching cannot freshen old quotes."""
     action = "预测" if forecast else "推荐"
     stale = f"板块数据仍是旧缓存，请先更新板块行情后再生成{action}"
-    today = date.fromisoformat(database.china_date())
+    now = (now or datetime.fromisoformat(database.now_iso())).astimezone(database.CHINA_TZ)
+    today = now.date()
     try:
+        if not isinstance(trade_date, str) or not re.fullmatch(r"\d{8}", trade_date):
+            raise ValueError("invalid quote date")
         snapshot = datetime.fromisoformat(updated_at)
         snapshot = snapshot.replace(tzinfo=database.CHINA_TZ) if snapshot.tzinfo is None else snapshot.astimezone(database.CHINA_TZ)
         session = datetime.strptime(trade_date, "%Y%m%d").date()
     except (TypeError, ValueError):
         raise RuntimeError(stale) from None
-    # Preserve the existing same-day path; the exception below is for closed days.
-    if snapshot.date() == today:
+    if snapshot > now or session > today:
+        raise RuntimeError(stale)
+    # A same-day quote is direct evidence of a current session. An old quote
+    # fetched today still needs the calendar checks below.
+    if snapshot.date() == today and session == today:
         return None
     closed_at = datetime.combine(session, day_time(15, 10), database.CHINA_TZ)
-    if snapshot.date() > today or snapshot < closed_at:
+    if snapshot < closed_at:
         raise RuntimeError(stale)
 
     # Import lazily: forecast_prices uses ConceptResearchClient. Never use the
@@ -257,10 +265,13 @@ def concept_snapshot_warning(trade_date: str, updated_at: str, *, forecast: bool
         raise RuntimeError("交易日历暂不可用，无法确认休市日缓存是否有效；请更新板块行情后重试") from None
     if not calendar or calendar[0] > session or calendar[-1] < today:
         raise RuntimeError("交易日历覆盖不足，无法确认休市日缓存是否有效；请更新板块行情后重试")
-    latest = max((day for day in calendar if day <= today), default=None)
-    if today in calendar or latest != session:
+    trading_today = today in calendar
+    before_open = trading_today and now.time() < day_time(9, 30)
+    latest = max((day for day in calendar if day < today or (day == today and not before_open)), default=None)
+    if (trading_today and not before_open) or latest != session:
         raise RuntimeError(stale)
-    return f"今日休市，使用最近交易日 {session.isoformat()} 的收盘后板块快照；行情日期与原更新时间保持不变"
+    state = "开盘前" if before_open else "今日休市"
+    return f"{state}，使用最近交易日 {session.isoformat()} 的收盘后板块快照；行情日期与原更新时间保持不变"
 
 
 def collect_concept_evidence(*, forecast: bool = False) -> dict:

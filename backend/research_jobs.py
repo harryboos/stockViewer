@@ -137,15 +137,12 @@ def operations_payload() -> dict:
     runs = get_daily_ai_runs(include_result=False)["runs"] + [
         {**get_concept_run(include_result=False), "provider": "concept:glm"},
         {**get_forecast_run(include_result=False), "provider": "forecast:glm"}]
-    stage_by_provider = {}
-    for attempt in attempts:
-        stage_by_provider.setdefault(attempt["provider"], attempt["stage"])
     next_rules = now.replace(hour=SCHEDULER.hour, minute=SCHEDULER.minute, second=0, microsecond=0)
     while next_rules <= now or next_rules.weekday() >= 5:
         next_rules += timedelta(days=1)
     return {"sources": sources, "jobs": [job_status(key) for key in LABELS],
             "aiRuns": [{**{key: value for key, value in run.items() if key not in ('result', 'previousResult')},
-                        "stage": stage_by_provider.get(run["provider"])} for run in runs],
+                        "stage": run.get("stage")} for run in runs],
             "aiUsage": {"runsToday": len(attempts), "requestsToday": sum(row["calls"] for row in attempts),
                         "failedToday": sum(row["status"] == "failed" for row in attempts),
                         "note": "仅统计启用记录后的生成任务与分析请求次数，不含新闻检索；非账单金额"},

@@ -5,10 +5,10 @@ import json
 from datetime import date, datetime, time
 
 from . import database
-from .forecast_feedback import bounds, evaluate
+from .forecast_feedback import bounds, evaluate, observation_window
 from .forecast_history import get_report
 from .forecast_prices import FeedbackPriceClient
-from .research_data import fetch_batch, index_history, last_closed_day, latest_universe
+from .research_data import fetch_batch, index_history, latest_universe
 
 
 def universe_for(report: dict, *, create: bool = False) -> dict | None:
@@ -32,13 +32,7 @@ def universe_for(report: dict, *, create: bool = False) -> dict | None:
 
 
 def expected_range(report: dict, days: int, calendar: list[str], now: datetime) -> tuple[str, str] | None:
-    start, target = bounds(report, days)
-    end = min(target.isoformat(), last_closed_day(now))
-    if not calendar or calendar[0] > start.isoformat() or calendar[-1] < end:
-        return None
-    published = datetime.fromisoformat(report["publishedAt"])
-    dates = [day for day in calendar if start.isoformat() <= day <= end
-             and datetime.combine(date.fromisoformat(day), time(9, 30), database.CHINA_TZ) > published]
+    _, dates = observation_window(report, days, calendar, now)
     return (dates[0], dates[-1]) if dates else None
 
 
@@ -50,7 +44,7 @@ def refresh_comparisons(progress) -> dict:
         saved = {(row["report_id"], row["code"], row["horizon_days"]): (json.loads(row["result_json"]), row["updated_at"])
                  for row in db.execute("SELECT * FROM comparison_outcomes")}
     pending = []
-    unavailable = 0
+    unavailable, invalid_windows = 0, 0
     for report_id in ids:
         report = get_report(report_id)
         universe = universe_for(report, create=True)
@@ -58,9 +52,11 @@ def refresh_comparisons(progress) -> dict:
             unavailable += 1
             continue
         for days in (15, 30):
-            span = expected_range(report, days, calendar, now)
-            if span is None:
+            window, dates = observation_window(report, days, calendar, now)
+            if not dates:
+                invalid_windows += int(window["dataStatus"] == "unavailable")
                 continue
+            span = (dates[0], dates[-1])
             mature = now >= datetime.combine(bounds(report, days)[1], time(15, 10), database.CHINA_TZ)
             for position, board in enumerate(universe["boards"]):
                 old = saved.get((report_id, board["code"], days))
@@ -104,6 +100,8 @@ def refresh_comparisons(progress) -> dict:
         raise RuntimeError("旧预测缺少概念范围，请先更新板块行情，再核对同期最强概念")
     if missing:
         raise RuntimeError(f"本批已核对 {ready}/{len(batch)} 项，{missing} 项概念日线缺失或不连续；已保留可用结果，请检查行情连接后重试")
+    if invalid_windows:
+        raise RuntimeError(f"已保留可用结果，仍有 {invalid_windows} 个观察窗口因交易日历覆盖不足或发布时间无效而无法核对")
     return {"checked": len(batch), "remaining": max(0, len(pending) - len(batch)), "missingUniverse": unavailable}
 
 
@@ -121,10 +119,16 @@ def comparison_payload(report_id: int, days: int, now: datetime | None = None) -
     if not universe:
         return base
     from .forecast_prices import CALENDAR_KEY
-    calendar = json.loads(database.get_meta(CALENDAR_KEY) or "{}").get("dates", [])
-    span = expected_range(report, days, calendar, now)
-    if not span:
-        return base
+    try:
+        saved_calendar = json.loads(database.get_meta(CALENDAR_KEY) or "{}")
+        dates = saved_calendar.get("dates", []) if isinstance(saved_calendar, dict) else []
+        calendar = sorted({date.fromisoformat(day).isoformat() for day in dates})
+    except (TypeError, ValueError):
+        calendar = []
+    window, dates = observation_window(report, days, calendar, now)
+    if not dates:
+        return {**base, "message": window["note"] if window["dataStatus"] == "unavailable" else None}
+    span = (dates[0], dates[-1])
     with database.connection() as db:
         rows = db.execute("SELECT * FROM comparison_outcomes WHERE report_id=? AND horizon_days=?", (report_id, days)).fetchall()
     pool = {board["code"]: board["name"] for board in universe["boards"]}

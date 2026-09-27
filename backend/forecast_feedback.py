@@ -5,11 +5,12 @@ import asyncio
 import json
 import logging
 import threading
+from bisect import bisect_left, bisect_right
 from datetime import date, datetime, time, timedelta
 from uuid import uuid4
 
 from . import database
-from .forecast_history import BENCHMARKS, HORIZONS, REFRESH_KEY, reports_to_refresh, refresh_status
+from .forecast_history import BENCHMARKS, HORIZONS, REFRESH_KEY, audited_timestamp, reports_to_refresh, refresh_status
 from .forecast_prices import CalendarUnavailableError, FeedbackPriceClient
 from .research_pool import fetch_batch
 
@@ -42,24 +43,35 @@ def _return(start: float, end: float) -> float:
     return round((end / start - 1) * 100, 4)
 
 
-def evaluate(report: dict, days: int, history: dict, benchmarks: dict,
-             calendar: list[str], now: datetime) -> dict:
+def observation_window(report: dict, days: int, calendar: list[str], now: datetime) -> tuple[dict, list[str]]:
+    """Share close/publication/calendar rules between predicted and comparison concepts."""
     outcome = pending_outcome(report, days, now)
     start, target = bounds(report, days)
     last_closed_day = now.date() if now.time() >= time(15, 10) else now.date() - timedelta(days=1)
     through = min(target, last_closed_day)
     if through < start:
-        return outcome
+        return outcome, []
     # Calendar coverage is required; weekdays alone would misclassify holidays.
     if not calendar or calendar[0] > start.isoformat() or calendar[-1] < through.isoformat():
-        return {**outcome, "dataStatus": "unavailable", "note": "交易日历覆盖不足，等待核对"}
-    published = datetime.fromisoformat(report["publishedAt"])
-    if published.tzinfo is None:
-        return {**outcome, "dataStatus": "unavailable", "note": "历史发布时间缺少时区，无法可靠计算"}
-    sessions = [day for day in calendar if start.isoformat() <= day <= through.isoformat()
-                and datetime.combine(date.fromisoformat(day), time(9, 30), database.CHINA_TZ) > published]
+        return {**outcome, "dataStatus": "unavailable", "note": "交易日历覆盖不足，等待核对"}, []
+    published = audited_timestamp(report.get("publishedAt"))
+    if published is None:
+        return {**outcome, "dataStatus": "unavailable", "note": "历史发布时间无效或缺少时区，无法可靠计算"}, []
+    # Calendars are sorted by the provider. Only inspect this observation window,
+    # rather than scan decades of sessions for every concept and both horizons.
+    window = calendar[bisect_left(calendar, start.isoformat()):bisect_right(calendar, through.isoformat())]
+    sessions = [day for day in window
+                if datetime.combine(date.fromisoformat(day), time(9, 30), database.CHINA_TZ) > published]
     if not sessions:
-        return {**outcome, "dataStatus": "waiting_for_close", "note": "预测发布后尚无可用的完整交易日"}
+        return {**outcome, "dataStatus": "waiting_for_close", "note": "预测发布后尚无可用的完整交易日"}, []
+    return outcome, sessions
+
+
+def evaluate(report: dict, days: int, history: dict, benchmarks: dict,
+             calendar: list[str], now: datetime) -> dict:
+    outcome, sessions = observation_window(report, days, calendar, now)
+    if not sessions:
+        return outcome
     rows = {row["date"]: row for row in history.get("rows", [])}
     missing = [day for day in sessions if day not in rows]
     if missing:

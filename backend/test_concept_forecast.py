@@ -81,8 +81,9 @@ class ForecastEvidenceTests(unittest.TestCase):
 
     def test_forecast_keeps_pullbacks_that_recommendations_filter_out(self):
         board = {**evidence_fixture()["candidates"][0], "pctChg": -2, "kind": "concept"}
-        overview = {"tradeDate": "20260911", "updatedAt": database.now_iso(), "conceptBoards": [board], "warnings": []}
-        with (patch.object(concept_data.market_data, "sector_overview", return_value=overview),
+        overview = {"tradeDate": "20260911", "updatedAt": "2026-09-11T14:00:00+08:00", "conceptBoards": [board], "warnings": []}
+        with (patch.object(database, "now_iso", return_value=overview["updatedAt"]),
+              patch.object(concept_data.market_data, "sector_overview", return_value=overview),
               patch.object(concept_data.ConceptResearchClient, "daily_history", return_value=[]),
               patch.object(concept_data.ConceptResearchClient, "strong_stocks", return_value=[])):
             self.assertEqual(concept_data.collect_concept_evidence()["candidates"], [])
@@ -157,6 +158,9 @@ class ForecastRunTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(temporary.cleanup)
         for target in (patch.object(database, "DATABASE_PATH", Path(temporary.name) / "forecast.sqlite3"),
                        patch.object(database, "china_date", return_value="2026-09-11"),
+                       patch.object(forecast, "concept_snapshot_warning", side_effect=lambda *args, **kwargs:
+                                    concept_data.concept_snapshot_warning(*args, **kwargs,
+                                        now=datetime(2026, 9, 11, 14, tzinfo=database.CHINA_TZ))),
                        patch.dict(os.environ, {"GLM_API_KEY": "test-key", "GLM_MODEL": "wrong-model"}, clear=True),
                        patch.object(forecast, "enrich_world_news", new_callable=AsyncMock, side_effect=lambda evidence, key, **kw: evidence)):
             target.start()

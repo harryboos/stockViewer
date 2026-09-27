@@ -47,6 +47,7 @@ PROVIDER_LABELS: dict[Provider, str] = {
     "qwen": "Qwen",
 }
 PROMPT_VERSION = "5"
+MAX_RESPONSE_BYTES = 1_048_576
 TEXT_SAFETY_LIMITS = {
     "title": 50,
     "summary": 5000,
@@ -191,13 +192,23 @@ async def _post_json(
     timeout = httpx.Timeout(timeout_seconds, connect=20.0)
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.post(url, headers=headers, json=payload)
+            # Bound decompressed response bytes as they arrive. Reading a whole
+            # gateway response before validation can exhaust the worker's memory.
+            async with client.stream("POST", url, headers=headers, json=payload) as response:
+                if response.status_code >= 400:
+                    raise RuntimeError(f"模型接口请求失败（HTTP {response.status_code}）")
+                content = bytearray()
+                async for chunk in response.aiter_bytes():
+                    if len(content) + len(chunk) > MAX_RESPONSE_BYTES:
+                        raise RuntimeError("模型响应超出安全长度，本次未生成结果")
+                    content.extend(chunk)
     except httpx.HTTPError as error:
         raise RuntimeError("模型接口连接失败") from error
-    if response.status_code >= 400:
-        raise RuntimeError(f"模型接口请求失败（HTTP {response.status_code}）")
     try:
-        return response.json()
+        body = json.loads(content)
+        if not isinstance(body, dict):
+            raise ValueError("expected JSON object")
+        return body
     except ValueError as error:
         raise RuntimeError("模型接口返回了无法解析的数据") from error
 
@@ -238,14 +249,22 @@ async def _call_compatible(
         **({"timeout_seconds": timeout_seconds or 90.0} if resilient_stream or timeout_seconds is not None else {}),
     )
     try:
-        content = payload["choices"][0]["message"]["content"]
+        choice = payload["choices"][0]
+        finish_reason = choice.get("finish_reason")
+        # Some compatible gateways omit this field. Preserve those responses,
+        # but never archive a result explicitly reported as truncated/rejected.
+        if finish_reason is not None and finish_reason != "stop":
+            message = ("输出达到长度上限，结果未完整生成" if finish_reason == "length" else
+                       "未返回完整结果，请稍后重试")
+            raise RuntimeError(f"{PROVIDER_LABELS[provider]} {message}")
+        content = choice["message"]["content"]
         if not isinstance(content, str) or not content.strip():
             raise TypeError("empty content")
         result = json.loads(content)
         if not isinstance(result, dict):
             raise TypeError("expected JSON object")
         return result
-    except (KeyError, IndexError, TypeError, json.JSONDecodeError) as error:
+    except (KeyError, IndexError, TypeError, AttributeError, json.JSONDecodeError) as error:
         raise RuntimeError(f"{PROVIDER_LABELS[provider]} 未返回可解析结果") from error
 
 

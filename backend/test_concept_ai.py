@@ -107,8 +107,9 @@ class ConceptEvidenceTests(unittest.TestCase):
 
     def test_history_outage_keeps_today_active_concepts_and_real_stocks(self) -> None:
         board = {**evidence_fixture()["candidates"][0], "kind": "concept"}
-        overview = {"tradeDate": "20260911", "updatedAt": database.now_iso(), "conceptBoards": [board]}
-        with (patch.object(concept_data.market_data, "sector_overview", return_value=overview),
+        overview = {"tradeDate": "20260911", "updatedAt": "2026-09-11T14:00:00+08:00", "conceptBoards": [board]}
+        with (patch.object(database, "now_iso", return_value=overview["updatedAt"]),
+              patch.object(concept_data.market_data, "sector_overview", return_value=overview),
               patch.object(concept_data.ConceptResearchClient, "daily_history", side_effect=RuntimeError("历史接口不可用")),
               patch.object(concept_data.ConceptResearchClient, "strong_stocks", return_value=board["stocks"])):
             evidence = concept_data.collect_concept_evidence()
@@ -122,7 +123,8 @@ class ConceptEvidenceTests(unittest.TestCase):
     def test_negative_five_day_return_does_not_hide_positive_ten_day_trend(self) -> None:
         board = {**evidence_fixture()["candidates"][0], "pctChg": -1}
         bars = [{"date": f"202609{i + 1:02}", "close": close} for i, close in enumerate([100, 103, 106, 109, 111, 112, 111, 110, 110, 110, 110])]
-        with (patch.object(concept_data.market_data, "sector_overview", return_value={
+        with (patch.object(database, "now_iso", return_value="2026-09-11T14:00:00+08:00"),
+              patch.object(concept_data.market_data, "sector_overview", return_value={
             "tradeDate": "20260911", "updatedAt": database.now_iso(), "conceptBoards": [board],
         }), patch.object(concept_data.ConceptResearchClient, "daily_history", return_value=bars),
               patch.object(concept_data.ConceptResearchClient, "strong_stocks", return_value=[])):

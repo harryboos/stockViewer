@@ -75,6 +75,15 @@ def _mean(values: list[float]) -> float | None:
     return round(sum(values) / len(values), 4) if values else None
 
 
+def audited_timestamp(value: str) -> datetime | None:
+    """Legacy timestamps without a timezone cannot establish a safe observation window."""
+    try:
+        parsed = datetime.fromisoformat(value)
+        return parsed if parsed.tzinfo is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
 def summarize(outcomes: list[dict]) -> dict:
     complete = [item for item in outcomes if item["status"] == "completed" and item.get("returnPct") is not None]
     returns = [item["returnPct"] for item in complete]
@@ -180,9 +189,9 @@ def feedback_context(as_of: datetime | None = None) -> dict:
             ORDER BY f.updated_at DESC, r.id DESC""").fetchall()
     for row in rows:
         item = json.loads(row["result_json"])
+        checked, published = audited_timestamp(row["updated_at"]), audited_timestamp(row["published_at"])
         if (item["status"] != "completed" or item.get("returnPct") is None
-                or datetime.fromisoformat(row["updated_at"]) >= now
-                or datetime.fromisoformat(row["published_at"]) >= now
+                or checked is None or published is None or checked >= now or published >= now
                 or item["targetDate"] >= now.date().isoformat()):
             continue
         cohorts[str(row["horizon_days"])].append(item)

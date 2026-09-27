@@ -7,6 +7,7 @@ import type { ForecastResearch } from '@/lib/forecast-types';
 import type { BenchmarkCode, FeedbackRefresh, FeedbackSummary, ForecastHistoryData, ForecastOutcome, HistoryEntry, Horizon } from '@/lib/forecast-history-types';
 import { ComparisonPanel } from './research-panels';
 import { JobButton } from './research-common';
+import { startPolling } from '@/lib/polling';
 
 const benchmarks = [['sh000001', '上证指数'], ['sh000688', '科创50']] as const;
 const rate = (value: number | null) => value === null ? '—' : `${value.toFixed(1)}%`;
@@ -67,22 +68,13 @@ export function ForecastHistory({ finishedAt, renderResearch }: { finishedAt?: s
   const mutation = useRef<AbortController | null>(null);
 
   useEffect(() => () => mutation.current?.abort(), []);
-  useEffect(() => {
-    const controller = new AbortController();
-    let timer: ReturnType<typeof setTimeout>;
-    async function read() {
-      try {
-        const next = await jsonFetch<ForecastHistoryData>(`/api/forecast/history?page=${page}`, { signal: controller.signal, cache: 'no-store' });
-        if (controller.signal.aborted) return;
-        setData(next); setError(null);
-        timer = setTimeout(read, next.refresh.status === 'running' ? 3000 : 30_000);
-      } catch (cause) {
-        if (!controller.signal.aborted) { setError(errorMessage(cause, '历史预测读取失败')); timer = setTimeout(read, 10_000); }
-      }
-    }
-    void read();
-    return () => { controller.abort(); clearTimeout(timer); };
-  }, [page, revision, finishedAt]);
+  useEffect(() => startPolling<ForecastHistoryData>({
+    read: signal => jsonFetch<ForecastHistoryData>(`/api/forecast/history?page=${page}`, { signal, cache: 'no-store' }),
+    onValue: next => { setData(next); setError(null); },
+    onError: cause => setError(errorMessage(cause, '历史预测读取失败')),
+    interval: next => next?.refresh.status === 'running' ? 3000 : 30_000,
+    retryInterval: 10_000,
+  }), [page, revision, finishedAt]);
 
   useEffect(() => {
     if (selected === null) return;

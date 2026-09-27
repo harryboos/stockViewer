@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { errorMessage, jsonFetch } from '@/lib/client-api';
 import type { ConceptRun } from '@/lib/concept-types';
+import { startPolling } from './polling';
 
 export function chinaDay() {
   return new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
@@ -25,25 +26,13 @@ export function useDailyConceptRun<Result>(endpoint: string, label: string) {
     return () => { window.clearInterval(timer); requestRef.current?.abort(); };
   }, []);
 
-  useEffect(() => {
-    const controller = new AbortController();
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    async function read() {
-      try {
-        const next = await jsonFetch<Run>(endpoint, { signal: controller.signal, cache: 'no-store' });
-        if (controller.signal.aborted) return;
-        setRun(next);
-        setRequestError(null);
-        if (next.status === 'running') timer = setTimeout(read, 3000);
-      } catch (error) {
-        if (controller.signal.aborted) return;
-        setRequestError(errorMessage(error, `${label}读取失败`));
-        timer = setTimeout(read, 10_000);
-      }
-    }
-    void read();
-    return () => { controller.abort(); clearTimeout(timer); };
-  }, [endpoint, label, revision, today]);
+  useEffect(() => startPolling<Run>({
+    read: signal => jsonFetch<Run>(endpoint, { signal, cache: 'no-store' }),
+    onValue: next => { setRun(next); setRequestError(null); },
+    onError: error => setRequestError(errorMessage(error, `${label}读取失败`)),
+    interval: next => next?.status === 'running' ? 3000 : 0,
+    retryInterval: 10_000,
+  }), [endpoint, label, revision, today]);
 
   const current = run?.runDate === today ? run : null;
   const result = current?.status === 'succeeded' ? current.result : current?.previousResult ?? null;

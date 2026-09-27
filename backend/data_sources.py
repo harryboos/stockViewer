@@ -1228,7 +1228,17 @@ class MarketDataService:
                 "腾讯证券逐股资金汇总",
             )
             has_today = any(row["date"] == trade_date for row in tencent_rows)
-            if force or not has_today:
+            try:
+                fetched_at = datetime.fromisoformat(tencent_at or "")
+                if fetched_at.tzinfo is None:
+                    fetched_at = fetched_at.replace(tzinfo=database.CHINA_TZ)
+                age = (datetime.now(database.CHINA_TZ) - fetched_at).total_seconds()
+                fresh = 0 <= age < MARKET.spot_cache_seconds
+            except (TypeError, ValueError):
+                fresh = False
+            # A row bearing today's date may still be the morning's snapshot.
+            # Refresh on the same cadence as prices, preserving it on failure.
+            if force or not has_today or not fresh:
                 try:
                     current = self._tencent_client.market_fund_flow_snapshot(trade_date)
                     tencent_rows = self._merge_flow_rows(tencent_rows, [current])
