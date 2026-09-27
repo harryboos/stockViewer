@@ -14,7 +14,7 @@ from pydantic import Field, ValidationError
 from . import ai, database
 from .concept_ai import Catalyst, ResearchModel, StockChoice, MODEL, PROVIDER
 from .forecast_limits import DATA_TIMEOUT_SECONDS, FEEDBACK_TIMEOUT_SECONDS, MODEL_TIMEOUT_SECONDS, RUN_TIMEOUT_SECONDS
-from .concept_data import collect_concept_evidence
+from .concept_data import collect_concept_evidence, concept_snapshot_warning
 from .concept_news import enrich_world_news
 from .forecast_data import forecast_window
 from .forecast_history import feedback_context
@@ -39,8 +39,12 @@ async def collect_evidence() -> dict:
     # Retrieve late exceptions even if this waiting task times out or is cancelled.
     wrapped.add_done_callback(lambda done: None if done.cancelled() else done.exception())
     evidence = copy.deepcopy(await asyncio.shield(wrapped))
-    if not str(evidence.get("dataAsOf", "")).startswith(database.china_date()):
-        raise RuntimeError("板块数据仍是旧缓存，请先更新板块行情后再生成预测")
+    # A shared slow fetch can cross midnight. Revalidate against the current
+    # exchange day without blocking the event loop on calendar storage/network.
+    freshness_note = await asyncio.to_thread(concept_snapshot_warning, evidence.get("tradeDate"),
+                                            evidence.get("dataAsOf"), forecast=True)
+    if freshness_note and freshness_note not in evidence.get("warnings", []):
+        evidence.setdefault("warnings", []).append(freshness_note)
     return evidence
 
 

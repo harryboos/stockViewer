@@ -6,7 +6,7 @@ import json
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, wait
-from datetime import datetime, timedelta
+from datetime import date, datetime, time as day_time, timedelta
 from typing import Any
 
 import requests
@@ -230,11 +230,43 @@ def recent_metrics(history: list[dict], trade_date: str) -> dict:
             "historySessions": len(bars), "historyAsOf": bars[-1]["date"] if bars else None}
 
 
+def concept_snapshot_warning(trade_date: str, updated_at: str, *, forecast: bool = False) -> str | None:
+    """Allow prior-date snapshots only for a verified, most recent closed session."""
+    action = "预测" if forecast else "推荐"
+    stale = f"板块数据仍是旧缓存，请先更新板块行情后再生成{action}"
+    today = date.fromisoformat(database.china_date())
+    try:
+        snapshot = datetime.fromisoformat(updated_at)
+        snapshot = snapshot.replace(tzinfo=database.CHINA_TZ) if snapshot.tzinfo is None else snapshot.astimezone(database.CHINA_TZ)
+        session = datetime.strptime(trade_date, "%Y%m%d").date()
+    except (TypeError, ValueError):
+        raise RuntimeError(stale) from None
+    # Preserve the existing same-day path; the exception below is for closed days.
+    if snapshot.date() == today:
+        return None
+    closed_at = datetime.combine(session, day_time(15, 10), database.CHINA_TZ)
+    if snapshot.date() > today or snapshot < closed_at:
+        raise RuntimeError(stale)
+
+    # Import lazily: forecast_prices uses ConceptResearchClient. Never use the
+    # weekday fallback in latest_trade_date() as proof of an exchange holiday.
+    from .forecast_prices import FeedbackPriceClient
+    try:
+        calendar = sorted({date.fromisoformat(value) for value in FeedbackPriceClient().calendar()})
+    except Exception:
+        raise RuntimeError("交易日历暂不可用，无法确认休市日缓存是否有效；请更新板块行情后重试") from None
+    if not calendar or calendar[0] > session or calendar[-1] < today:
+        raise RuntimeError("交易日历覆盖不足，无法确认休市日缓存是否有效；请更新板块行情后重试")
+    latest = max((day for day in calendar if day <= today), default=None)
+    if today in calendar or latest != session:
+        raise RuntimeError(stale)
+    return f"今日休市，使用最近交易日 {session.isoformat()} 的收盘后板块快照；行情日期与原更新时间保持不变"
+
+
 def collect_concept_evidence(*, forecast: bool = False) -> dict:
     overview = market_data.sector_overview(False)
     trade_date = overview["tradeDate"]
-    if not str(overview.get("updatedAt") or "").startswith(database.china_date()):
-        raise RuntimeError("板块数据仍是旧缓存，请先更新板块行情后再生成推荐")
+    freshness_note = concept_snapshot_warning(trade_date, overview.get("updatedAt"), forecast=forecast)
     boards = {row["code"]: row for row in [
         *overview.get("researchConcepts", overview["conceptBoards"]),
         *(row for row in overview.get("turnoverBoards", []) if row["kind"] == "concept"),
@@ -317,4 +349,5 @@ def collect_concept_evidence(*, forecast: bool = False) -> dict:
             "scope": (f"从概念涨幅榜与成交额榜选取{len(selected)}个活跃方向比较（非全市场穷举）。"
                       + ("保留短期回调方向，预测的是候选间的相对强势机会。" if forecast else
                          "优先近5/10日正收益方向；历史缺失或短期回调时，仅将当日上涨方向列为活跃观察。")),
-            "warnings": overview.get("warnings", []), "candidates": candidates}
+            "warnings": list(dict.fromkeys([*overview.get("warnings", []), *([freshness_note] if freshness_note else [])])),
+            "candidates": candidates}
