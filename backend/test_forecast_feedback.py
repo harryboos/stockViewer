@@ -321,15 +321,18 @@ class ArchiveTests(unittest.TestCase):
 
     def test_complete_tracking_day_is_not_fetched_repeatedly_but_missing_benchmark_retries(self):
         self.save()
-        tracked = {**outcome(), "status": "tracking"}
+        now = instant("2026-09-24T18:00:00")
+        database.set_meta("forecast_trade_calendar:v1", json.dumps({"dates": calendar_fixture()}))
         for days in (15, 30):
+            tracked = feedback.evaluate(report_fixture(), days, prices(),
+                {code: prices() for code in history.BENCHMARKS}, calendar_fixture(), now)
             self.put(1, days, tracked)
-        with database.connection() as db:
-            db.execute("UPDATE forecast_reports SET checked_at = ?", (database.china_date() + "T16:30:00+08:00",))
-        self.assertEqual(history.reports_to_refresh(), [])
-        tracked["benchmarks"]["sh000688"]["returnPct"] = None
-        self.put(1, 30, tracked)
-        self.assertEqual(len(history.reports_to_refresh()), 1)
+        with patch.object(history, "datetime") as clock:
+            clock.now.return_value = now
+            self.assertEqual(history.reports_to_refresh(), [])
+            tracked["benchmarks"]["sh000688"]["returnPct"] = None
+            self.put(1, 30, tracked)
+            self.assertEqual(len(history.reports_to_refresh()), 1)
 
     def test_outage_retains_dated_tracking_prices_without_finalizing_and_remains_retryable(self):
         self.save()

@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
+from bisect import bisect_right
+from datetime import date, datetime, time, timedelta
 
 from . import database
 from .report_storage import decode_result, encode_result
@@ -209,7 +210,24 @@ def feedback_context(as_of: datetime | None = None) -> dict:
             "limits": "仅已到期且已核对结果；重叠区间与重复概念非独立样本。30日是原15日预测的延伸观察。收益不证明因果或失效条件已经发生。"}
 
 
+def tracking_is_current(item: dict, calendar: list[str], now: datetime) -> bool:
+    """A completion timestamp does not prove the worker observed that day's close."""
+    closed = (now.date() if now.time() >= time(15, 10) else now.date() - timedelta(days=1)).isoformat()
+    if (item.get("status") != "tracking" or item.get("dataStatus") != "ready"
+            or not calendar or calendar[0] > closed or calendar[-1] < closed
+            or (item.get("targetDate") or "") <= closed):
+        return False  # An elapsed target still needs finalization, even over a holiday.
+    return item.get("exitDate") == calendar[bisect_right(calendar, closed) - 1]
+
+
 def reports_to_refresh(limit: int = 12) -> list[dict]:
+    from .forecast_prices import CALENDAR_KEY
+    now = datetime.now(database.CHINA_TZ)
+    try:
+        raw = json.loads(database.get_meta(CALENDAR_KEY) or "{}")
+        calendar = sorted({date.fromisoformat(day).isoformat() for day in raw.get("dates", [])})
+    except (AttributeError, TypeError, ValueError):
+        calendar = []
     with database.connection() as db:
         rows = db.execute(f"SELECT {OVERVIEW_COLUMNS} FROM forecast_reports ORDER BY checked_at IS NOT NULL, checked_at, id").fetchall()
         saved = {(row["report_id"], row["concept_code"], row["horizon_days"]): json.loads(row["result_json"])
@@ -229,10 +247,9 @@ def reports_to_refresh(limit: int = 12) -> list[dict]:
                 return True
             if item["status"] == "completed":
                 return False
-            checked = report["checkedAt"] or ""
-            # No new daily close is available after a successful post-close read.
-            # Missing sources continue retrying on the next scheduled batch.
-            return not (item["status"] == "tracking" and checked[:10] == today and checked[11:16] >= "15:10")
+            # Compare the actual observed session; a request starting before
+            # 15:10 may finish later while still containing yesterday's prices.
+            return not tracking_is_current(item, calendar, now)
 
         if any(needs_update(concept, days) for concept in report["result"]["concepts"] for days in HORIZONS):
             result.append(report)

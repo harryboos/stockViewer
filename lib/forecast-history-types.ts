@@ -25,7 +25,7 @@ export type HistoryEntry = {
   includedInStats: boolean; checkedAt: string | null; summary: string; window: ForecastResearch['window'];
   concepts: { code: string; name: string; outcomes: Record<Horizon, ForecastOutcome> }[];
 };
-export type FeedbackRefresh = { status: 'idle' | 'running' | 'succeeded' | 'failed'; finishedAt: string | null; error: string | null };
+export type FeedbackRefresh = { status: 'idle' | 'running' | 'succeeded' | 'failed'; startedAt?: string | null; finishedAt: string | null; error: string | null };
 export type ForecastHistoryData = {
   reports: HistoryEntry[]; page: number; pageSize: number; totalReports: number; forecastDays: number; abstentionDays: number;
   summaries: Record<Horizon, FeedbackSummary>; refresh: FeedbackRefresh; asOf: string;

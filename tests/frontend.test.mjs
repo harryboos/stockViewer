@@ -159,6 +159,87 @@ test('comparison distinguishes waiting requests from confirmed missing daily bar
   assert.ok(!mixed.includes('缺少日线 10 个概念'));
 });
 
+test('a lost job submission response yields to confirmed new task status, not an old success', async () => {
+  const { submissionMessage } = await server.ssrLoadModule('/lib/task-submission.ts');
+  const job = { key: 'comparison', name: '同期最强', status: 'succeeded', progress: {},
+    startedAt: '2026-10-01T09:00:00+08:00', finishedAt: '2026-10-01T09:02:00+08:00' };
+  const failure = { message: '请求等待超时', previousStartedAt: job.startedAt };
+  assert.equal(submissionMessage(failure, job.startedAt), failure.message, 'the preceding successful run does not confirm this submission');
+  assert.equal(submissionMessage(failure, '2026-10-01T08:00:00+08:00'), failure.message, 'an older late response does not confirm a newer task');
+  assert.equal(submissionMessage(failure, '2026-10-01T01:00:00Z'), failure.message, 'the same instant with another timezone is still the preceding run');
+  assert.equal(submissionMessage(failure, 'invalid'), failure.message);
+  assert.equal(submissionMessage(failure, null), failure.message);
+  const accepted = { ...job, status: 'running', startedAt: '2026-10-01T09:10:00+08:00', finishedAt: null };
+  assert.equal(submissionMessage(failure, accepted.startedAt), null, 'polling confirms the server accepted the disconnected request');
+  assert.equal(submissionMessage(failure, accepted.startedAt), null);
+  const failed = { ...accepted, status: 'failed', error: '概念行情来源暂不可用' };
+  assert.equal(submissionMessage(failure, failed.startedAt) || failed.error, failed.error, 'the actual task failure replaces the transport error');
+  assert.equal(submissionMessage({ message: failure.message, previousStartedAt: null }, accepted.startedAt), null, 'the first job can also be confirmed');
+  assert.equal(submissionMessage({ message: failure.message }, job.startedAt), failure.message, 'an unknown initial status is not evidence that an existing task is new');
+});
+
+test('fresh successful GETs of a prior task preserve submission failures and the saved forecast', async (t) => {
+  const { submissionMessage } = await server.ssrLoadModule('/lib/task-submission.ts');
+  const { startPolling } = await server.ssrLoadModule('/lib/polling.ts');
+  const before = { status: 'succeeded', startedAt: '2026-10-01T09:00:00+08:00', result: 'saved forecast' };
+  const methods = [];
+  t.mock.method(globalThis, 'fetch', async (_url, options) => {
+    methods.push(options.method || 'GET');
+    return options.method === 'POST'
+      ? new Response('{"error":"服务拒绝启动任务"}', { status: 401 })
+      : new Response(JSON.stringify(before));
+  });
+  let failure;
+  try { await client.jsonFetch('/test-forecast', { method: 'POST' }); }
+  catch (error) { failure = { message: error.message, previousStartedAt: before.startedAt }; }
+  let after;
+  let readError = '此前读取失败';
+  let stop;
+  t.after(() => stop?.());
+  await new Promise((resolve, reject) => {
+    const visibility = new EventTarget(); visibility.hidden = false;
+    stop = startPolling({ visibility, interval: 0,
+      read: signal => client.jsonFetch('/test-forecast', { signal }),
+      onValue: value => { after = value; readError = null; resolve(); }, onError: reject,
+    });
+  });
+  assert.equal(submissionMessage(failure, after.startedAt), '服务拒绝启动任务');
+  assert.equal(after.result, 'saved forecast');
+  assert.equal(readError, null, 'only the read error is repaired by reading the preceding run');
+  assert.deepEqual(methods, ['POST', 'GET'], 'recovery must not automatically submit paid work again');
+});
+
+test('suspending status reads for submission rejects late old results and resumes read-only recovery', async () => {
+  const { startPolling } = await server.ssrLoadModule('/lib/polling.ts');
+  const visibility = new EventTarget();
+  visibility.hidden = false;
+  const state = { status: 'succeeded', result: 'saved forecast' };
+  let resolveOld;
+  let oldSignal;
+  const stop = startPolling({ visibility, interval: 0,
+    read: signal => { oldSignal = signal; return new Promise(resolve => { resolveOld = resolve; }); },
+    onValue: value => Object.assign(state, value), onError: assert.fail,
+  });
+  stop();
+  Object.assign(state, { status: 'running', previousResult: state.result });
+  resolveOld({ status: 'succeeded', result: 'saved forecast' });
+  await Promise.resolve(); await Promise.resolve();
+  assert.equal(oldSignal.aborted, true);
+  assert.equal(state.status, 'running', 'an old status read must not re-enable generation after the new task starts');
+  assert.equal(state.previousResult, 'saved forecast');
+  let resumedReads = 0;
+  const stopRecovery = startPolling({ visibility, interval: 0,
+    read: async () => { resumedReads += 1; return { status: 'failed', error: '行情暂不可用', previousResult: 'saved forecast' }; },
+    onValue: value => Object.assign(state, value), onError: assert.fail,
+  });
+  await Promise.resolve(); await Promise.resolve();
+  stopRecovery();
+  assert.equal(resumedReads, 1);
+  assert.equal(state.status, 'failed');
+  assert.equal(state.previousResult, 'saved forecast', 'recovery preserves the last successful forecast');
+  assert.equal(state.error, '行情暂不可用');
+});
+
 test('research job requests preserve the job key and block cross-site execution', async (t) => {
   const fetch = t.mock.method(globalThis, 'fetch', async (url, options) => {
     assert.equal(new URL(url).searchParams.get('key'), 'comparison');

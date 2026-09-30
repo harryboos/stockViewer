@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from . import ai, database
 from .concept_data import collect_concept_evidence
 from .concept_news import enrich_world_news
+from .run_dispatch import shared_start
 
 PROMPT_VERSION = "concept-v3-glm53-max"
 PROVIDER: ai.Provider = "glm"
@@ -196,6 +197,11 @@ async def _execute(run_date: str, key: str, token: str) -> None:
 
 
 async def start_concept_run(force: bool = False) -> dict:
+    return await shared_start(("concept", str(database.DATABASE_PATH), database.china_date(), force),
+                              lambda: _start_concept_run(force), _tasks)
+
+
+async def _start_concept_run(force: bool) -> dict:
     current = await asyncio.to_thread(get_concept_run)
     if current["status"] in ("not_configured", "running") or (current["status"] == "succeeded" and not force):
         return current
@@ -212,8 +218,4 @@ async def start_concept_run(force: bool = False) -> dict:
             task.add_done_callback(_tasks.discard)
         return await asyncio.to_thread(get_concept_run)
 
-    # Complete the durable claim/worker handoff even if the browser disconnects.
-    launch = asyncio.create_task(claim_and_launch())
-    _tasks.add(launch)
-    launch.add_done_callback(_tasks.discard)
-    return await asyncio.shield(launch)
+    return await claim_and_launch()

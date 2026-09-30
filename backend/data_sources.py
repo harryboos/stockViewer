@@ -1030,14 +1030,25 @@ class MarketDataService:
                 counts[kind] = len(rows)
                 rising_counts[kind] = sum(1 for item in rows if item["pctChg"] > 0)
 
-            if not category_rows.get("industry") and not category_rows.get("concept"):
+            # An industry-only refresh must not erase the last usable concept
+            # snapshot. Keep its date and values together; combining today's
+            # industries with older concepts under one date would be misleading.
+            cached_concepts = (cached.get("researchConcepts") or cached.get("conceptBoards")
+                               or [row for row in cached.get("turnoverBoards", []) if row.get("kind") == "concept"]
+                              ) if isinstance(cached, dict) else []
+            preserve_concepts = not category_rows.get("concept") and bool(cached_concepts)
+            no_boards = not category_rows.get("industry") and not category_rows.get("concept")
+            if no_boards or preserve_concepts:
                 if debug_errors:
                     logger.warning("板块数据获取异常，沿用最近成功快照：%s", "；".join(debug_errors))
                 if isinstance(cached, dict):
                     fallback = {**cached}
                     fallback["warnings"] = list(dict.fromkeys([*cached.get("warnings", []), "板块数据已使用最近成功缓存"]))
-                    fallback.update(refreshStatus="failed", refreshAttemptedAt=database.now_iso(),
-                                    refreshError="行业与概念板块行情源均未返回有效数据，已保留最近成功快照")
+                    message = ("行业与概念板块行情源均未返回有效数据，已保留最近成功快照" if no_boards else
+                               "概念板块行情源暂未返回有效数据，已保留最近成功的完整板块快照")
+                    fallback.update(refreshStatus="failed" if no_boards else "partial",
+                                    refreshAttemptedAt=database.now_iso(), refreshError=message,
+                                    usingCachedSnapshot=True)
                     return fallback
                 raise RuntimeError("行业与概念板块数据暂不可用")
 

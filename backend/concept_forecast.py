@@ -18,6 +18,7 @@ from .concept_data import collect_concept_evidence, concept_snapshot_warning
 from .concept_news import enrich_world_news
 from .forecast_data import forecast_window
 from .forecast_history import feedback_context
+from .run_dispatch import shared_start
 
 PROMPT_VERSION = "forecast-v4-concise-glm53-max"
 RUN_NAMESPACE = "forecast:glm"
@@ -275,6 +276,11 @@ async def _execute(run_date: str, key: str, token: str) -> None:
 
 
 async def start_forecast_run(force: bool = False) -> dict:
+    return await shared_start(("forecast", str(database.DATABASE_PATH), database.china_date(), force),
+                              lambda: _start_forecast_run(force), _tasks)
+
+
+async def _start_forecast_run(force: bool) -> dict:
     current = await asyncio.to_thread(get_forecast_run)
     if current["status"] in ("not_configured", "running") or (current["status"] == "succeeded" and not force):
         return current
@@ -290,8 +296,4 @@ async def start_forecast_run(force: bool = False) -> dict:
             task.add_done_callback(_tasks.discard)
         return await asyncio.to_thread(get_forecast_run)
 
-    # Once SQLite claims a run, a disconnected browser must not prevent its worker from starting.
-    launch = asyncio.create_task(claim_and_launch())
-    _tasks.add(launch)
-    launch.add_done_callback(_tasks.discard)
-    return await asyncio.shield(launch)
+    return await claim_and_launch()

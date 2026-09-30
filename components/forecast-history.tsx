@@ -8,6 +8,7 @@ import type { BenchmarkCode, FeedbackRefresh, FeedbackSummary, ForecastHistoryDa
 import { ComparisonPanel } from './research-panels';
 import { JobButton } from './research-common';
 import { startPolling } from '@/lib/polling';
+import { submissionMessage, type SubmissionFailure } from '@/lib/task-submission';
 
 const benchmarks = [['sh000001', '上证指数'], ['sh000688', '科创50']] as const;
 const rate = (value: number | null) => value === null ? '—' : `${value.toFixed(1)}%`;
@@ -60,21 +61,28 @@ export function ForecastHistory({ finishedAt, renderResearch }: { finishedAt?: s
   const [days, setDays] = useState<Horizon>('15');
   const [page, setPage] = useState(1);
   const [revision, setRevision] = useState(0);
-  const [error, setError] = useState<string | null>(null);
+  const [readError, setReadError] = useState<string | null>(null);
+  const [submissionFailure, setSubmissionFailure] = useState<SubmissionFailure | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [selected, setSelected] = useState<number | null>(null);
   const [report, setReport] = useState<{ id: number; result: ForecastResearch } | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
   const mutation = useRef<AbortController | null>(null);
+  const stopPollingRef = useRef<(() => void) | null>(null);
 
   useEffect(() => () => mutation.current?.abort(), []);
-  useEffect(() => startPolling<ForecastHistoryData>({
-    read: signal => jsonFetch<ForecastHistoryData>(`/api/forecast/history?page=${page}`, { signal, cache: 'no-store' }),
-    onValue: next => { setData(next); setError(null); },
-    onError: cause => setError(errorMessage(cause, '历史预测读取失败')),
-    interval: next => next?.refresh.status === 'running' ? 3000 : 30_000,
-    retryInterval: 10_000,
-  }), [page, revision, finishedAt]);
+  useEffect(() => {
+    if (mutation.current) return;
+    const stop = startPolling<ForecastHistoryData>({
+      read: signal => jsonFetch<ForecastHistoryData>(`/api/forecast/history?page=${page}`, { signal, cache: 'no-store' }),
+      onValue: next => { setData(next); setReadError(null); },
+      onError: cause => setReadError(errorMessage(cause, '历史预测读取失败')),
+      interval: next => next?.refresh.status === 'running' ? 3000 : 30_000,
+      retryInterval: 10_000,
+    });
+    stopPollingRef.current = stop;
+    return () => { stop(); if (stopPollingRef.current === stop) stopPollingRef.current = null; };
+  }, [page, revision, finishedAt]);
 
   useEffect(() => {
     if (selected === null) return;
@@ -88,15 +96,22 @@ export function ForecastHistory({ finishedAt, renderResearch }: { finishedAt?: s
   async function update() {
     if (mutation.current || data?.refresh.status === 'running') return;
     const controller = new AbortController(); mutation.current = controller;
-    setSubmitting(true); setError(null);
+    stopPollingRef.current?.();
+    setSubmitting(true); setReadError(null); setSubmissionFailure(null);
     try {
       const refresh = await jsonFetch<FeedbackRefresh>('/api/forecast/history', { method: 'POST', signal: controller.signal });
-      if (!controller.signal.aborted) { setData(value => value ? { ...value, refresh } : value); setRevision(value => value + 1); }
-    } catch (cause) { if (!controller.signal.aborted) setError(errorMessage(cause, '更新实际表现失败')); }
-    finally { mutation.current = null; if (!controller.signal.aborted) setSubmitting(false); }
+      if (!controller.signal.aborted) setData(value => value ? { ...value, refresh } : value);
+    } catch (cause) {
+      if (!controller.signal.aborted) setSubmissionFailure({ message: errorMessage(cause, '更新实际表现失败'), previousStartedAt: data ? data.refresh.startedAt ?? null : undefined });
+    }
+    finally {
+      mutation.current = null;
+      if (!controller.signal.aborted) { setSubmitting(false); setRevision(value => value + 1); }
+    }
   }
 
   const busy = submitting || data?.refresh.status === 'running';
+  const error = submissionMessage(submissionFailure, data?.refresh.startedAt) || readError;
   return <section className="concept-ai-section forecast-history-section" aria-labelledby="forecast-history-title" aria-busy={busy}>
     <div className="concept-ai-heading"><div><p className="eyebrow">预测 → 实际表现 → 反馈</p><h2 id="forecast-history-title">历史预测与准确率</h2><p>保留当时的判断，用之后的行情检验，让下一次预测有据可循。</p></div><div className="research-filters"><button className="refresh-button" disabled={busy || !data?.totalReports} onClick={update}>{busy ? '正在核对行情…' : '更新实际表现'}</button><JobButton jobKey="comparison" label="核对同期最强" /></div></div>
     {error && <p className="concept-ai-error" role="alert">{error} <button onClick={() => setRevision(value => value + 1)}>重试</button></p>}

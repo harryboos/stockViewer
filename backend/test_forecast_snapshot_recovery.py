@@ -100,6 +100,16 @@ class ForecastSnapshotRecoveryTests(unittest.TestCase):
                 concept_data._concept_overview(True)
         self.assertEqual(refresh.call_args_list, [call(False), call(True)])
 
+    def test_partially_failed_refresh_does_not_retry_or_use_an_outdated_concept_cache(self):
+        stale = {**self.old, "refreshStatus": "partial", "usingCachedSnapshot": True,
+                 "refreshError": "概念板块行情源暂未返回有效数据，已保留最近成功的完整板块快照"}
+        with (patch.object(concept_data.market_data, "sector_overview", return_value=stale) as refresh,
+              patch.object(concept_data.ConceptResearchClient, "daily_history") as prices):
+            with self.assertRaisesRegex(RuntimeError, "2026-09-21.*2026-09-30.*概念板块行情源"):
+                concept_data.collect_concept_evidence(forecast=True)
+        refresh.assert_called_once_with(False)
+        prices.assert_not_called()
+
 
 class SectorQuoteTimestampTests(unittest.TestCase):
     def setUp(self):
@@ -150,6 +160,60 @@ class SectorQuoteTimestampTests(unittest.TestCase):
         self.assertIn("原有提示", result["warnings"])
         self.mocks[2].assert_not_called()
         self.assertNotIn("refreshStatus", cached)
+
+    def test_industry_only_refresh_preserves_latest_closed_concepts_for_holiday_forecast(self):
+        instant = now("2026-10-01T10:00:00")
+        self.mocks[3].return_value = instant.isoformat()
+        self.mocks[4].now.return_value = instant
+        board = {**evidence_fixture()["candidates"][0], "kind": "concept"}
+        cached = {"tradeDate": "20260930", "updatedAt": "2026-09-30T16:00:00+08:00",
+                  "quoteAsOf": "2026-09-30T15:39:30+08:00", "warnings": ["原有提示"],
+                  "industryBoards": [{"code": "BK2001", "name": "原行业", "pctChg": 1}],
+                  "conceptBoards": [board], "researchConcepts": [board]}
+        original = copy.deepcopy(cached)
+        self.mocks[1].return_value = cached
+        industry = {"板块代码": "BK2002", "板块名称": "本次行业", "涨跌幅": 2,
+                    "上涨家数": 2, "下跌家数": 1, "行情时间": now("2026-09-30T15:39:30").timestamp()}
+        with (patch.object(self.service, "_industry_name_frame", return_value=(pd.DataFrame([industry]), "行业源")),
+              patch.object(self.service, "_concept_name_frame", side_effect=RuntimeError("concept offline")),
+              patch.object(self.service, "_sector_fund_flow_frame", return_value=(pd.DataFrame(), "资金源")),
+              patch.object(self.service, "_enrich_board_turnover") as turnover,
+              self.assertLogs("backend.data_sources", level="WARNING")):
+            result = self.service.sector_overview(True)
+        for key in ("tradeDate", "updatedAt", "quoteAsOf", "industryBoards", "conceptBoards", "researchConcepts"):
+            self.assertEqual(result[key], original[key])
+        self.assertEqual(result["refreshStatus"], "partial")
+        self.assertTrue(result["usingCachedSnapshot"])
+        self.assertEqual(result["refreshAttemptedAt"], instant.isoformat())
+        self.assertIn("概念板块行情源", result["refreshError"])
+        self.assertEqual(cached, original)
+        turnover.assert_not_called()
+        for index in (2, 5, 6):
+            self.mocks[index].assert_not_called()
+        with (patch.object(concept_data.market_data, "sector_overview", return_value=result) as refresh,
+              patch.object(FeedbackPriceClient, "calendar", return_value=CALENDAR),
+              patch.object(concept_data.ConceptResearchClient, "daily_history", return_value=[]),
+              patch.object(concept_data.ConceptResearchClient, "strong_stocks", return_value=[])):
+            evidence = concept_data.collect_concept_evidence(forecast=True)
+        refresh.assert_called_once_with(False)
+        self.assertEqual(evidence["tradeDate"], "20260930")
+        self.assertEqual(evidence["dataAsOf"], original["updatedAt"])
+        self.assertEqual(evidence["candidates"][0]["code"], board["code"])
+        self.assertTrue(any("今日休市" in warning for warning in evidence["warnings"]))
+
+    def test_industry_only_cold_refresh_does_not_invent_concepts(self):
+        industry = {"板块代码": "BK2002", "板块名称": "测试行业", "涨跌幅": 2,
+                    "上涨家数": 2, "下跌家数": 1}
+        with (patch.object(self.service, "_industry_name_frame", return_value=(pd.DataFrame([industry]), "行业源")),
+              patch.object(self.service, "_concept_name_frame", return_value=(pd.DataFrame(), "概念源")),
+              patch.object(self.service, "_sector_fund_flow_frame", return_value=(pd.DataFrame(), "资金源")),
+              patch.object(self.service, "_enrich_board_turnover", return_value=([], 0))):
+            result = self.service.sector_overview(True)
+        self.assertEqual(result["refreshStatus"], "partial")
+        self.assertEqual(result["conceptBoards"], [])
+        self.assertEqual(result["researchConcepts"], [])
+        self.assertNotIn("usingCachedSnapshot", result)
+        self.assertEqual(result["industryBoards"][0]["code"], "BK2002")
 
 
 class SectorRefreshJobStatusTests(unittest.TestCase):

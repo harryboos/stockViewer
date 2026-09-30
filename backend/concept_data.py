@@ -296,7 +296,7 @@ def _concept_overview(forecast: bool) -> tuple[dict, str | None]:
                                             quote_as_of=overview.get("quoteAsOf"))
             return overview, note
         except RuntimeError as error:
-            if attempt or overview.get("refreshStatus") == "failed":
+            if attempt or overview.get("refreshStatus") == "failed" or overview.get("usingCachedSnapshot"):
                 detail = overview.get("refreshError")
                 suffix = f"；{detail}" if detail else "；已自动尝试更新，尚未取得符合日期要求的板块行情"
                 raise RuntimeError(f"{error}{suffix}") from None

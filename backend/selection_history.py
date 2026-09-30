@@ -6,10 +6,10 @@ from datetime import datetime, date, time
 
 from . import database
 from .forecast_feedback import evaluate
-from .forecast_history import BENCHMARKS, summarize
+from .forecast_history import BENCHMARKS, summarize, tracking_is_current
 from .forecast_prices import FeedbackPriceClient, normalize_bars
 from .research_data import stock_history, history_request, index_history, last_closed_day, fetch_batch
-from .research_pool import history_result
+from .research_pool import HISTORY_WAITING_KINDS, history_result
 
 HORIZONS = (5, 10, 20)
 
@@ -70,8 +70,7 @@ def refresh_selections(progress) -> dict:
                     item[0].get("benchmarks", {}).get(code, {}).get("returnPct") is not None for code in BENCHMARKS)
             if all(ready(item) for item in old):
                 continue
-            if all(item and item[1][:10] == database.china_date() and item[1][11:16] >= "15:10"
-                   and item[0].get("dataStatus") == "ready" and all(
+            if all(item and (ready(item) or tracking_is_current(item[0], calendar, now)) and all(
                        item[0].get("benchmarks", {}).get(code, {}).get("returnPct") is not None for code in BENCHMARKS)
                    for item in old):
                 continue
@@ -83,46 +82,54 @@ def refresh_selections(progress) -> dict:
     index_requests = list(dict.fromkeys(history_request(code, report["published_at"][:10], end, closed=end)
                                        for _, report, _ in batch for code in BENCHMARKS))
     index_prices = fetch_batch(index_requests, lambda item: index_history(*item), background=True)
-    missing, waiting = 0, 0
+    missing, waiting, benchmark_waiting = 0, 0, 0
     attempted = getattr(histories, "attempted", set(histories))
     for index, (_, report, pick) in enumerate(batch):
         if (pick["code"] not in attempted or
-                getattr(histories, "errors", {}).get(pick["code"]) in {"timeout", "busy", "not_started"}):
+                getattr(histories, "errors", {}).get(pick["code"]) in HISTORY_WAITING_KINDS):
             waiting += 1
             continue
         start = report["published_at"][:10]
         indexes = {code: history_result(index_prices, history_request(code, start, end, closed=end)) for code in BENCHMARKS}
         for n in HORIZONS:
             value = selection_outcome(report, n, histories.get(pick["code"], []), indexes, calendar, now)
-            if (value.get("dataStatus") == "unavailable" or value["status"] == "missing_data"
-                    or (value.get("returnPct") is not None and any(
-                        value.get("benchmarks", {}).get(code, {}).get("returnPct") is None for code in BENCHMARKS))):
+            if value.get("dataStatus") == "unavailable" or value["status"] == "missing_data":
                 missing += 1
-            old = saved.get((report["id"], pick["code"], n))
-            if old and old[0].get("returnPct") is not None:
-                if value.get("returnPct") is None:
-                    value = old[0] if old[0]["status"] == "completed" else {
-                        **old[0], "status": value["status"], "dataStatus": "unavailable",
-                        "note": "行情暂不可用，保留上次核对日期与价格；阶段表现不计入最终统计"}
-                elif old[0]["status"] == "completed":
-                    original = old[0]
-                    if value["entryDate"] == original["entryDate"] and value["exitDate"] == original["exitDate"]:
-                        paired = dict(original.get("benchmarks", {}))
-                        for code in BENCHMARKS:
-                            update = value.get("benchmarks", {}).get(code, {})
-                            if paired.get(code, {}).get("returnPct") is None and update.get("returnPct") is not None:
-                                paired[code] = {**update, "excessPct": round(original["returnPct"] - update["returnPct"], 4)}
-                        value = {**original, "benchmarks": paired}
-                    else:
-                        value = original
+            elif value.get("returnPct") is not None:
+                absent = [code for code in BENCHMARKS if value.get("benchmarks", {}).get(code, {}).get("returnPct") is None]
+                if any(indexes[code].get("errorKind") not in HISTORY_WAITING_KINDS for code in absent):
+                    missing += 1
+                elif absent:
+                    benchmark_waiting += 1
             with database._write_lock, database.connection() as db:
+                db.execute("BEGIN IMMEDIATE")
+                current = db.execute("SELECT result_json FROM selection_outcomes WHERE report_id=? AND code=? AND sessions=?",
+                                     (report["id"], pick["code"], n)).fetchone()
+                original = json.loads(current[0]) if current else None
+                # Re-read under the write transaction: another process may have
+                # completed its audit while this worker was fetching prices.
+                if original and original.get("returnPct") is not None:
+                    if value.get("returnPct") is None:
+                        value = original if original["status"] == "completed" else {
+                            **original, "status": value["status"], "dataStatus": "unavailable",
+                            "note": "行情暂不可用，保留上次核对日期与价格；阶段表现不计入最终统计"}
+                    elif original["status"] == "completed":
+                        if value["entryDate"] == original["entryDate"] and value["exitDate"] == original["exitDate"]:
+                            paired = dict(original.get("benchmarks", {}))
+                            for code in BENCHMARKS:
+                                update = value.get("benchmarks", {}).get(code, {})
+                                if paired.get(code, {}).get("returnPct") is None and update.get("returnPct") is not None:
+                                    paired[code] = {**update, "excessPct": round(original["returnPct"] - update["returnPct"], 4)}
+                            value = {**original, "benchmarks": paired}
+                        else:
+                            value = original
                 db.execute("INSERT OR REPLACE INTO selection_outcomes VALUES (?,?,?,?,?)",
                            (report["id"], pick["code"], n, json.dumps(value, ensure_ascii=False), database.now_iso()))
         progress(index + 1, len(batch), "核对选股后的真实日线")
     if missing:
         raise RuntimeError(f"本批有 {missing} 项选股观察缺少完整个股或基准日线，已保留此前结果，可稍后重试")
-    if waiting:
-        raise RuntimeError(f"本批有 {waiting} 项选股行情尚未取得查询结果，保留此前结果，可继续核对")
+    if waiting or benchmark_waiting:
+        raise RuntimeError(f"本批有 {waiting} 项选股行情、{benchmark_waiting} 项基准行情尚未取得查询结果，保留此前结果，可继续核对")
     return {"checked": len(batch) - waiting, "remaining": max(0, len(pending) - len(batch)) + waiting}
 
 
