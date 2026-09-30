@@ -15,6 +15,7 @@ from . import database
 from .config import MARKET
 from .eastmoney import EastmoneyClient
 from .tencent import TencentClient
+from .source_errors import BoardSourceError, source_failure_reason
 from .storage_policy import (
     CONCEPT_CACHE_VERSION, SECTOR_OVERVIEW_CACHE_VERSION,
     MARKET_INTRADAY_PAIR_CACHE_VERSION, MARKET_INTRADAY_INDEX_CACHE_VERSION,
@@ -549,30 +550,31 @@ class MarketDataService:
             return None
 
     def _concept_name_frame(self) -> tuple[Any, str]:
-        errors: list[str] = []
-        if MARKET.eastmoney_delay_enabled:
-            try:
-                return self._eastmoney_client.concept_name_frame(), "东方财富概念板块备用线路"
-            except Exception as error:
-                errors.append(f"备用线路：{error}")
-        try:
-            return self._akshare().stock_board_concept_name_em(), "AKShare · 东方财富概念板块"
-        except Exception as error:
-            errors.append(f"AKShare：{error}")
-        raise RuntimeError("；".join(errors) or "概念板块获取失败")
+        return self._board_name_frame("concept")
 
     def _industry_name_frame(self) -> tuple[Any, str]:
+        return self._board_name_frame("industry")
+
+    def _board_name_frame(self, kind: str) -> tuple[Any, str]:
+        label = "概念" if kind == "concept" else "行业"
         errors: list[str] = []
+        readers = []
         if MARKET.eastmoney_delay_enabled:
+            readers.append(("东财备用", f"东方财富{label}板块备用线路",
+                            getattr(self._eastmoney_client, f"{kind}_name_frame")))
+        readers.append(("AKShare", f"AKShare · 东方财富{label}板块",
+                        lambda: getattr(self._akshare(), f"stock_board_{kind}_name_em")()))
+        for route, source, read in readers:
             try:
-                return self._eastmoney_client.industry_name_frame(), "东方财富行业板块备用线路"
+                frame = read()
+                if frame is None or getattr(frame, "empty", True):
+                    raise RuntimeError("返回空数据")
+                if not self._board_rows(kind, frame, None, []):
+                    raise RuntimeError("返回无效数据")
+                return frame, source
             except Exception as error:
-                errors.append(f"备用线路：{error}")
-        try:
-            return self._akshare().stock_board_industry_name_em(), "AKShare · 东方财富行业板块"
-        except Exception as error:
-            errors.append(f"AKShare：{error}")
-        raise RuntimeError("；".join(errors) or "行业板块获取失败")
+                errors.append(f"{route}：{source_failure_reason(error)}")
+        raise BoardSourceError("；".join(errors))
 
     def _sector_fund_flow_frame(self, kind: str) -> tuple[Any, str]:
         errors: list[str] = []
@@ -962,6 +964,7 @@ class MarketDataService:
             cached = self._cached_json(cache_key)
             warnings: list[str] = []
             debug_errors: list[str] = []
+            board_errors: list[str] = []
             sources: list[str] = []
             try:
                 snapshot = self.market_snapshot(force=force)
@@ -991,6 +994,7 @@ class MarketDataService:
                     sources.append(board_source)
                 except Exception as error:
                     debug_errors.append(f"{label}板块：{error}")
+                    board_errors.append(f"{label}（{error if isinstance(error, BoardSourceError) else source_failure_reason(error)}）")
                     warnings.append(f"{label}板块暂不可用")
                     category_rows[kind] = []
                     counts[kind] = 0
@@ -1026,6 +1030,8 @@ class MarketDataService:
                 if snapshot and quoted_on and not aligned_stocks:
                     warnings.append(f"{label}龙头股报价与板块日期不一致，暂不展示旧价格")
                 rows = self._board_rows(kind, board_frame, fund_frame, aligned_stocks)
+                if not rows:
+                    board_errors.append(f"{label}（返回空数据或无有效板块报价）")
                 category_rows[kind] = rows
                 counts[kind] = len(rows)
                 rising_counts[kind] = sum(1 for item in rows if item["pctChg"] > 0)
@@ -1046,11 +1052,13 @@ class MarketDataService:
                     fallback["warnings"] = list(dict.fromkeys([*cached.get("warnings", []), "板块数据已使用最近成功缓存"]))
                     message = ("行业与概念板块行情源均未返回有效数据，已保留最近成功快照" if no_boards else
                                "概念板块行情源暂未返回有效数据，已保留最近成功的完整板块快照")
+                    if board_errors:
+                        message += "。原因：" + "；".join(board_errors)
                     fallback.update(refreshStatus="failed" if no_boards else "partial",
                                     refreshAttemptedAt=database.now_iso(), refreshError=message,
                                     usingCachedSnapshot=True)
                     return fallback
-                raise RuntimeError("行业与概念板块数据暂不可用")
+                raise RuntimeError("行业与概念板块数据暂不可用" + ("。原因：" + "；".join(board_errors) if board_errors else ""))
 
             concept_quote = category_quotes.get("concept")
             if concept_quote is not None:
@@ -1092,15 +1100,18 @@ class MarketDataService:
                 key=lambda item: float(item["mainNetInflow"]),
                 default=None,
             )
+            refresh_error = "；".join(f"{label}板块行情源暂未返回有效数据"
+                                     for kind, label in (("industry", "行业"), ("concept", "概念"))
+                                     if not category_rows.get(kind))
+            if refresh_error and board_errors:
+                refresh_error += "。原因：" + "；".join(board_errors)
             result = {
                 "tradeDate": trade_date,
                 "quoteAsOf": concept_quote.isoformat(timespec="seconds") if concept_quote else None,
                 "updatedAt": database.now_iso(),
                 "refreshStatus": "succeeded" if all(category_rows.get(kind) for kind in ("industry", "concept")) else "partial",
                 "refreshAttemptedAt": database.now_iso(),
-                "refreshError": "；".join(f"{label}板块行情源暂未返回有效数据"
-                                             for kind, label in (("industry", "行业"), ("concept", "概念"))
-                                             if not category_rows.get(kind)) or None,
+                "refreshError": refresh_error or None,
                 "source": " · ".join(dict.fromkeys(sources)) or "AKShare · 东方财富板块",
                 "summary": {
                     "industryCount": counts.get("industry", 0),

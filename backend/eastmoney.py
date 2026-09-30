@@ -114,84 +114,83 @@ class EastmoneyClient:
         ]
         deadline = time.monotonic() + 60
         last_error: Exception | None = None
-        active: tuple[str, requests.Session] | None = None
-        first_payload: dict[str, Any] | None = None
-
-        for url, trust_env in routes:
+        for index, (url, trust_env) in enumerate(routes):
             if time.monotonic() >= deadline:
-                break
+                raise RuntimeError("东方财富分页行情获取超时") from last_error
             session = self._session(trust_env)
             try:
-                first_payload = self._request_page(url, session, params, 1, deadline=deadline)
-                active = (url, session)
-                break
+                # A usable first page does not prove the route can supply a
+                # complete snapshot. Restart at page one on the next route;
+                # never combine pages from hosts with potentially different data.
+                return self._fetch_route(
+                    url, session, params, deadline=deadline,
+                    page_attempts=1 if index < len(routes) - 1 else 3,
+                )
             except (requests.RequestException, ValueError, RuntimeError) as error:
                 last_error = error
+            finally:
                 session.close()
+        raise RuntimeError(f"东方财富备用线路连接失败：{last_error or '未知错误'}") from last_error
 
-        if active is None or first_payload is None:
-            raise RuntimeError(f"东方财富备用线路连接失败：{last_error or '未知错误'}")
+    def _fetch_route(
+        self, url: str, session: requests.Session, params: dict[str, str],
+        *, deadline: float, page_attempts: int,
+    ) -> list[dict[str, Any]]:
+        first_payload = self._request_page(url, session, params, 1, deadline=deadline)
+        rows = list(first_payload["diff"])
+        if not rows:
+            raise RuntimeError("东方财富备用线路没有返回行情")
+        total = int(first_payload.get("total") or 0)
+        if total > 20_000 or total < len(rows):
+            raise RuntimeError("东方财富备用线路分页总数异常")
+        identities: set[str] = set()
+        check_identity = "f12" in params.get("fields", "").split(",")
 
-        url, session = active
-        try:
-            rows = list(first_payload["diff"])
-            if not rows:
-                raise RuntimeError("东方财富备用线路没有返回行情")
-            total = int(first_payload.get("total") or 0)
-            if total > 20_000 or total < len(rows):
-                raise RuntimeError("东方财富备用线路分页总数异常")
-            identities: set[str] = set()
-            check_identity = "f12" in params.get("fields", "").split(",")
+        def check_page(items: list[dict[str, Any]]) -> None:
+            for row in items:
+                if not isinstance(row, dict):
+                    raise RuntimeError("东方财富备用线路分页格式异常")
+                if check_identity:
+                    identity = str(row.get("f12") or "")
+                    if not identity or identity in identities:
+                        raise RuntimeError("东方财富备用线路存在无效代码或重复分页")
+                    identities.add(identity)
 
-            def check_page(items: list[dict[str, Any]]) -> None:
-                for row in items:
-                    if not isinstance(row, dict):
-                        raise RuntimeError("东方财富备用线路分页格式异常")
-                    # All production callers request f12; reject overlap before
-                    # it can inflate breadth, turnover or constituent counts.
-                    if check_identity:
-                        identity = str(row.get("f12") or "")
-                        if not identity or identity in identities:
-                            raise RuntimeError("东方财富备用线路存在无效代码或重复分页")
-                        identities.add(identity)
-
-            check_page(rows)
-            page_count = max(1, math.ceil(total / max(len(rows), 1)))
-            for page in range(2, page_count + 1):
+        check_page(rows)
+        page_count = max(1, math.ceil(total / max(len(rows), 1)))
+        for page in range(2, page_count + 1):
+            if time.monotonic() >= deadline:
+                raise RuntimeError("东方财富分页行情获取超时")
+            if self.settings.eastmoney_page_delay_seconds:
+                jitter = random.uniform(
+                    0, min(self.settings.eastmoney_page_delay_seconds / 2, 0.2),
+                )
+                time.sleep(self.settings.eastmoney_page_delay_seconds + jitter)
+            page_error: Exception | None = None
+            for attempt in range(page_attempts):
                 if time.monotonic() >= deadline:
                     raise RuntimeError("东方财富分页行情获取超时")
-                if self.settings.eastmoney_page_delay_seconds:
-                    jitter = random.uniform(
-                        0,
-                        min(self.settings.eastmoney_page_delay_seconds / 2, 0.2),
-                    )
-                    time.sleep(self.settings.eastmoney_page_delay_seconds + jitter)
-                page_error: Exception | None = None
-                for attempt in range(3):
-                    if time.monotonic() >= deadline:
-                        raise RuntimeError("东方财富分页行情获取超时")
-                    try:
-                        payload = self._request_page(url, session, params, page, deadline=deadline)
-                        if not payload["diff"]:
-                            raise RuntimeError("分页提前结束，行情数据不完整")
-                        page_error = None
-                        break
-                    except (requests.RequestException, ValueError, RuntimeError) as error:
-                        page_error = error
-                        time.sleep(0.35 * (attempt + 1))
-                if page_error is not None:
-                    raise RuntimeError(
-                        f"东方财富备用线路第 {page} 页获取失败：{page_error}"
-                    ) from page_error
-                if int(payload.get("total") or 0) != total:
-                    raise RuntimeError("东方财富备用线路分页总数发生变化，请重新获取")
-                check_page(payload["diff"])
-                rows.extend(payload["diff"])
-            if len(rows) != total:
-                raise RuntimeError("东方财富备用线路返回了不完整行情")
-            return rows
-        finally:
-            session.close()
+                try:
+                    payload = self._request_page(url, session, params, page, deadline=deadline)
+                    if not payload["diff"]:
+                        raise RuntimeError("分页提前结束，行情数据不完整")
+                    page_error = None
+                    break
+                except (requests.RequestException, ValueError, RuntimeError) as error:
+                    page_error = error
+                    # Do not spend three read timeouts on a failed route while
+                    # another route is still available within the shared budget.
+                    if attempt + 1 < page_attempts:
+                        time.sleep(min(0.35 * (attempt + 1), max(0, deadline - time.monotonic())))
+            if page_error is not None:
+                raise RuntimeError(f"东方财富备用线路第 {page} 页获取失败：{page_error}") from page_error
+            if int(payload.get("total") or 0) != total:
+                raise RuntimeError("东方财富备用线路分页总数发生变化，请重新获取")
+            check_page(payload["diff"])
+            rows.extend(payload["diff"])
+        if len(rows) != total:
+            raise RuntimeError("东方财富备用线路返回了不完整行情")
+        return rows
 
     def spot_frame(self) -> pd.DataFrame:
         params = {

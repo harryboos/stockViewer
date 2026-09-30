@@ -2,6 +2,8 @@ import { spawn } from 'node:child_process';
 import { resolve } from 'node:path';
 
 const root = resolve(import.meta.dirname, '..');
+// Forward both the historical CLI and --boards/--board-timeout unchanged.
+// Board requests enforce their own process-level deadlines in the Python CLI.
 const child = spawn(resolve(root, '.venv/bin/python'), ['-m', 'backend.probe_sources', ...process.argv.slice(2)], {
   cwd: root, stdio: 'inherit', env: process.env,
 });

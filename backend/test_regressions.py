@@ -23,7 +23,9 @@ from backend.tencent import TencentClient
 class DataRegressionTests(unittest.TestCase):
     def test_empty_first_page_does_not_trigger_thousands_of_requests(self) -> None:
         client = EastmoneyClient()
-        with (patch.object(client, "_session", return_value=Mock()),
+        with (patch.object(client, "_hosts", return_value=["test.eastmoney.com"]),
+              patch("backend.eastmoney.requests.utils.get_environ_proxies", return_value={}),
+              patch.object(client, "_session", return_value=Mock()),
               patch.object(client, "_request_page", return_value={"total": 6000, "diff": []}) as request):
             with self.assertRaisesRegex(RuntimeError, "没有返回行情"):
                 client.fetch_pages("82", {})

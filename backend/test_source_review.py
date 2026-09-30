@@ -100,7 +100,9 @@ class HistoryCoverageReviewTests(unittest.TestCase):
 class SnapshotTransportReviewTests(unittest.TestCase):
     def test_duplicate_pages_do_not_become_a_complete_snapshot(self):
         client, session = EastmoneyClient(), Mock()
-        with (patch.object(client, "_session", return_value=session),
+        with (patch.object(client, "_hosts", return_value=["test.eastmoney.com"]),
+              patch("backend.eastmoney.requests.utils.get_environ_proxies", return_value={}),
+              patch.object(client, "_session", return_value=session),
               patch.object(client, "_request_page", side_effect=[
                   {"total": 4, "diff": [{"f12": "600001"}, {"f12": "600002"}]},
                   {"total": 4, "diff": [{"f12": "600001"}, {"f12": "600002"}]},
@@ -113,7 +115,10 @@ class SnapshotTransportReviewTests(unittest.TestCase):
         for last in ({"total": 5, "diff": [{"f12": "600003"}, {"f12": "600004"}]},
                      {"total": 3, "diff": [{"f12": "600003"}, {"f12": "600004"}]}):
             client = EastmoneyClient()
-            with (self.subTest(last=last), patch.object(client, "_session", return_value=Mock()),
+            with (self.subTest(last=last),
+                  patch.object(client, "_hosts", return_value=["test.eastmoney.com"]),
+                  patch("backend.eastmoney.requests.utils.get_environ_proxies", return_value={}),
+                  patch.object(client, "_session", return_value=Mock()),
                   patch.object(client, "_request_page", side_effect=[
                       {"total": 3, "diff": [{"f12": "600001"}, {"f12": "600002"}]}, last]),
                   patch("backend.eastmoney.time.sleep")):
@@ -122,7 +127,9 @@ class SnapshotTransportReviewTests(unittest.TestCase):
 
     def test_snapshot_deadline_stops_following_pages(self):
         client = EastmoneyClient()
-        with (patch.object(client, "_session", return_value=Mock()),
+        with (patch.object(client, "_hosts", return_value=["test.eastmoney.com"]),
+              patch("backend.eastmoney.requests.utils.get_environ_proxies", return_value={}),
+              patch.object(client, "_session", return_value=Mock()),
               patch.object(client, "_request_page", return_value={"total": 2, "diff": [{"f12": "600001"}]}) as fetch,
               patch("backend.eastmoney.time.monotonic", side_effect=[0, 0, 61])):
             with self.assertRaisesRegex(RuntimeError, "超时"):
