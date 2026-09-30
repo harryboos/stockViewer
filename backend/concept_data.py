@@ -232,6 +232,7 @@ def recent_metrics(history: list[dict], trade_date: str) -> dict:
 
 def concept_snapshot_warning(
     trade_date: str, updated_at: str, *, forecast: bool = False, now: datetime | None = None,
+    quote_as_of: str | None = None,
 ) -> str | None:
     """Check quote session as well as fetch time; refetching cannot freshen old quotes."""
     action = "预测" if forecast else "推荐"
@@ -244,16 +245,23 @@ def concept_snapshot_warning(
         snapshot = datetime.fromisoformat(updated_at)
         snapshot = snapshot.replace(tzinfo=database.CHINA_TZ) if snapshot.tzinfo is None else snapshot.astimezone(database.CHINA_TZ)
         session = datetime.strptime(trade_date, "%Y%m%d").date()
+        quote = datetime.fromisoformat(quote_as_of) if quote_as_of else None
+        if quote is not None:
+            quote = quote.replace(tzinfo=database.CHINA_TZ) if quote.tzinfo is None else quote.astimezone(database.CHINA_TZ)
     except (TypeError, ValueError):
         raise RuntimeError(stale) from None
-    if snapshot > now or session > today:
+    if snapshot > now or session > today or (quote and (quote.date() != session or quote > snapshot)):
         raise RuntimeError(stale)
     # A same-day quote is direct evidence of a current session. An old quote
     # fetched today still needs the calendar checks below.
     if snapshot.date() == today and session == today:
+        if forecast and now.time() >= day_time(15, 10) and snapshot.time() < day_time(15, 10):
+            raise RuntimeError(f"{stale}；当日已收盘，现有快照仍是盘中数据（{snapshot.strftime('%H:%M')}）")
+        if forecast and now.time() >= day_time(15, 10) and quote and quote.time() < day_time(15):
+            raise RuntimeError(f"{stale}；当日已收盘，行情源仍仅更新至 {quote.strftime('%H:%M')}")
         return None
     closed_at = datetime.combine(session, day_time(15, 10), database.CHINA_TZ)
-    if snapshot < closed_at:
+    if snapshot < closed_at or (quote and quote.time() < day_time(15)):
         raise RuntimeError(stale)
 
     # Import lazily: forecast_prices uses ConceptResearchClient. Never use the
@@ -267,17 +275,38 @@ def concept_snapshot_warning(
         raise RuntimeError("交易日历覆盖不足，无法确认休市日缓存是否有效；请更新板块行情后重试")
     trading_today = today in calendar
     before_open = trading_today and now.time() < day_time(9, 30)
-    latest = max((day for day in calendar if day < today or (day == today and not before_open)), default=None)
-    if (trading_today and not before_open) or latest != session:
-        raise RuntimeError(stale)
-    state = "开盘前" if before_open else "今日休市"
+    # A forward-looking forecast may use the latest completed session while
+    # today's session is still incomplete. Daily recommendations stay current.
+    completed_only = trading_today and forecast and now.time() < day_time(15, 10)
+    previous_session = before_open or completed_only
+    latest = max((day for day in calendar if day < today or (day == today and not previous_session)), default=None)
+    if (trading_today and not previous_session) or latest != session:
+        expected = latest.isoformat() if latest else "最近交易日"
+        raise RuntimeError(f"{stale}；现有行情为 {session.isoformat()}，当前需要 {expected} 的行情")
+    state = "开盘前" if before_open else "当日尚未收盘，本次预测不含当日盘中变化" if completed_only else "今日休市"
     return f"{state}，使用最近交易日 {session.isoformat()} 的收盘后板块快照；行情日期与原更新时间保持不变"
 
 
-def collect_concept_evidence(*, forecast: bool = False) -> dict:
+def _concept_overview(forecast: bool) -> tuple[dict, str | None]:
+    """Refresh a stale memory snapshot once, without repeating a known failed fetch."""
     overview = market_data.sector_overview(False)
+    for attempt in range(2):
+        try:
+            note = concept_snapshot_warning(overview.get("tradeDate"), overview.get("updatedAt"), forecast=forecast,
+                                            quote_as_of=overview.get("quoteAsOf"))
+            return overview, note
+        except RuntimeError as error:
+            if attempt or overview.get("refreshStatus") == "failed":
+                detail = overview.get("refreshError")
+                suffix = f"；{detail}" if detail else "；已自动尝试更新，尚未取得符合日期要求的板块行情"
+                raise RuntimeError(f"{error}{suffix}") from None
+            overview = market_data.sector_overview(True)
+    raise AssertionError("unreachable")
+
+
+def collect_concept_evidence(*, forecast: bool = False) -> dict:
+    overview, freshness_note = _concept_overview(forecast)
     trade_date = overview["tradeDate"]
-    freshness_note = concept_snapshot_warning(trade_date, overview.get("updatedAt"), forecast=forecast)
     boards = {row["code"]: row for row in [
         *overview.get("researchConcepts", overview["conceptBoards"]),
         *(row for row in overview.get("turnoverBoards", []) if row["kind"] == "concept"),
@@ -305,7 +334,7 @@ def collect_concept_evidence(*, forecast: bool = False) -> dict:
             "mainNetInflow": board.get("mainNetInflow"), **metrics, "stocks": stocks, "warnings": warnings,
             "strengthStatus": "recent_strength" if sustained else "today_active",
             "evidence": [{"id": f"{code}:market", "kind": "data", "title": "概念行情与可用历史表现",
-                          "source": "东方财富概念板块", "publishedAt": overview["updatedAt"],
+                          "source": "东方财富概念板块", "publishedAt": overview.get("quoteAsOf") or overview["updatedAt"],
                           "url": f"https://quote.eastmoney.com/bk/90.{code}.html", "excerpt": "见本卡片行情指标与成份股快照"}],
         }
         if history and history[-1].get("historySource"):
@@ -333,7 +362,8 @@ def collect_concept_evidence(*, forecast: bool = False) -> dict:
 
     selected = list(boards.values())[:MARKET_RESEARCH_LIMIT]
     if not selected:
-        raise RuntimeError("暂未取得可用的概念板块行情，请更新板块后重试")
+        detail = overview.get("refreshError") or "请更新板块后重试"
+        raise RuntimeError(f"暂未取得可用的概念板块行情；{detail}")
     executor = ThreadPoolExecutor(max_workers=6, thread_name_prefix="concept-evidence")
     futures = {executor.submit(enrich, board): board for board in selected}
     candidates = []
@@ -353,7 +383,7 @@ def collect_concept_evidence(*, forecast: bool = False) -> dict:
         candidates = [row for row in candidates if row["strengthStatus"] == "recent_strength" or row["pctChg"] > 0]
     candidates.sort(key=lambda row: (row["strengthStatus"] == "recent_strength", bool(row["stocks"]),
                                      row["change5d"] if row["change5d"] is not None else row["pctChg"], row["code"]), reverse=True)
-    return {"tradeDate": trade_date, "dataAsOf": overview["updatedAt"],
+    return {"tradeDate": trade_date, "dataAsOf": overview["updatedAt"], "quoteAsOf": overview.get("quoteAsOf"),
             "comparisonUniverse": {"asOf": overview["updatedAt"],
                 "scope": "预测当时可获取的全部有效概念" if overview.get("conceptUniverse") else "预测当时可获取的概念候选（非全市场）",
                 "boards": overview.get("conceptUniverse") or [{"code": row["code"], "name": row["name"]} for row in selected]},

@@ -207,10 +207,21 @@ class ConceptRunTests(unittest.IsolatedAsyncioTestCase):
         date = database.china_date()
         token = database.start_ai_run("deepseek", ai.model_for("deepseek"), date, ai.PROMPT_VERSION)
         database.finish_ai_run("deepseek", date, {"title": "选股缓存"}, None, token)
+        release_model = asyncio.Event()
+
+        async def model_result(*args, **kwargs):
+            await release_model.wait()
+            return result_fixture()
+
         with (patch.object(concept_ai, "collect_concept_evidence", return_value=evidence_fixture()),
-              patch.object(ai, "_call_compatible", new_callable=AsyncMock, return_value=result_fixture()) as call):
-            runs = await asyncio.gather(*(concept_ai.start_concept_run(True) for _ in range(4)))
-            self.assertTrue(all(run["status"] == "running" for run in runs))
+              patch.object(ai, "_call_compatible", new_callable=AsyncMock, side_effect=model_result) as call):
+            try:
+                # Keep the model active while concurrent starts are observed;
+                # an instantaneous mock may validly finish before the final read.
+                runs = await asyncio.gather(*(concept_ai.start_concept_run(True) for _ in range(4)))
+                self.assertTrue(all(run["status"] == "running" for run in runs))
+            finally:
+                release_model.set()
             await asyncio.gather(*list(concept_ai._tasks))
             self.assertEqual(concept_ai.get_concept_run()["status"], "succeeded")
             await concept_ai.start_concept_run()

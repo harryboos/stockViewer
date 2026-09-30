@@ -42,7 +42,8 @@ async def collect_evidence() -> dict:
     # A shared slow fetch can cross midnight. Revalidate against the current
     # exchange day without blocking the event loop on calendar storage/network.
     freshness_note = await asyncio.to_thread(concept_snapshot_warning, evidence.get("tradeDate"),
-                                            evidence.get("dataAsOf"), forecast=True)
+                                            evidence.get("dataAsOf"), forecast=True,
+                                            quote_as_of=evidence.get("quoteAsOf"))
     if freshness_note and freshness_note not in evidence.get("warnings", []):
         evidence.setdefault("warnings", []).append(freshness_note)
     return evidence

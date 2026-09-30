@@ -52,6 +52,10 @@ def decode_calendar(encoded: str) -> list[str]:
 
 
 class FeedbackPriceClient(ConceptResearchClient):
+    @staticmethod
+    def known_calendar() -> tuple[str, ...]:
+        return _known_calendar
+
     def calendar(self) -> list[str]:
         # All consumers share the same durable calendar and initialization lock.
         global _known_calendar
@@ -151,4 +155,4 @@ class FeedbackPriceClient(ConceptResearchClient):
                 failures.append(str(error) if isinstance(error, (RuntimeError, ValueError)) else f"{name}日线格式异常")
         if best:
             return best
-        return {"rows": [], "source": None, "url": None, "error": "；".join(failures)}
+        return {"rows": [], "source": None, "url": None, "error": "；".join(failures), "errorKind": "unavailable"}

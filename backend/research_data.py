@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import json
 import threading
+import time as clock
+from collections import OrderedDict
+from copy import deepcopy
 from datetime import datetime, timedelta, time
 from weakref import WeakValueDictionary
 
@@ -10,26 +13,51 @@ from . import database
 from .concept_data import ConceptResearchClient
 from .data_sources import market_data
 from .forecast_prices import FeedbackPriceClient
+from .history_sources import history_covers_window
 from .research_store import cache_get, cache_put
-from .research_pool import fetch_batch
+from .research_pool import HISTORY_WAITING_KINDS, fetch_batch, history_result
 
 _locks_guard = threading.Lock()
 _locks: WeakValueDictionary = WeakValueDictionary()
+_recent_failures: OrderedDict = OrderedDict()
 
 
-def shared_read(key: str, fetch, seconds: int = 900):
-    cached = cache_get(key, seconds)
+def shared_read(key: str, fetch, seconds: int = 900, *, empty_seconds: float = 0, complete=None):
+    def read_cached():
+        value = cache_get(key, seconds)
+        # Incomplete windows need an early retry when a provider catches up;
+        # complete closed-price windows can retain the usual one-hour cache.
+        if value is not None and complete is not None and not complete(value):
+            value = cache_get(key, min(seconds, 60))
+        if value is not None:
+            return value
+        with _locks_guard:
+            failure = _recent_failures.get((str(database.DATABASE_PATH), key))
+            if failure and failure[0] > clock.monotonic():
+                return deepcopy(failure[1])
+        return None
+
+    cached = read_cached()
     if cached is not None:
         return cached
     with _locks_guard:
         lock = _locks.setdefault(key, threading.Lock())
     with lock:
-        cached = cache_get(key, seconds)
+        cached = read_cached()
         if cached is not None:
             return cached
         value = fetch()
         if value and (not isinstance(value, dict) or "rows" not in value or value["rows"]):
             cache_put(key, value)
+        elif empty_seconds and isinstance(value, dict) and "rows" in value:
+            # Share one outage response with waiting readers without saving an
+            # empty daily series to durable storage or creating a retry stampede.
+            with _locks_guard:
+                failure_key = (str(database.DATABASE_PATH), key)
+                _recent_failures[failure_key] = (clock.monotonic() + empty_seconds, deepcopy(value))
+                _recent_failures.move_to_end(failure_key)
+                while len(_recent_failures) > 512:
+                    _recent_failures.popitem(last=False)
         return value
 
 
@@ -38,14 +66,21 @@ def stock_history(symbol: str) -> list[dict]:
     return shared_read(f"stock-history:{symbol}", lambda: market_data.history(symbol, 740), 900)
 
 
-def index_history(code: str, start: str, end: str) -> dict:
+def history_request(code: str, start: str, end: str, *, closed: str | None = None) -> tuple[str, str, str]:
     # Recent overlapping reports and both horizons share one closed-price window per symbol.
-    closed = last_closed_day()
+    closed = closed or last_closed_day()
     recent = (datetime.fromisoformat(closed).date() - timedelta(days=100)).isoformat()
     if start >= recent:
         start, end = recent, closed
+    return code, start, end
+
+
+def index_history(code: str, start: str, end: str) -> dict:
+    code, start, end = history_request(code, start, end)
     return shared_read(f"evaluation:{code}:{start}:{end}",
-                       lambda: FeedbackPriceClient().history(code, start, end), 3600)
+                       lambda: FeedbackPriceClient().history(code, start, end), 3600,
+                       empty_seconds=30, complete=lambda value: history_covers_window(
+                           value.get("rows", []), start, end, FeedbackPriceClient.known_calendar()))
 
 
 def stock_basic(symbol: str) -> dict:
@@ -134,12 +169,19 @@ def refresh_rotation(progress) -> dict:
     attempted = saved.get("attempted", {})
     pending.sort(key=lambda board: attempted.get(board["code"], ""))
     progress(0, min(40, len(pending)), "核对概念轮动日线")
-    prices = fetch_batch([board["code"] for board in pending[:40]], lambda code: index_history(code, start, end))
-    refreshed = 0
+    prices = fetch_batch([board["code"] for board in pending[:40]], lambda code: index_history(code, start, end), background=True)
+    refreshed, missing, waiting = 0, 0, 0
+    attempted_requests = getattr(prices, "attempted", set(prices))
     # Incremental batches keep hundreds of concept histories from blocking other modules.
-    for index, board in enumerate(pending[:40]):
-        data = prices.get(board["code"], {})
+    for board in pending[:40]:
+        if board["code"] not in attempted_requests:
+            waiting += 1
+            continue
+        data = history_result(prices, board["code"])
         attempted[board["code"]] = database.now_iso()
+        if data.get("errorKind") in HISTORY_WAITING_KINDS:
+            waiting += 1
+            continue
         rows = {row["date"]: row for row in data.get("rows", [])}
         expected = closed[-26:]
         if all(day in rows for day in expected):
@@ -149,16 +191,19 @@ def refresh_rotation(progress) -> dict:
             previous = {str(n): round((closes[-6] / closes[-n-6] - 1) * 100, 4) for n in (5, 10, 20)}
             records[board["code"]] = {**board, "returns": returns, "previousReturns": previous,
                                        "asOf": end, "path": [{"date": day, "close": rows[day]["close"]} for day in expected]}
-        progress(index + 1, min(40, len(pending)), "核对概念轮动日线")
+        else:
+            missing += 1
+        progress(refreshed + missing, min(40, len(pending)), "核对概念轮动日线")
     allowed = {board["code"] for board in universe["boards"]}
     updated = sum(row.get('asOf') == end for code, row in records.items() if code in allowed)
     result = {"items": [row for code, row in records.items() if code in allowed], "asOf": end if updated else saved.get('asOf', end),
               "totalCount": len(allowed), "universeAsOf": universe["asOf"], "updatedAt": database.now_iso(),
               "attempted": {code: value for code, value in attempted.items() if code in allowed}}
     cache_put("rotation", result)
-    missing = min(40, len(pending)) - refreshed
     if missing:
-        raise RuntimeError(f'本批已核对 {refreshed} 项，仍有 {missing} 项概念日线不完整；已保留此前结果，稍后可继续分批核对')
+        raise RuntimeError(f'本批已核对 {refreshed} 项，仍有 {missing} 项概念日线不完整，另有 {waiting} 项等待读取；已保留此前结果，稍后可继续分批核对')
+    if waiting:
+        raise RuntimeError(f'本批已核对 {refreshed} 项，仍有 {waiting} 项轮动行情尚未取得查询结果；不计作日线缺失，可继续核对')
     return result
 
 

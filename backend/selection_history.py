@@ -8,7 +8,8 @@ from . import database
 from .forecast_feedback import evaluate
 from .forecast_history import BENCHMARKS, summarize
 from .forecast_prices import FeedbackPriceClient, normalize_bars
-from .research_data import stock_history, index_history, last_closed_day, fetch_batch
+from .research_data import stock_history, history_request, index_history, last_closed_day, fetch_batch
+from .research_pool import history_result
 
 HORIZONS = (5, 10, 20)
 
@@ -77,14 +78,20 @@ def refresh_selections(progress) -> dict:
             pending.append((min((item[1] if item else "") for item in old), report, pick))
     batch = sorted(pending, key=lambda item: (item[0], item[1]["id"]))[:24]
     progress(0, len(batch), "核对选股后的真实日线")
-    histories = fetch_batch(list({pick["code"] for _, _, pick in batch}), stock_history)
+    histories = fetch_batch(list(dict.fromkeys(pick["code"] for _, _, pick in batch)), stock_history, background=True)
     end = last_closed_day(now)
-    index_requests = list({(code, report["published_at"][:10], end) for _, report, _ in batch for code in BENCHMARKS})
-    index_prices = fetch_batch(index_requests, lambda item: index_history(*item))
-    missing = 0
+    index_requests = list(dict.fromkeys(history_request(code, report["published_at"][:10], end, closed=end)
+                                       for _, report, _ in batch for code in BENCHMARKS))
+    index_prices = fetch_batch(index_requests, lambda item: index_history(*item), background=True)
+    missing, waiting = 0, 0
+    attempted = getattr(histories, "attempted", set(histories))
     for index, (_, report, pick) in enumerate(batch):
+        if (pick["code"] not in attempted or
+                getattr(histories, "errors", {}).get(pick["code"]) in {"timeout", "busy", "not_started"}):
+            waiting += 1
+            continue
         start = report["published_at"][:10]
-        indexes = {code: index_prices.get((code, start, end), {"rows": []}) for code in BENCHMARKS}
+        indexes = {code: history_result(index_prices, history_request(code, start, end, closed=end)) for code in BENCHMARKS}
         for n in HORIZONS:
             value = selection_outcome(report, n, histories.get(pick["code"], []), indexes, calendar, now)
             if (value.get("dataStatus") == "unavailable" or value["status"] == "missing_data"
@@ -114,7 +121,9 @@ def refresh_selections(progress) -> dict:
         progress(index + 1, len(batch), "核对选股后的真实日线")
     if missing:
         raise RuntimeError(f"本批有 {missing} 项选股观察缺少完整个股或基准日线，已保留此前结果，可稍后重试")
-    return {"checked": len(batch), "remaining": max(0, len(pending) - len(batch))}
+    if waiting:
+        raise RuntimeError(f"本批有 {waiting} 项选股行情尚未取得查询结果，保留此前结果，可继续核对")
+    return {"checked": len(batch) - waiting, "remaining": max(0, len(pending) - len(batch)) + waiting}
 
 
 def history_payload(sessions: int = 10, page: int = 1, strategy: str = "") -> dict:

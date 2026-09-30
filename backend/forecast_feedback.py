@@ -12,7 +12,7 @@ from uuid import uuid4
 from . import database
 from .forecast_history import BENCHMARKS, HORIZONS, REFRESH_KEY, audited_timestamp, reports_to_refresh, refresh_status
 from .forecast_prices import CalendarUnavailableError, FeedbackPriceClient
-from .research_pool import fetch_batch
+from .research_pool import HISTORY_WAITING_KINDS, fetch_batch, history_result
 
 logger = logging.getLogger(__name__)
 _tasks: set[asyncio.Task] = set()
@@ -129,7 +129,7 @@ def refresh_feedback(token: str) -> None:
     # A process-local guard also prevents overlap if a stale lease is reclaimed.
     if not _refresh_lock.acquire(blocking=False):
         return
-    error, checked, ready, unavailable = None, 0, 0, 0
+    error, checked, ready, unavailable, waiting = None, 0, 0, 0, 0
     try:
         reports = reports_to_refresh()
         if not reports:
@@ -137,33 +137,49 @@ def refresh_feedback(token: str) -> None:
         client = FeedbackPriceClient()
         calendar = client.calendar()
         now = datetime.now(database.CHINA_TZ)
+        from .research_data import history_request, index_history, last_closed_day
+        closed = last_closed_day(now)
         requests = set()
         for report in reports:
             start, end = bounds(report, 30)
             for code in [*BENCHMARKS, *(c["code"] for c in report["result"]["concepts"])]:
-                requests.add((code, start.isoformat(), min(end, now.date()).isoformat()))
+                requests.add(history_request(code, start.isoformat(), min(end, now.date()).isoformat(), closed=closed))
         # Share successful same-symbol reads with comparison/rotation workers.
-        from .research_data import index_history
         prices = fetch_batch(sorted(requests), lambda item: index_history(*item))
+        attempted = getattr(prices, "attempted", set(prices))
         if len(prices) < len(requests):
             error = "部分行情请求失败或等待超时，已核对可用数据并保留此前结果，可稍后重试"
         for report in reports:
             start, end = bounds(report, 30)
             span = (start.isoformat(), min(end, now.date()).isoformat())
-            indexes = {code: prices.get((code, *span), {"rows": []}) for code in BENCHMARKS}
+            indexes = {code: history_result(prices, history_request(code, *span, closed=closed)) for code in BENCHMARKS}
             results = []
             for concept in report["result"]["concepts"]:
+                request = history_request(concept["code"], *span, closed=closed)
+                if request not in attempted:
+                    waiting += len(HORIZONS)
+                    continue
                 for days in HORIZONS:
-                    history = prices.get((concept["code"], *span), {
-                        "rows": [], "error": "行情请求未完成（等待超时或后台任务繁忙）"})
+                    history = history_result(prices, request)
                     value = evaluate(report, days, history, indexes, calendar, now)
-                    if value.get("dataStatus") == "unavailable":
+                    if history.get("errorKind"):
+                        value["errorKind"] = history["errorKind"]
+                    if history.get("errorKind") in HISTORY_WAITING_KINDS:
+                        waiting += 1
+                        value["note"] = history.get("error") or "尚未取得行情查询结果"
+                        value.pop("missingDates", None)
+                    elif value.get("dataStatus") == "unavailable":
                         unavailable += 1
                     elif value.get("returnPct") is not None:
                         ready += 1
                         if any(item.get("returnPct") is None for item in value["benchmarks"].values()):
-                            unavailable += 1
+                            if any(data.get("errorKind") in HISTORY_WAITING_KINDS for data in indexes.values()):
+                                waiting += 1
+                            else:
+                                unavailable += 1
                     results.append((concept["code"], days, value))
+            if not results:
+                continue
             with database._write_lock, database.connection() as db:
                 db.execute("BEGIN IMMEDIATE")
                 state = json.loads(db.execute("SELECT value FROM app_meta WHERE key = ?", (REFRESH_KEY,)).fetchone()["value"])
@@ -197,10 +213,13 @@ def refresh_feedback(token: str) -> None:
                     value["checkedAt"] = database.now_iso()
                     db.execute("INSERT OR REPLACE INTO forecast_feedback VALUES (?, ?, ?, ?, ?)",
                                (report["id"], code, days, json.dumps(value, ensure_ascii=False), value["checkedAt"]))
-                db.execute("UPDATE forecast_reports SET checked_at = ? WHERE id = ?", (database.now_iso(), report["id"]))
-            checked += 1
+                if any(value.get("errorKind") not in HISTORY_WAITING_KINDS for _, _, value in results):
+                    db.execute("UPDATE forecast_reports SET checked_at = ? WHERE id = ?", (database.now_iso(), report["id"]))
+                    checked += 1
         if unavailable:
-            error = f"本次核对 {ready} 项概念收益，仍有 {unavailable} 项概念或基准日线不完整，已保留此前结果，可稍后重试"
+            error = f"本次核对 {ready} 项概念收益，仍有 {unavailable} 项概念或基准日线不完整，另有 {waiting} 项等待读取；已保留此前结果，可稍后重试"
+        elif waiting:
+            error = f"本次核对 {ready} 项概念收益，仍有 {waiting} 项因来源不可用、排队或等待超时尚未核对；不计作日线缺失，可稍后重试"
     except CalendarUnavailableError as exc:
         error = str(exc)
     except Exception:
@@ -213,7 +232,8 @@ def refresh_feedback(token: str) -> None:
                 state = json.loads(row["value"]) if row else {}
                 if state.get("token") == token:
                     state.update(status="failed" if error else "succeeded", finishedAt=database.now_iso(),
-                                 error=error, reportsChecked=checked, outcomesReady=ready, outcomesMissing=unavailable)
+                                 error=error, reportsChecked=checked, outcomesReady=ready, outcomesMissing=unavailable,
+                                 outcomesWaiting=waiting)
                     db.execute("UPDATE app_meta SET value = ?, updated_at = ? WHERE key = ?",
                                (json.dumps(state, ensure_ascii=False), database.now_iso(), REFRESH_KEY))
         finally:

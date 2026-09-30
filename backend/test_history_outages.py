@@ -37,6 +37,7 @@ class HistoryTransportTests(unittest.TestCase):
             result = client.history("BK1152", "2026-09-18", "2026-09-21")
         self.assertEqual(result["rows"], [])
         self.assertEqual(result["error"], message)
+        self.assertEqual(result["errorKind"], "unavailable")
 
 
 class HistoryOutageTests(unittest.TestCase):
@@ -73,7 +74,7 @@ class HistoryOutageTests(unittest.TestCase):
         clock.now.return_value = self.now
         clock.combine, clock.fromisoformat = datetime.combine, datetime.fromisoformat
 
-    def test_empty_feedback_marks_refresh_failed_with_actual_missing_dates(self):
+    def test_empty_feedback_marks_refresh_failed_without_claiming_missing_dates(self):
         token = forecast_feedback.claim_refresh()
         with (patch.object(FeedbackPriceClient, "calendar", return_value=calendar_fixture()),
               patch("backend.research_data.index_history", side_effect=self.outage),
@@ -82,11 +83,13 @@ class HistoryOutageTests(unittest.TestCase):
             forecast_feedback.refresh_feedback(token)
         data = forecast_history.history_payload(as_of=self.now)
         self.assertEqual(data["refresh"]["status"], "failed")
-        self.assertEqual(data["refresh"]["outcomesMissing"], 6)
+        self.assertEqual(data["refresh"]["outcomesMissing"], 0)
+        self.assertEqual(data["refresh"]["outcomesWaiting"], 6)
         outcome = data["reports"][0]["concepts"][0]["outcomes"]["15"]
         self.assertIsNone(outcome["returnPct"])
         self.assertEqual(outcome["status"], "tracking")
-        self.assertEqual(outcome["missingDates"], ["2026-09-18", "2026-09-21"])
+        self.assertFalse(outcome.get("missingDates"))
+        self.assertNotIn("缺少", outcome["note"])
         self.assertIn("连接中断", outcome["note"])
 
     def test_comparison_failure_is_visible_and_recovery_can_rank_the_same_window(self):
@@ -99,7 +102,8 @@ class HistoryOutageTests(unittest.TestCase):
         self.assertEqual(research_jobs.job_status("comparison")["status"], "failed")
         payload = concept_comparison.comparison_payload(1, 15, self.now)
         self.assertEqual(payload["coveredCount"], 0)
-        self.assertEqual(payload["missingCount"], 3)
+        self.assertEqual(payload["missingCount"], 0)
+        self.assertEqual(payload["waitingCount"], 3)
         self.assertIn("连接中断", payload["message"])
         self.assertIsNone(payload["strongest"])
         self.assertIsNotNone(payload["lastCheckedAt"])
@@ -121,10 +125,25 @@ class HistoryOutageTests(unittest.TestCase):
               patch.object(concept_comparison, "index_history", side_effect=history),
               patch.object(concept_comparison, "datetime") as clock):
             self.clock(clock)
-            with self.assertRaisesRegex(RuntimeError, "已核对 2/6"):
+            with self.assertRaisesRegex(RuntimeError, "已核对 2 项，仍有 4 项尚未取得查询结果"):
                 concept_comparison.refresh_comparisons(Mock())
         payload = concept_comparison.comparison_payload(1, 15, self.now)
         self.assertEqual(payload["coveredCount"], 1)
-        self.assertEqual(payload["missingCount"], 2)
+        self.assertEqual(payload["missingCount"], 0)
+        self.assertEqual(payload["waitingCount"], 2)
         self.assertEqual(payload["strongest"]["code"], "BK1152")
         self.assertFalse(payload["fullCoverage"])
+
+    def test_successful_query_with_incomplete_bars_still_lists_actual_gaps(self):
+        partial = self.healthy()
+        partial["rows"] = partial["rows"][:1]
+        with (patch.object(FeedbackPriceClient, "calendar", return_value=calendar_fixture()),
+              patch.object(concept_comparison, "index_history", return_value=partial),
+              patch.object(concept_comparison, "datetime") as clock):
+            self.clock(clock)
+            with self.assertRaisesRegex(RuntimeError, "日线缺失或不连续"):
+                concept_comparison.refresh_comparisons(Mock())
+        payload = concept_comparison.comparison_payload(1, 15, self.now)
+        self.assertEqual(payload["missingCount"], 3)
+        self.assertEqual(payload["waitingCount"], 0)
+        self.assertIn("2026-09-21", payload["message"])

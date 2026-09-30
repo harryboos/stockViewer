@@ -64,7 +64,9 @@ def _run(key: str, token: str) -> None:
                 raise RuntimeError("实时行情暂不可用，已保留最近成功快照，稍后可重试")
             progress(1, 1, "大盘行情已更新")
         elif key == "sectors":
-            market_data.sector_overview(True)
+            result = market_data.sector_overview(True)
+            if result.get("refreshStatus") in {"failed", "partial"}:
+                raise RuntimeError(result.get("refreshError") or "板块行情未完整更新，已保留可用快照，稍后可重试")
             progress(1, 1, "板块行情已更新")
         else:
             {"selections": refresh_selections, "rotation": refresh_rotation, "comparison": refresh_comparisons}[key](progress)

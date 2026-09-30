@@ -964,7 +964,7 @@ class MarketDataService:
             debug_errors: list[str] = []
             sources: list[str] = []
             try:
-                snapshot = self.market_snapshot(force=False)
+                snapshot = self.market_snapshot(force=force)
             except Exception as error:
                 snapshot = []
                 warnings.append("龙头股行情暂不可用")
@@ -977,6 +977,7 @@ class MarketDataService:
             trade_date = max(trade_dates) if trade_dates else self.latest_trade_date()
 
             category_rows: dict[str, list[dict[str, Any]]] = {}
+            category_quotes: dict[str, datetime] = {}
             counts: dict[str, int] = {}
             rising_counts: dict[str, int] = {}
             for kind in ("industry", "concept"):
@@ -1004,17 +1005,45 @@ class MarketDataService:
                     debug_errors.append(f"{label}资金：{error}")
                     warnings.append(f"{label}资金流暂不可用")
 
-                rows = self._board_rows(kind, board_frame, fund_frame, snapshot)
+                # A stock snapshot may still be yesterday's cache even after a
+                # board refresh. Prefer the board provider's own quote date.
+                if "行情时间" in board_frame:
+                    quoted = []
+                    for value in board_frame["行情时间"]:
+                        stamp = number_or_none(value)
+                        if stamp is None or stamp < 1_000_000_000:
+                            continue
+                        try:
+                            at = datetime.fromtimestamp(stamp, database.CHINA_TZ)
+                        except (ValueError, OverflowError, OSError):
+                            continue
+                        if at <= datetime.now(database.CHINA_TZ):
+                            quoted.append(at)
+                    if quoted:
+                        category_quotes[kind] = max(quoted)
+                quoted_on = category_quotes[kind].strftime("%Y%m%d") if kind in category_quotes else None
+                aligned_stocks = [row for row in snapshot if row.get("tradeDate") == quoted_on] if quoted_on else snapshot
+                if snapshot and quoted_on and not aligned_stocks:
+                    warnings.append(f"{label}龙头股报价与板块日期不一致，暂不展示旧价格")
+                rows = self._board_rows(kind, board_frame, fund_frame, aligned_stocks)
                 category_rows[kind] = rows
                 counts[kind] = len(rows)
                 rising_counts[kind] = sum(1 for item in rows if item["pctChg"] > 0)
 
             if not category_rows.get("industry") and not category_rows.get("concept"):
+                if debug_errors:
+                    logger.warning("板块数据获取异常，沿用最近成功快照：%s", "；".join(debug_errors))
                 if isinstance(cached, dict):
                     fallback = {**cached}
-                    fallback["warnings"] = ["板块数据已使用最近成功缓存"]
+                    fallback["warnings"] = list(dict.fromkeys([*cached.get("warnings", []), "板块数据已使用最近成功缓存"]))
+                    fallback.update(refreshStatus="failed", refreshAttemptedAt=database.now_iso(),
+                                    refreshError="行业与概念板块行情源均未返回有效数据，已保留最近成功快照")
                     return fallback
                 raise RuntimeError("行业与概念板块数据暂不可用")
+
+            concept_quote = category_quotes.get("concept")
+            if concept_quote is not None:
+                trade_date = concept_quote.strftime("%Y%m%d")
 
             industry_boards = category_rows.get("industry", [])[:SECTOR_DISPLAY_LIMIT]
             concept_boards = category_rows.get("concept", [])[:SECTOR_DISPLAY_LIMIT]
@@ -1039,7 +1068,7 @@ class MarketDataService:
                 turnover_sources, turnover_failures = self._enrich_board_turnover(
                     kind,
                     list(selected_by_code.values()),
-                    trade_date,
+                    category_quotes[kind].strftime("%Y%m%d") if kind in category_quotes else trade_date,
                 )
                 sources.extend(turnover_sources)
                 if turnover_failures:
@@ -1054,7 +1083,13 @@ class MarketDataService:
             )
             result = {
                 "tradeDate": trade_date,
+                "quoteAsOf": concept_quote.isoformat(timespec="seconds") if concept_quote else None,
                 "updatedAt": database.now_iso(),
+                "refreshStatus": "succeeded" if all(category_rows.get(kind) for kind in ("industry", "concept")) else "partial",
+                "refreshAttemptedAt": database.now_iso(),
+                "refreshError": "；".join(f"{label}板块行情源暂未返回有效数据"
+                                             for kind, label in (("industry", "行业"), ("concept", "概念"))
+                                             if not category_rows.get(kind)) or None,
                 "source": " · ".join(dict.fromkeys(sources)) or "AKShare · 东方财富板块",
                 "summary": {
                     "industryCount": counts.get("industry", 0),

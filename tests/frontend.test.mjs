@@ -140,6 +140,25 @@ test('comparison distinguishes attempted source failure from a never-started ref
   assert.ok(!html.includes('尚无同区间的完整对照行情'));
 });
 
+test('comparison distinguishes waiting requests from confirmed missing daily bars', async () => {
+  const { ComparisonResult } = await server.ssrLoadModule('/components/research-panels.tsx');
+  const data = {
+    reportId: 9, days: 15, status: 'tracking', strongest: null, leaders: [], selected: [],
+    coveredCount: 0, totalCount: 456, waitingCount: 8, missingCount: 0, staleCount: 0,
+    entryDate: '2026-09-18', exitDate: '2026-09-29', averageSelectedReturn: null,
+    scope: '原概念范围', universeAsOf: null, lastCheckedAt: null,
+    message: '请求仍在排队，来源暂不可用',
+  };
+  const waiting = renderToStaticMarkup(createElement(ComparisonResult, { data }));
+  for (const text of ['待取得行情 8 个概念', '请求仍在排队，来源暂不可用', '“核对同期最强”继续读取', '不会额外调用 AI']) assert.ok(waiting.includes(text), text);
+  assert.ok(!waiting.includes('缺少日线'));
+  assert.ok(!waiting.includes('+0.00%'));
+  const mixed = renderToStaticMarkup(createElement(ComparisonResult, { data: { ...data, missingCount: 2 } }));
+  assert.ok(mixed.includes('待取得行情 8 个概念'));
+  assert.ok(mixed.includes('缺少日线 2 个概念'));
+  assert.ok(!mixed.includes('缺少日线 10 个概念'));
+});
+
 test('research job requests preserve the job key and block cross-site execution', async (t) => {
   const fetch = t.mock.method(globalThis, 'fetch', async (url, options) => {
     assert.equal(new URL(url).searchParams.get('key'), 'comparison');
@@ -413,8 +432,7 @@ test('concept route blocks cross-site generation before contacting the backend',
   assert.equal(fetch.mock.callCount(), 0);
 });
 
-test('forecast cards show a dated horizon, three evidence views, stocks and invalidation', async () => {
-  const { ForecastResearchCards } = await server.ssrLoadModule('/components/concept-forecast.tsx');
+function forecastFixture() {
   const research = structuredClone(conceptResearch);
   research.window = { startDate: '2026-09-13', endDate: '2026-09-27', calendarDays: 15 };
   Object.assign(research.concepts[0], {
@@ -428,6 +446,12 @@ test('forecast cards show a dated horizon, three evidence views, stocks and inva
       { code: '600001', name: '测试强势股', peDynamic: 23.5, pb: null, marketCap: 1000000000 },
     ] },
   });
+  return research;
+}
+
+test('forecast cards show a dated horizon, three evidence views, stocks and invalidation', async () => {
+  const { ForecastResearchCards } = await server.ssrLoadModule('/components/concept-forecast.tsx');
+  const research = forecastFixture();
   const html = renderToStaticMarkup(createElement(ForecastResearchCards, { research, today: '2026-09-12' }));
   for (const value of ['2026-09-13', '2026-09-27', '15 个自然日', '最近交易日行情', '技术面', '基本面', '时事新闻',
     '未来半个月的影响', '订单取消', '研究把握度：较低', '测试强势股', '动态 PE 23.50', 'PB —', '产区天气报道']) {
@@ -439,6 +463,50 @@ test('forecast cards show a dated horizon, three evidence views, stocks and inva
   assert.ok(renderToStaticMarkup(createElement(ForecastResearchCards, { research, today: '2026-09-12' })).includes('暂无可核对的同一交易日强势股行情'));
   research.concepts = [];
   assert.ok(renderToStaticMarkup(createElement(ForecastResearchCards, { research, today: '2026-09-12' })).includes('暂不强行给出名单'));
+});
+
+test('forecast overview keeps three directions discoverable while focusing one detailed concept', async () => {
+  const { ForecastResearchCards } = await server.ssrLoadModule('/components/concept-forecast.tsx');
+  const research = forecastFixture();
+  research.concepts.push(...[2, 3].map(index => ({ ...structuredClone(research.concepts[0]),
+    code: `BK100${index}`, name: `备选概念${index}`, thesis: `仅在选择概念${index}后展示的详细判断`,
+  })));
+  const html = renderToStaticMarkup(createElement(ForecastResearchCards, { research, today: '2026-09-12' }));
+  assert.ok(html.includes('aria-label="切换预测概念"'));
+  assert.equal((html.match(/aria-pressed="true"/g) || []).length, 1);
+  assert.equal((html.match(/aria-pressed="false"/g) || []).length, 2);
+  assert.equal((html.match(/class="forecast-focus-card"/g) || []).length, 1);
+  assert.ok(html.includes('备选概念2') && html.includes('备选概念3'));
+  assert.ok(!html.includes('仅在选择概念2后展示的详细判断'));
+  assert.ok(html.indexOf('核心判断') < html.indexOf('现实影响因素'));
+  assert.ok(html.includes('role="tablist"'));
+  assert.equal((html.match(/role="tab"/g) || []).length, 3);
+  assert.equal((html.match(/role="tabpanel"/g) || []).length, 3);
+  assert.equal((html.match(/aria-selected="true"/g) || []).length, 1);
+  assert.equal((html.match(/hidden="" class="forecast-evidence-body"/g) || []).length, 2);
+  for (const tab of html.matchAll(/role="tab"[^>]*id="([^"]+)" aria-controls="([^"]+)"/g)) {
+    assert.ok(html.includes(`id="${tab[2]}" aria-labelledby="${tab[1]}"`));
+  }
+  assert.ok(html.includes('class="forecast-catalyst" open=""'));
+  assert.ok(html.includes('产区天气报道'));
+  assert.ok(html.includes('估值快照'));
+});
+
+test('forecast task states show actionable recovery and real progress without claiming a result', async () => {
+  const { ForecastTaskState } = await server.ssrLoadModule('/components/concept-forecast.tsx');
+  const base = { provider: 'glm', model: 'GLM 5.3 MAX', runDate: '2026-09-30', error: null, finishedAt: null };
+  const render = (props) => renderToStaticMarkup(createElement(ForecastTaskState, {
+    busy: false, submitting: false, requestError: null, refresh() {}, ...props,
+  }));
+  const failed = render({ current: { ...base, status: 'failed', error: '概念快照日期过旧：2026-09-25' } });
+  for (const text of ['本次预测尚未完成', '2026-09-25', '更新板块行情', '重新读取状态', '已保存的预测仍可查看']) assert.ok(failed.includes(text), text);
+  const running = render({ busy: true, current: { ...base, status: 'running', stage: '正在核对概念日线', maxRunSeconds: 900, startedAt: '2026-09-30T09:00:00+08:00' } });
+  for (const text of ['正在核对概念日线', '15 分钟', '可以切换页面']) assert.ok(running.includes(text), text);
+  assert.ok(!running.includes('已完成'));
+  assert.ok(!running.includes('更新板块行情'));
+  const disconnected = render({ current: null, requestError: '暂时无法连接服务' });
+  assert.ok(disconnected.includes('不会再次提交预测'));
+  assert.ok(!disconnected.includes('正在读取当天预测'));
 });
 
 test('forecast navigation contains prediction and historical feedback modules', async () => {
