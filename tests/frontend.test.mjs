@@ -140,6 +140,35 @@ test('comparison distinguishes attempted source failure from a never-started ref
   assert.ok(!html.includes('尚无同区间的完整对照行情'));
 });
 
+test('THS comparison states its sample scope even when all frozen candidates have data', async () => {
+  const { ComparisonResult } = await server.ssrLoadModule('/components/research-panels.tsx');
+  const winner = { code: 'THS:886042', name: '同花顺概念', returnPct: 8, entryPrice: 100, exitPrice: 108, url: 'https://q.10jqka.com.cn/gn/' };
+  const html = renderToStaticMarkup(createElement(ComparisonResult, { data: {
+    reportId: 12, days: 15, status: 'completed', conceptProvider: 'ths', strongest: winner, leaders: [winner], selected: [],
+    coveredCount: 24, totalCount: 24, fullCoverage: true, selectedCount: 0,
+    entryDate: '2026-09-18', exitDate: '2026-09-30', averageSelectedReturn: null,
+    scope: '同花顺公开榜单活跃概念样本（非全市场）', universeAsOf: null,
+  } }));
+  for (const text of ['同期样本最强概念对照', '非全市场', '比较范围内最强', '+8.00%']) assert.ok(html.includes(text), text);
+  assert.ok(!html.includes('全市场最强'));
+});
+
+test('THS board overview labels sample counts, source and missing fund data', async () => {
+  const { SectorConceptView } = await server.ssrLoadModule('/components/sector-concept-view.tsx');
+  const board = { kind: 'concept', code: 'THS:886042', name: '同花顺概念', pctChg: 2, amount: 100_000_000,
+    breadth: 80, upCount: 8, downCount: 2, mainNetInflow: null, previousAmount: null, amountDelta: null, leaders: [] };
+  const html = renderToStaticMarkup(createElement(SectorConceptView, {
+    today: '2026-10-01', loading: false, onRefresh() {}, data: {
+      tradeDate: '20260930', updatedAt: '2026-10-01T10:00:00+08:00', source: '同花顺公开板块行情（活跃样本）',
+      sourceProvider: 'ths', scope: '同花顺活跃概念样本（非全市场）',
+      summary: { industryCount: 0, conceptCount: 1, risingIndustryCount: 0, risingConceptCount: 1, topBoard: board, topFundBoard: null },
+      industryBoards: [], conceptBoards: [board], turnoverBoards: [board], warnings: [],
+    },
+  }));
+  for (const text of ['样本上涨概念', '样本强度第一', '同花顺活跃概念样本（非全市场）', '2026-09-30']) assert.ok(html.includes(text), text);
+  assert.ok(!html.includes('东方财富行业板块口径'));
+});
+
 test('comparison distinguishes waiting requests from confirmed missing daily bars', async () => {
   const { ComparisonResult } = await server.ssrLoadModule('/components/research-panels.tsx');
   const data = {

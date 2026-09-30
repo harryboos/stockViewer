@@ -25,7 +25,7 @@ DAILY_SESSIONS = 7
 DAILY_MAX_AGE_DAYS = 30
 HISTORY_SNAPSHOTS = 2
 MAINTENANCE_KEY = "storage_maintenance"
-HISTORY_PATTERN = re.compile(r"^concept_history:(BK\d+):(\d{8}):v(\d+)$")
+HISTORY_PATTERN = re.compile(r"^concept_history:(BK\d+|THS:88\d{4}):(\d{8}):v(\d+)$")
 
 
 def parse_date(value: str) -> date | None:

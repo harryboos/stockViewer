@@ -79,3 +79,4 @@ SCHEDULER = SchedulerSettings(
 )
 
 DATABASE_PATH = Path(os.getenv("STOCK_VIEWER_DB", PROJECT_ROOT / "data" / "stockviewer.sqlite3"))
+SECTOR_DATA_SOURCE = os.getenv("SECTOR_DATA_SOURCE", "ths").strip().lower()

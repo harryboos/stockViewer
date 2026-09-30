@@ -12,7 +12,7 @@ from statistics import median
 from typing import Any, Iterator
 
 from . import database
-from .config import MARKET
+from .config import MARKET, SECTOR_DATA_SOURCE
 from .eastmoney import EastmoneyClient
 from .tencent import TencentClient
 from .source_errors import BoardSourceError, source_failure_reason
@@ -86,9 +86,13 @@ class MarketDataService:
         self,
         eastmoney_client: EastmoneyClient | None = None,
         tencent_client: TencentClient | None = None,
+        sector_source: str | None = None,
     ) -> None:
         self._eastmoney_client = eastmoney_client or EastmoneyClient()
         self._tencent_client = tencent_client or TencentClient()
+        self._sector_source = sector_source or SECTOR_DATA_SOURCE
+        if self._sector_source not in {"eastmoney", "ths"}:
+            raise ValueError("SECTOR_DATA_SOURCE 仅支持 ths 或 eastmoney")
         self._spot_lock = threading.RLock()
         self._sector_lock = threading.RLock()
         self._overview_lock = threading.RLock()
@@ -949,6 +953,9 @@ class MarketDataService:
         return boards
 
     def sector_overview(self, force: bool = False) -> dict[str, Any]:
+        if self._sector_source == "ths":
+            from .ths_overview import sector_overview
+            return sector_overview(self, force)
         requested_at = datetime.now(database.CHINA_TZ)
         with self._sector_lock:
             if (

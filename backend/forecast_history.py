@@ -7,6 +7,7 @@ from bisect import bisect_right
 from datetime import date, datetime, time, timedelta
 
 from . import database
+from .concept_identity import single_provider
 from .report_storage import decode_result, encode_result
 
 logger = logging.getLogger(__name__)
@@ -44,6 +45,7 @@ def archive_run(db, row) -> None:
         if not isinstance(report["concepts"], list) or not isinstance(report["summary"], str):
             return
         overview = {"window": report["window"], "summary": report["summary"],
+                    "conceptProvider": single_provider(report["concepts"]) or report.get("conceptProvider"),
                     "concepts": [{"code": c["code"], "name": c["name"]} for c in report["concepts"]]}
     except (ValueError, TypeError, KeyError, IndexError, AttributeError):
         logger.warning("Skipping forecast without an auditable report/date: %s", row["id"])
@@ -170,6 +172,7 @@ def history_payload(page: int = 1, page_size: int = 10, *, as_of: datetime | Non
         if row["on_page"]:
             entries.append({key: value for key, value in report.items() if key != "result"} | {
                 "includedInStats": primary, "window": report["result"]["window"],
+                "conceptProvider": single_provider(report["result"]["concepts"]) or report["result"].get("conceptProvider"),
                 "summary": report["result"]["summary"], "concepts": concepts})
     return {"reports": entries, "page": page, "pageSize": page_size, "totalReports": total,
             "forecastDays": sum(row["is_primary"] for row in rows), "abstentionDays": abstentions,
@@ -203,6 +206,7 @@ def feedback_context(as_of: datetime | None = None) -> dict:
             concept = next((c for c in report["concepts"] if c["code"] == row["concept_code"]), None)
             if concept:
                 cases.append({"predictedOn": row["run_date"], "horizonDays": row["horizon_days"],
+                              "conceptProvider": single_provider([concept]), "priceSource": item.get("source"),
                               **{key: concept.get(key) for key in ("code", "name", "thesis", "confirmation", "invalidation", "conviction")},
                               **{key: item.get(key) for key in ("entryDate", "exitDate", "returnPct", "maxDrawdownPct", "benchmarks")}})
     return {"asOf": now.isoformat(), "sampleUnit": "每日首次成功预测中的每个概念，等权",

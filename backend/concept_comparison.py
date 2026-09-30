@@ -5,11 +5,12 @@ import json
 from datetime import date, datetime, time
 
 from . import database
+from .concept_identity import CONCEPT_PROVIDERS, concept_provider, single_provider
 from .forecast_feedback import bounds, evaluate, observation_window
 from .forecast_history import get_report
 from .forecast_prices import FeedbackPriceClient
 from .research_data import fetch_batch, history_request, index_history, last_closed_day, latest_universe
-from .research_pool import HISTORY_WAITING_KINDS, history_result
+from .research_pool import BatchResult, HISTORY_WAITING_KINDS, history_result
 
 
 def waiting_for_query(value: dict) -> bool:
@@ -24,19 +25,33 @@ def source_unavailable_batch(values: dict) -> bool:
 
 
 def universe_for(report: dict, *, create: bool = False) -> dict | None:
+    concepts = report["result"].get("concepts", [])
+    provider = single_provider(concepts)
     frozen = report["result"].get("comparisonUniverse")
+    if not concepts:
+        # Empty older forecasts predate THS support. New reports record their
+        # source explicitly even when the model chooses to wait.
+        provider = (report["result"].get("conceptProvider")
+                    or single_provider((frozen or {}).get("boards", [])) or "eastmoney")
+    if provider not in CONCEPT_PROVIDERS:
+        return None
+
+    def matching(universe):
+        boards = [board for board in universe.get("boards", []) if concept_provider(board.get("code")) == provider]
+        return {**universe, "provider": provider, "boards": boards} if boards else None
+
     if frozen and frozen.get("boards"):
-        return frozen
+        return matching(frozen)
     with database.connection() as db:
         row = db.execute("SELECT * FROM comparison_universes WHERE report_id=?", (report["id"],)).fetchone()
     if row:
-        return {"asOf": row["as_of"], "scope": row["scope"], "boards": json.loads(row["boards_json"])}
+        return matching({"asOf": row["as_of"], "scope": row["scope"], "boards": json.loads(row["boards_json"])})
     if not create:
         return None
-    available = latest_universe()
+    available = latest_universe(provider)
     if not available:
         return None
-    scope = "当前概念列表回溯；旧预测未保存当时概念范围，存在范围差异"
+    scope = f"{available.get('scope') or CONCEPT_PROVIDERS[provider] + '概念列表'}回溯；旧预测未保存当时概念范围，存在范围差异"
     with database._write_lock, database.connection() as db:
         db.execute("INSERT OR IGNORE INTO comparison_universes VALUES (?,?,?,?)",
                    (report["id"], available["asOf"], scope, json.dumps(available["boards"], ensure_ascii=False)))
@@ -89,9 +104,22 @@ def refresh_comparisons(progress) -> dict:
     batch = sorted(pending, key=priority)
     requests = list(dict.fromkeys(history_request(board["code"], *span, closed=closed) for _, _, board, _, span, _, _ in batch))
     progress(0, len(requests), "读取同期概念日线（相同概念共用一次查询）")
-    prices = fetch_batch(requests, lambda item: index_history(*item), background=True,
-                         progress=lambda done, total: progress(done, total, "读取同期概念日线"),
-                         stop_when=source_unavailable_batch)
+    prices = BatchResult()
+    finished_requests = 0
+    # A discontinued or unavailable BK transport must not trip the breaker for
+    # new THS forecasts. Each provider gets an independent bounded batch.
+    for provider in ("ths", "eastmoney"):
+        group = [item for item in requests if concept_provider(item[0]) == provider]
+        if not group:
+            continue
+        values = fetch_batch(group, lambda item: index_history(*item), background=True,
+                             progress=lambda done, total: progress(finished_requests + done, len(requests), "读取同期概念日线"),
+                             stop_when=source_unavailable_batch)
+        prices.update(values)
+        prices.attempted.update(getattr(values, "attempted", set(values)))
+        prices.errors.update(getattr(values, "errors", {}))
+        prices.paused = prices.paused or getattr(values, "paused", False)
+        finished_requests += len(values) + len(getattr(values, "errors", {}))
     attempted = getattr(prices, "attempted", set(prices))
     ready, missing, waiting, checked = 0, 0, 0, 0
     updates = []
@@ -150,6 +178,7 @@ def comparison_payload(report_id: int, days: int, now: datetime | None = None) -
         raise ValueError("预测档案不存在")
     universe = universe_for(report)
     base = {"reportId": report_id, "days": days, "strongest": None, "leaders": [], "selected": [],
+            "conceptProvider": universe["provider"] if universe else single_provider(report["result"].get("concepts", [])),
             "coveredCount": 0, "totalCount": len(universe["boards"]) if universe else 0,
             "scope": universe["scope"] if universe else "等待建立比较范围", "universeAsOf": universe["asOf"] if universe else None,
             "status": "pending", "entryDate": None, "exitDate": None, "averageSelectedReturn": None,

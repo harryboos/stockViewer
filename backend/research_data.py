@@ -11,6 +11,7 @@ from weakref import WeakValueDictionary
 
 from . import database
 from .concept_data import ConceptResearchClient
+from .concept_identity import CONCEPT_PROVIDERS, single_provider
 from .data_sources import market_data
 from .forecast_prices import FeedbackPriceClient
 from .history_sources import history_covers_window
@@ -142,17 +143,22 @@ def last_closed_day(now: datetime | None = None) -> str:
     return (now.date() if now.time() >= time(15, 10) else now.date() - timedelta(days=1)).isoformat()
 
 
-def latest_universe() -> dict | None:
+def latest_universe(provider: str | None = None) -> dict | None:
+    if provider is not None and provider not in CONCEPT_PROVIDERS:
+        raise ValueError("不支持的概念范围来源")
     with database.connection() as db:
-        row = db.execute("SELECT * FROM concept_universes ORDER BY as_of DESC LIMIT 1").fetchone()
-    return {"asOf": row["as_of"], "boards": json.loads(row["boards_json"])} if row else None
+        row = db.execute("""SELECT * FROM concept_universes WHERE (? IS NULL OR provider=?)
+            ORDER BY as_of DESC, rowid DESC LIMIT 1""", (provider, provider)).fetchone()
+    return {"asOf": row["as_of"], "provider": row["provider"], "scope": row["scope"],
+            "boards": json.loads(row["boards_json"])} if row else None
 
 
 def refresh_rotation(progress) -> dict:
-    universe = latest_universe()
+    provider = market_data._sector_source
+    universe = latest_universe(provider)
     if not universe or universe["asOf"][:10] != database.china_date():
         market_data.sector_overview(False)
-        universe = latest_universe()
+        universe = latest_universe(provider)
     if not universe:
         raise RuntimeError("暂无可用概念列表，请先更新板块行情")
     calendar = FeedbackPriceClient().calendar()
@@ -198,6 +204,8 @@ def refresh_rotation(progress) -> dict:
     updated = sum(row.get('asOf') == end for code, row in records.items() if code in allowed)
     result = {"items": [row for code, row in records.items() if code in allowed], "asOf": end if updated else saved.get('asOf', end),
               "totalCount": len(allowed), "universeAsOf": universe["asOf"], "updatedAt": database.now_iso(),
+              "sourceProvider": universe.get("provider") or single_provider(universe["boards"]),
+              "scope": universe.get("scope") or "已保存的概念范围，排名仅代表已核对样本",
               "attempted": {code: value for code, value in attempted.items() if code in allowed}}
     cache_put("rotation", result)
     if missing:
@@ -209,6 +217,7 @@ def refresh_rotation(progress) -> dict:
 
 def rotation_payload() -> dict:
     value = cache_get("rotation") or {"items": [], "asOf": None, "totalCount": 0, "updatedAt": None}
+    provider = value.get("sourceProvider") or single_provider(value["items"])
     # Rank changes use the same fully observed population on both dates.
     current = [row for row in value["items"] if row["asOf"] == value["asOf"]]
     for days in ("5", "10", "20"):
@@ -219,6 +228,11 @@ def rotation_payload() -> dict:
             row.setdefault("ranks", {})[days] = rank + 1
             row.setdefault("rankChanges", {})[days] = ranks[row["code"]] - rank - 1
     snapshot = cache_get("rotation-snapshot") or {}
+    snapshot_provider = snapshot.get("sourceProvider") or single_provider(snapshot.get("boards", []))
+    if provider and snapshot_provider and provider != snapshot_provider:
+        snapshot = {}  # Another provider's snapshot date does not describe these rows.
     metrics = {row["code"]: row for row in snapshot.get("boards", [])}
     return {**value, "items": [{**row, "snapshot": metrics.get(row["code"])} for row in current],
+            "sourceProvider": provider,
+            "scope": value.get("scope") or (f"{CONCEPT_PROVIDERS[provider]}已保存概念范围，排名仅代表已核对样本" if provider else None),
             "coveredCount": len(current), "snapshotAsOf": snapshot.get("asOf")}

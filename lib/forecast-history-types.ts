@@ -21,6 +21,7 @@ export type FeedbackSummary = {
     averageExcessPct: number | null; outperformRate: number | null }>;
 };
 export type HistoryEntry = {
+  conceptProvider?: 'ths' | 'eastmoney' | null;
   id: number; runDate: string; publishedAt: string; model: string; promptVersion: string | null;
   includedInStats: boolean; checkedAt: string | null; summary: string; window: ForecastResearch['window'];
   concepts: { code: string; name: string; outcomes: Record<Horizon, ForecastOutcome> }[];

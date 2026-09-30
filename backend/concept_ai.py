@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from . import ai, database
 from .concept_data import collect_concept_evidence
+from .concept_identity import CONCEPT_CODE_PATTERN
 from .concept_news import enrich_world_news
 from .run_dispatch import shared_start
 
@@ -47,7 +48,7 @@ class Catalyst(ResearchModel):
 
 
 class ConceptChoice(ResearchModel):
-    code: str = Field(pattern=r"^BK\d+$")
+    code: str = Field(pattern=CONCEPT_CODE_PATTERN)
     reason: str = Field(min_length=4, max_length=1000)
     risk: str = Field(min_length=4, max_length=600)
     stocks: list[StockChoice] = Field(max_length=3)
@@ -74,6 +75,7 @@ def build_prompt(evidence: dict) -> str:
         "历史缺失或近期回调时必须写明趋势待确认，不得把空值当0，不得声称持续上涨。"
         "每个概念从成份候选选1至3只强势股票，解释理由与具体风险；候选stocks为空时必须输出空数组并说明数据不足。"
         "名称、行情数字和来源链接由系统填充，你只输出代码和分析文字。金额单位元，涨跌幅和广度单位%。"
+        "完整保留候选代码的来源前缀；THS:代码与BK代码是不同概念指数，即使名称相同也不能替换或混用。"
         "盘中成交额不能与昨日全天直接比较并断言放量，今日与历史行情采集时刻可能略有差异。"
         "drivers解释背后影响因素：data表示行情支持的判断，须引用本概念kind=data的证据ID；"
         "news表示近30天资讯线索，须引用本概念kind=news的证据ID；资讯仅支持线索存在，不证明涨幅由其导致；"

@@ -6,6 +6,7 @@ import statistics
 from datetime import date, timedelta
 
 from .data_sources import number_or_none
+from .concept_identity import concept_provider
 
 
 def forecast_window(run_date: str) -> dict:
@@ -47,6 +48,11 @@ def technical_metrics(history: list[dict], trade_date: str) -> dict:
 
 def add_forecast_metrics(candidate: dict, history: list[dict], updated_at: str) -> None:
     code = candidate["code"]
+    ths = concept_provider(code) == "ths"
+    source = "同花顺公开行情" if ths else "东方财富行情"
+    url = "https://q.10jqka.com.cn/gn/" if ths else f"https://quote.eastmoney.com/bk/90.{code}.html"
+    market = next((item for item in candidate.get("evidence", []) if item.get("id") == f"{code}:market"), {})
+    latest = max((row for row in history if row["date"] <= candidate["tradeDate"]), key=lambda row: row["date"], default={})
     technical = technical_metrics(history, candidate["tradeDate"])
     candidate["technicalData"] = technical
     valuations = [{key: stock.get(key) for key in ("code", "name", "peDynamic", "pb", "marketCap")}
@@ -60,8 +66,10 @@ def add_forecast_metrics(candidate: dict, history: list[dict], updated_at: str) 
                                  ("fundamentals", "成份股估值与基本面数据覆盖", candidate["fundamentalData"])):
         candidate["evidence"].append({
             "id": f"{code}:{suffix}", "kind": "data", "title": title,
-            "source": "东方财富行情；技术指标由历史收盘价计算", "publishedAt": updated_at,
-            "url": f"https://quote.eastmoney.com/bk/90.{code}.html",
+            "source": ((latest.get("historySource") or source) + "；技术指标由历史收盘价计算" if suffix == "technical"
+                       else (market.get("source") or source) + "；已取得成份股估值快照"),
+            "publishedAt": updated_at,
+            "url": (latest.get("historyUrl") or url) if suffix == "technical" else (market.get("url") or url),
             "excerpt": json.dumps(data, ensure_ascii=False),
         })
     if technical["ma20"] is None:

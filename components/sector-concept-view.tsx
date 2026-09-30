@@ -76,7 +76,7 @@ function TurnoverMatrix({ boards }: { boards: SectorBoard[] }) {
         <div>
           <p className="eyebrow">量能矩阵</p>
           <h2 id="sector-turnover-title">成交额 Top 板块</h2>
-          <span>行业与概念统一按今日成交额排序，观察资金最密集的方向。</span>
+          <span>已采集的行业与概念按成交额排序，观察样本中的量能分布。</span>
         </div>
         <b>Top {boards.length}</b>
       </div>
@@ -141,6 +141,7 @@ export function SectorConceptView({ today, data, loading, onRefresh }: SectorCon
   const [mode, setMode] = useState<'industry' | 'concept'>('industry');
   const hero = <div className="market-hero"><div><p className="eyebrow">板块雷达</p><h1>板块与概念</h1>
     <p className="subtitle">{today}{data && ` · 行情 ${shortTradeDate(data.tradeDate)}`}</p>
+    {data?.scope && <p className="subtitle">{data.scope}</p>}
     {data && <details className="data-provenance"><summary>数据来源</summary><p>{data.source}</p></details>}
   </div><button className="refresh-button market-refresh" onClick={onRefresh} disabled={loading}>{loading ? '更新中…' : '↻ 更新板块'}</button></div>;
 
@@ -164,9 +165,9 @@ export function SectorConceptView({ today, data, loading, onRefresh }: SectorCon
       {hero}
 
       <div className="market-kpi-grid sector-kpi-grid">
-        <article className="market-kpi market-kpi-dark"><span className="market-kpi-icon">行</span><div><small>上涨行业</small><strong>{data.summary.risingIndustryCount}<i> / {data.summary.industryCount}</i></strong><p>东方财富行业板块口径</p></div></article>
-        <article className="market-kpi"><span className="market-kpi-icon">概</span><div><small>上涨概念</small><strong>{data.summary.risingConceptCount}<i> / {data.summary.conceptCount}</i></strong><p>已过滤连板、重仓等标签型概念</p></div></article>
-        <article className="market-kpi"><span className="market-kpi-icon">强</span><div><small>强度冠军</small><strong className="up-text">{topBoard?.name ?? '—'}</strong><p>{topBoard ? `${topBoard.kind === 'industry' ? '行业' : '概念'} · ${formatPct(topBoard.pctChg)}` : '板块强度暂缺'}</p></div></article>
+        <article className="market-kpi market-kpi-dark"><span className="market-kpi-icon">行</span><div><small>{data.sourceProvider === 'ths' ? '样本上涨行业' : '上涨行业'}</small><strong>{data.summary.risingIndustryCount}<i> / {data.summary.industryCount}</i></strong><p>{data.sourceProvider === 'ths' ? '同花顺公开行业样本' : '东方财富行业板块口径'}</p></div></article>
+        <article className="market-kpi"><span className="market-kpi-icon">概</span><div><small>{data.sourceProvider === 'ths' ? '样本上涨概念' : '上涨概念'}</small><strong>{data.summary.risingConceptCount}<i> / {data.summary.conceptCount}</i></strong><p>已过滤连板、重仓等标签型概念</p></div></article>
+        <article className="market-kpi"><span className="market-kpi-icon">强</span><div><small>{data.sourceProvider === 'ths' ? '样本强度第一' : '强度冠军'}</small><strong className="up-text">{topBoard?.name ?? '—'}</strong><p>{topBoard ? `${topBoard.kind === 'industry' ? '行业' : '概念'} · ${formatPct(topBoard.pctChg)}` : '板块强度暂缺'}</p></div></article>
         <article className="market-kpi"><span className="market-kpi-icon">资</span><div><small>资金冠军</small><strong className={(topFundBoard?.mainNetInflow ?? 0) >= 0 ? 'up-text' : 'down-text'}>{topFundBoard?.name ?? '—'}</strong><p>{topFundBoard ? `主力净流入 ${formatAmount(topFundBoard.mainNetInflow)}` : '板块资金流暂缺'}</p></div></article>
       </div>
 
@@ -194,8 +195,8 @@ export function SectorConceptView({ today, data, loading, onRefresh }: SectorCon
 
       <RotationPanel />
       <div className="market-footnote">
-        <p>成交额 Top 矩阵在全部行业与概念板块中统一排名；板块强度、今日成交额、上涨家数与领涨股来自东方财富实时板块行情。“较昨日”按前一交易日板块日线成交额计算，主力资金龙头来自板块资金流排名。龙头仅表示当日价格或资金口径靠前，不代表公司基本面质量或后续涨幅。</p>
-        {data.warnings.length > 0 && <p className="market-warning">部分扩展数据已降级：{data.warnings.join('；')}</p>}
+        <p>{data.sourceProvider === 'ths' ? '当前试用同花顺公开行情，仅比较已取得有效报价的活跃样本；收益与后续预测按同花顺指数独立记录。未取得的资金流和昨日成交额以“—”展示。' : '成交额 Top 矩阵在已采集的行业与概念板块中排名；行情来自东方财富。“较昨日”按前一交易日板块日线成交额计算，资金龙头来自板块资金流排名。'} 龙头仅表示当日价格或资金口径靠前，不代表公司基本面质量或后续涨幅。</p>
+        {data.warnings.length > 0 && <p className="market-warning">行情说明：{data.warnings.join('；')}</p>}
       </div>
     </section>
   );

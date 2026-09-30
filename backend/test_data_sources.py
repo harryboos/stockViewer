@@ -394,7 +394,7 @@ class MarketDataServiceTests(unittest.TestCase):
         self.assertEqual(result["dataStatus"]["fundFlow"]["state"], "live")
 
     def test_sector_overview_merges_strength_fund_flow_and_leaders(self) -> None:
-        service = MarketDataService()
+        service = MarketDataService(sector_source="eastmoney")
         industry = pd.DataFrame([
             {
                 "板块名称": "半导体", "板块代码": "BK1036", "涨跌幅": 3.5,

@@ -113,7 +113,7 @@ class ForecastSnapshotRecoveryTests(unittest.TestCase):
 
 class SectorQuoteTimestampTests(unittest.TestCase):
     def setUp(self):
-        self.service = MarketDataService()
+        self.service = MarketDataService(sector_source="eastmoney")
         self.instant = now("2026-09-30T16:00:00")
         self.snapshot = [{"symbol": "600001", "name": "测试股票", "tradeDate": "20260929", "close": 12.3, "pctChg": 3}]
         self.patches = [patch.object(self.service, "market_snapshot", return_value=self.snapshot),

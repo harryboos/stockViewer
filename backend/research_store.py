@@ -5,6 +5,31 @@ import json
 import re
 from datetime import datetime, timedelta
 
+from .concept_identity import CONCEPT_PROVIDERS, concept_provider, single_provider
+
+
+def initialize_universes(db) -> None:
+    """Keep one independently identified population for each index provider."""
+    columns = {row["name"] for row in db.execute("PRAGMA table_info(concept_universes)")}
+    if columns and "provider" not in columns:
+        db.execute("ALTER TABLE concept_universes RENAME TO concept_universes_legacy")
+    db.execute("""CREATE TABLE IF NOT EXISTS concept_universes (
+        provider TEXT NOT NULL, as_of TEXT NOT NULL, boards_json TEXT NOT NULL, scope TEXT NOT NULL,
+        PRIMARY KEY(provider, as_of))""")
+    if "provider" in columns and "scope" not in columns:
+        db.execute("ALTER TABLE concept_universes ADD COLUMN scope TEXT NOT NULL DEFAULT '来源已保存的概念范围'")
+    if columns and "provider" not in columns:
+        for row in db.execute("SELECT * FROM concept_universes_legacy ORDER BY as_of"):
+            boards = json.loads(row["boards_json"])
+            for provider in CONCEPT_PROVIDERS:
+                selected = [board for board in boards if concept_provider(board.get("code")) == provider]
+                if selected:
+                    db.execute("INSERT OR REPLACE INTO concept_universes VALUES (?,?,?,?)",
+                               (provider, row["as_of"], json.dumps(selected, ensure_ascii=False), "此前已保存的概念范围"))
+        db.execute("DROP TABLE concept_universes_legacy")
+    db.execute("""DELETE FROM concept_universes WHERE (provider, as_of) NOT IN
+        (SELECT provider, MAX(as_of) FROM concept_universes GROUP BY provider)""")
+
 
 def initialize(db) -> None:
     columns = {row["name"] for row in db.execute("PRAGMA table_info(watchlist)")}
@@ -27,8 +52,6 @@ def initialize(db) -> None:
             started_at TEXT NOT NULL, finished_at TEXT, progress_json TEXT, error TEXT);
         CREATE TABLE IF NOT EXISTS research_cache (
             cache_key TEXT PRIMARY KEY, payload_json TEXT NOT NULL, updated_at TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS concept_universes (
-            as_of TEXT PRIMARY KEY, boards_json TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS comparison_outcomes (
             report_id INTEGER NOT NULL REFERENCES forecast_reports(id), code TEXT NOT NULL,
             horizon_days INTEGER NOT NULL, result_json TEXT NOT NULL, updated_at TEXT NOT NULL,
@@ -47,6 +70,7 @@ def initialize(db) -> None:
     for statement in schema.split(";"):
         if statement.strip():
             db.execute(statement)
+    initialize_universes(db)
     if 'origin' not in {row['name'] for row in db.execute('PRAGMA table_info(selection_reports)')}:
         db.execute("ALTER TABLE selection_reports ADD COLUMN origin TEXT NOT NULL DEFAULT 'retained_cache'")
     db.execute('PRAGMA optimize')
@@ -103,14 +127,18 @@ def cache_put(key: str, value) -> None:
             AND cache_key NOT IN ('latest-market','latest-sectors','rotation','rotation-snapshot')""", (cutoff,))
 
 
-def save_universe(boards: list[dict], as_of: str) -> dict:
+def save_universe(boards: list[dict], as_of: str, scope: str | None = None) -> dict:
     from . import database
     compact = [{"code": row["code"], "name": row["name"]} for row in boards]
+    provider = single_provider(compact)
+    if not provider:
+        raise ValueError("概念范围必须包含同一来源的有效概念代码")
+    scope = scope or ("同花顺已采集公开概念样本（非全市场）" if provider == "ths" else "预测当时可获取的全部有效概念")
     with database._write_lock, database.connection() as db:
-        db.execute("INSERT OR REPLACE INTO concept_universes VALUES (?,?)",
-                   (as_of, json.dumps(compact, ensure_ascii=False, separators=(",", ":"))))
-        db.execute("DELETE FROM concept_universes WHERE as_of <> ?", (as_of,))
-    return {"asOf": as_of, "boards": compact, "scope": "预测当时可获取的全部有效概念"}
+        db.execute("INSERT OR REPLACE INTO concept_universes VALUES (?,?,?,?)",
+                   (provider, as_of, json.dumps(compact, ensure_ascii=False, separators=(",", ":")), scope))
+        db.execute("DELETE FROM concept_universes WHERE provider=? AND as_of <> ?", (provider, as_of))
+    return {"asOf": as_of, "provider": provider, "boards": compact, "scope": scope}
 
 
 def update_watch(ts_code: str, group: str, reason: str, note: str) -> None:

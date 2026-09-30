@@ -15,6 +15,7 @@ from . import ai, database
 from .concept_ai import Catalyst, ResearchModel, StockChoice, MODEL, PROVIDER
 from .forecast_limits import DATA_TIMEOUT_SECONDS, FEEDBACK_TIMEOUT_SECONDS, MODEL_TIMEOUT_SECONDS, RUN_TIMEOUT_SECONDS
 from .concept_data import collect_concept_evidence, concept_snapshot_warning
+from .concept_identity import CONCEPT_CODE_PATTERN, single_provider
 from .concept_news import enrich_world_news
 from .forecast_data import forecast_window
 from .forecast_history import feedback_context
@@ -69,7 +70,7 @@ class Assessment(ResearchModel):
 
 
 class ForecastChoice(ResearchModel):
-    code: str = Field(pattern=r"^BK\d+$")
+    code: str = Field(pattern=CONCEPT_CODE_PATTERN)
     thesis: str = Field(min_length=8, max_length=1000)
     conviction: Literal["medium", "low"]
     technical: Assessment
@@ -125,6 +126,7 @@ def build_prompt(evidence: dict) -> str:
         "stocks候选为空必须输出[]，有候选则至少选1只。当前强势不保证未来继续上涨。"
         "所有名称、价格、收益、指标、来源链接和预测日期由服务器填充，不能输出额外数值字段或自行编造。"
         "模型不得跨概念引用材料、输出候选池外概念或股票、重复概念或同一概念内重复股票。"
+        "完整保留候选代码的来源前缀；THS:代码与BK代码是不同概念指数，即使名称相同也不能替换或混用。"
         "historicalFeedback是生成本次预测之前已到期并核对的真实历史反馈，包含15日和30日等权收益、"
         "上涨命中率、相对上证指数及科创50的超额收益与原预测逻辑。"
         "先复盘近期案例中亏损、跑输和回撤较大的方向，检查本次是否重复同类证据缺口、追涨或催化过期问题；"
@@ -143,6 +145,9 @@ def build_prompt(evidence: dict) -> str:
 
 def assemble_result(raw: dict, evidence: dict) -> dict:
     parsed = ForecastResult.model_validate(raw)
+    provider = single_provider(evidence["candidates"])
+    if evidence["candidates"] and provider is None:
+        raise ValueError("概念候选必须来自同一行情来源，不能混用不同概念指数口径")
     pool = {candidate["code"]: candidate for candidate in evidence["candidates"]}
     concepts, seen = [], set()
     for choice in parsed.concepts:
@@ -187,7 +192,7 @@ def assemble_result(raw: dict, evidence: dict) -> dict:
             **assessments, "catalysts": catalysts,
             "stocks": [{**stock_pool[stock.code], "reason": stock.reason} for stock in choice.stocks],
         })
-    return {"summary": parsed.summary, "concepts": concepts,
+    return {"summary": parsed.summary, "concepts": concepts, "conceptProvider": provider,
             "comparisonUniverse": evidence.get("comparisonUniverse"),
             "feedbackUsed": {"asOf": evidence.get("historicalFeedback", {}).get("asOf"),
                              "sampleCounts": {days: summary["sampleCount"] for days, summary in

@@ -19,13 +19,15 @@ export type StockNews = { asOf: string; items: { id: string; title: string; url:
 export type RotationItem = { code: string; name: string; asOf: string; returns: Record<string, number>;
   ranks: Record<string, number>; rankChanges: Record<string, number>; path: { date: string; close: number }[];
   snapshot?: { breadth: number; amount: number | null; pctChg: number } };
-export type Rotation = { items: RotationItem[]; coveredCount: number; totalCount: number; asOf: string | null; updatedAt: string | null; snapshotAsOf?: string };
+export type Rotation = { items: RotationItem[]; coveredCount: number; totalCount: number; asOf: string | null; updatedAt: string | null; snapshotAsOf?: string;
+  sourceProvider?: 'ths' | 'eastmoney'; scope?: string };
 export type SelectionHistory = { sessions: number; page: number; pageSize: number; total: number; asOf: string;
   summaries: (FeedbackSummary & { key: string; name: string; days: number })[];
   entries: { id: number; runDate: string; strategyKey: string; name: string; publishedAt: string; origin: 'first_success' | 'retained_cache';
     picks: { code: string; name: string; reason: string; outcome: Partial<ForecastOutcome> & { status: string; note: string } }[] }[] };
 export type ComparisonWinner = { code: string; name: string; returnPct: number; entryPrice: number; exitPrice: number; url: string; checkedAt: string };
 export type ConceptComparison = { reportId: number; days: number; status: string; strongest: ComparisonWinner | null;
+  conceptProvider?: 'ths' | 'eastmoney' | null;
   leaders: ComparisonWinner[]; coveredCount: number; totalCount: number; scope: string; universeAsOf: string | null;
   entryDate: string | null; exitDate: string | null; fullCoverage?: boolean; averageSelectedReturn: number | null; selectedCount?: number;
   waitingCount?: number; missingCount?: number; staleCount?: number; lastCheckedAt?: string | null; message?: string | null;

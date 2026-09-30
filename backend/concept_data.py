@@ -14,7 +14,8 @@ import requests
 from . import database
 from .data_sources import market_data, number_or_none
 from .eastmoney import COMMON_PARAMS, SPOT_FIELD_MAP, EastmoneyClient
-from .history_sources import TushareHistoryClient, normalize_bars
+from .history_sources import TushareHistoryClient, normalize_bars, ths_concept_history
+from .concept_identity import concept_provider
 from .storage_policy import CONCEPT_HISTORY_CACHE_VERSION
 
 MARKET_RESEARCH_LIMIT = 12
@@ -84,7 +85,8 @@ class ConceptResearchClient(EastmoneyClient):
         raise RuntimeError(f"概念研究数据源暂不可用：{reason}")
 
     def daily_history(self, code: str, trade_date: str) -> list[dict]:
-        if not re.fullmatch(r"BK\d+", code):
+        provider = concept_provider(code)
+        if provider is None:
             raise ValueError("概念代码格式不正确")
         end = datetime.strptime(trade_date, "%Y%m%d")
         cache_key = f"concept_history:{code}:{trade_date}:v{CONCEPT_HISTORY_CACHE_VERSION}"
@@ -96,6 +98,13 @@ class ConceptResearchClient(EastmoneyClient):
         if (isinstance(saved, dict) and saved.get("closed") and saved.get("rows")
                 and trade_date < database.china_date().replace("-", "")):
             return saved["rows"]
+        if provider == "ths":
+            result = ths_concept_history(code, (end - timedelta(days=60)).strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
+            rows = [{"date": row["date"].replace("-", ""), "close": row["close"], "amount": row.get("amount"),
+                     "pctChg": row.get("pctChg"), "historySource": result["source"], "historyUrl": result["url"]}
+                    for row in result["rows"]][-40:]
+            self._save_history(cache_key, trade_date, rows)
+            return rows
         if TushareHistoryClient.configured():
             try:
                 result = TushareHistoryClient().history(code, (end - timedelta(days=60)).strftime("%Y-%m-%d"),
@@ -159,6 +168,9 @@ class ConceptResearchClient(EastmoneyClient):
             database.set_meta(cache_key, json.dumps({"fetchedAt": now.isoformat(), "closed": closed, "rows": rows}))
 
     def strong_stocks(self, code: str, trade_date: str) -> list[dict]:
+        if concept_provider(code) == "ths":
+            from .ths import ths_client
+            return ths_client.strong_stocks(code, trade_date)
         urls = [f"https://{host}/api/qt/clist/get" for host in self._hosts("29")[:2]]
         payload = self._json(urls, {
             **COMMON_PARAMS, "fs": f"b:{code} f:!50", "fid": "f3", "pn": "1", "pz": "100",
@@ -334,13 +346,15 @@ def collect_concept_evidence(*, forecast: bool = False) -> dict:
             "mainNetInflow": board.get("mainNetInflow"), **metrics, "stocks": stocks, "warnings": warnings,
             "strengthStatus": "recent_strength" if sustained else "today_active",
             "evidence": [{"id": f"{code}:market", "kind": "data", "title": "概念行情与可用历史表现",
-                          "source": "东方财富概念板块", "publishedAt": overview.get("quoteAsOf") or overview["updatedAt"],
-                          "url": f"https://quote.eastmoney.com/bk/90.{code}.html", "excerpt": "见本卡片行情指标与成份股快照"}],
+                          "source": "同花顺公开概念行情" if concept_provider(code) == "ths" else "东方财富概念板块",
+                          "publishedAt": overview.get("quoteAsOf") or overview["updatedAt"],
+                          "url": "https://q.10jqka.com.cn/gn/" if concept_provider(code) == "ths" else f"https://quote.eastmoney.com/bk/90.{code}.html",
+                          "excerpt": "见本卡片行情指标与成份股快照"}],
         }
         if history and history[-1].get("historySource"):
             candidate["evidence"].append({"id": f"{code}:history", "kind": "data", "title": "概念历史日线",
                                           "source": history[-1]["historySource"], "publishedAt": overview["updatedAt"],
-                                          "url": history[-1]["historyUrl"], "excerpt": "东方财富同代码概念指数历史表现"})
+                                          "url": history[-1]["historyUrl"], "excerpt": "同来源、同代码概念指数历史表现"})
         if forecast:
             from .forecast_data import add_forecast_metrics
             add_forecast_metrics(candidate, history, overview["updatedAt"])
@@ -385,9 +399,10 @@ def collect_concept_evidence(*, forecast: bool = False) -> dict:
                                      row["change5d"] if row["change5d"] is not None else row["pctChg"], row["code"]), reverse=True)
     return {"tradeDate": trade_date, "dataAsOf": overview["updatedAt"], "quoteAsOf": overview.get("quoteAsOf"),
             "comparisonUniverse": {"asOf": overview["updatedAt"],
-                "scope": "预测当时可获取的全部有效概念" if overview.get("conceptUniverse") else "预测当时可获取的概念候选（非全市场）",
+                "scope": overview.get("scope") or ("预测当时可获取的全部有效概念" if overview.get("conceptUniverse") else "预测当时可获取的概念候选（非全市场）"),
                 "boards": overview.get("conceptUniverse") or [{"code": row["code"], "name": row["name"]} for row in selected]},
-            "scope": (f"从概念涨幅榜与成交额榜选取{len(selected)}个活跃方向比较（非全市场穷举）。"
+            "scope": ((overview.get("scope", "") + "。" if overview.get("scope") else "")
+                      + f"从概念涨幅榜与成交额榜选取{len(selected)}个活跃方向比较（非全市场穷举）。"
                       + ("保留短期回调方向，预测的是候选间的相对强势机会。" if forecast else
                          "优先近5/10日正收益方向；历史缺失或短期回调时，仅将当日上涨方向列为活跃观察。")),
             "warnings": list(dict.fromkeys([*overview.get("warnings", []), *([freshness_note] if freshness_note else [])])),

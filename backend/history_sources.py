@@ -85,11 +85,11 @@ def sina_index_history(code: str, start: str, end: str) -> dict:
 
 
 def ths_concept_history(code: str, start: str, end: str) -> dict:
-    """Explicit THS namespace for diagnostics/research, never a BK forecast fallback."""
+    """Explicit THS namespace; never substitute this series for an Eastmoney BK index."""
     if not re.fullmatch(r"THS:88\d{4}", code):
         raise ValueError("同花顺概念必须使用 THS:88xxxx 代码，不能传入东财 BK 代码")
     validate_window(start, end)
-    symbol, raw_rows = code.split(":")[1], []
+    symbol, raw_rows, amounts = code.split(":")[1], [], {}
     for year in range(int(start[:4]), int(end[:4]) + 1):
         callback = f"quotebridge_v4_line_bk_{symbol}_01_{year}"
         text = _get_text(f"https://d.10jqka.com.cn/v4/line/bk_{symbol}/01/{year}.js", {},
@@ -103,8 +103,18 @@ def ths_concept_history(code: str, start: str, end: str) -> dict:
             row = line.split(",")
             if len(row) >= 5 and re.fullmatch(r"\d{8}", row[0]):
                 day = row[0]
-                raw_rows.append([f"{day[:4]}-{day[4:6]}-{day[6:]}", row[1], row[4], row[2], row[3]])
-    return {"rows": normalize_bars(raw_rows, start, end), "source": "同花顺概念指数日线（独立口径）",
+                day = f"{day[:4]}-{day[4:6]}-{day[6:]}"
+                raw_rows.append([day, row[1], row[4], row[2], row[3]])
+                try:
+                    amount = float(row[6])
+                    amounts[day] = amount if math.isfinite(amount) and amount >= 0 else None
+                except (IndexError, TypeError, ValueError):
+                    amounts[day] = None
+    rows = normalize_bars(raw_rows, start, end)
+    for index, row in enumerate(rows):
+        row["amount"] = amounts.get(row["date"])
+        row["pctChg"] = (row["close"] / rows[index - 1]["close"] - 1) * 100 if index else None
+    return {"rows": rows, "source": "同花顺概念指数日线（独立口径）",
             "url": "https://q.10jqka.com.cn/gn/", "code": code}
 
 

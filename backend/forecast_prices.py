@@ -12,7 +12,7 @@ from datetime import date
 from . import database
 from .concept_data import ConceptResearchClient
 from .history_sources import (
-    TushareHistoryClient, history_covers_window, normalize_bars, sina_index_history, validate_window,
+    TushareHistoryClient, history_covers_window, normalize_bars, sina_index_history, ths_concept_history, validate_window,
 )
 
 CALENDAR_KEY = "forecast_trade_calendar:v1"
@@ -128,11 +128,14 @@ class FeedbackPriceClient(ConceptResearchClient):
         return {"rows": bars, "source": "腾讯证券指数日线", "url": f"https://gu.qq.com/{code}/zs"}
 
     def history(self, code: str, start: str, end: str) -> dict:
-        if not re.fullmatch(r"BK\d+|sh000001|sh000688", code):
+        if not re.fullmatch(r"BK\d+|THS:88\d{4}|sh000001|sh000688", code):
             raise ValueError("不支持的复盘标的")
         validate_window(start, end)
         # Independent benchmark sources avoid waiting on the failing BK service.
-        if code.startswith("sh"):
+        if code.startswith("THS:"):
+            # A THS index is never a transport fallback for a similarly named BK index.
+            providers = [("同花顺", ths_concept_history)]
+        elif code.startswith("sh"):
             providers = [("腾讯", self.tencent_history), ("新浪", sina_index_history),
                          ("东方财富", self.eastmoney_history)]
         else:

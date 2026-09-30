@@ -22,6 +22,7 @@ export type ForecastConcept = Omit<RecommendedConcept, 'reason' | 'risk' | 'driv
 };
 
 export type ForecastResearch = {
+  conceptProvider?: 'ths' | 'eastmoney' | null;
   summary: string; tradeDate: string; dataAsOf: string; scope: string; warnings: string[];
   window: { generatedOn: string; startDate: string; endDate: string; calendarDays: number };
   concepts: ForecastConcept[];

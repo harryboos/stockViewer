@@ -191,7 +191,7 @@ export type MarketOverview = {
 };
 
 export type SectorLeader = {
-  role: '领涨龙头' | '资金龙头';
+  role: '领涨龙头' | '资金龙头' | '样本强势股';
   code: string | null;
   name: string;
   price: number | null;
@@ -221,6 +221,8 @@ export type SectorOverview = {
   tradeDate: string;
   updatedAt: string;
   source: string;
+  sourceProvider?: 'ths' | 'eastmoney';
+  scope?: string;
   summary: {
     industryCount: number;
     conceptCount: number;

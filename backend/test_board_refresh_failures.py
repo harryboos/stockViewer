@@ -53,7 +53,7 @@ class BoardRefreshFailureTests(unittest.TestCase):
         self.assertEqual(str(caught.exception), "东财备用：远端中断连接；AKShare：返回空数据")
 
     def test_failed_refresh_keeps_cached_date_and_explains_each_category(self):
-        service = MarketDataService()
+        service = MarketDataService(sector_source="eastmoney")
         cached = {"tradeDate": "20260930", "updatedAt": "2026-09-30T16:00:00+08:00", "warnings": []}
         with (patch.object(service, "_cached_json", return_value=cached),
               patch.object(service, "market_snapshot", return_value=[{"tradeDate": "20260930"}]),

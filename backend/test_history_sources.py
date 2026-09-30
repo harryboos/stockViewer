@@ -162,8 +162,11 @@ class AlternativeHistoryTests(unittest.TestCase):
                 ths_concept_history("THS:885756", "2026-09-18", "2026-09-21")
         with self.assertRaises(ValueError):
             ths_concept_history("BK1152", "2026-09-18", "2026-09-21")
-        with self.assertRaises(ValueError):
-            FeedbackPriceClient().history("THS:886042", "2026-09-18", "2026-09-21")
+        with (patch("backend.forecast_prices.ths_concept_history", return_value=result) as ths,
+              patch.object(FeedbackPriceClient, "eastmoney_history") as east):
+            self.assertEqual(FeedbackPriceClient().history("THS:886042", "2026-09-18", "2026-09-21"), result)
+            ths.assert_called_once()
+            east.assert_not_called()
         with self.assertRaises(ValueError):
             sina_index_history("BK1152", "2026-09-18", "2026-09-21")
 

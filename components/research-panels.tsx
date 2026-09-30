@@ -20,6 +20,7 @@ export function RotationPanel() {
   return <section className="research-panel"><header className="research-heading"><div><p className="eyebrow">从单日热点到持续趋势</p><h2>板块轮动</h2><p>比较完整交易日涨幅，排名变化相对 5 个交易日前，采用同一已覆盖概念范围。</p></div><JobButton jobKey="rotation" label="更新轮动数据" /></header>
     <ResearchError error={error} retry={refresh} /><div className="research-filters"><div className="feedback-periods">{['5', '10', '20'].map(value => <button key={value} aria-pressed={days === value} onClick={() => setDays(value)}>{value} 个交易日</button>)}</div><input placeholder="搜索概念名称" aria-label="搜索轮动概念" value={query} onChange={event => setQuery(event.target.value)} /></div>
     <p className="data-note">截至 {data?.asOf || '等待数据'} · 已核对 {data?.coveredCount ?? 0}/{data?.totalCount ?? 0} 个概念 · 部分覆盖时排名仅代表已核对范围，缺失值不按 0 计算。</p>
+    {data?.scope && <p className="data-note">{data.scope}</p>}
     {sorted.length ? <div className="research-table-wrap" role="region" aria-label="研究数据，可横向滚动" tabIndex={0}><table className="research-table"><thead><tr><th>概念 / 排名</th><th>{days} 日涨幅</th><th>排名升降</th><th>近 26 日走势</th><th>最新上涨广度</th></tr></thead><tbody>{sorted.map(row => {
       const min = Math.min(...row.path.map(point => point.close)); const max = Math.max(...row.path.map(point => point.close));
       const points = row.path.map((point, index) => `${index / Math.max(1, row.path.length - 1) * 140},${35 - (point.close - min) / (max - min || 1) * 30}`).join(' ');
@@ -53,7 +54,7 @@ export function ComparisonResult({ data, error = null, refresh = () => {} }: { d
     data?.waitingCount ? `待取得行情 ${data.waitingCount} 个概念` : null,
     data?.missingCount ? `缺少日线 ${data.missingCount} 个概念` : null,
   ].filter(Boolean).join(' · ');
-  return <section className="comparison-panel"><h4>同期最强概念对照 <span>事后比较</span></h4><ResearchError error={error} retry={refresh} />
+  return <section className="comparison-panel"><h4>{data?.conceptProvider === 'ths' ? '同期样本最强概念对照' : '同期最强概念对照'} <span>事后比较</span></h4><ResearchError error={error} retry={refresh} />
     <p>{data?.entryDate || '等待观察区间'} → {data?.exitDate || '—'} · 已核对 {data?.coveredCount ?? 0}/{data?.totalCount ?? 0} 个概念{data?.status === 'tracking' ? ' · 期间尚未结束' : ''}</p>
     {data?.message && <p className="research-error" role="status">{data.message}</p>}
     {progress && <p className="data-note">{progress}</p>}
