@@ -198,7 +198,7 @@ class ForecastRunTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(model.await_args.args[2], "glm-5.3")
             self.assertEqual(model.await_args.kwargs["reasoning_effort"], "max")
             self.assertTrue(model.await_args.kwargs["resilient_stream"])
-            collect.assert_called_once_with(forecast=True)
+            collect.assert_called_once_with(forecast=True, discovery_key="test-key")
             forecast.enrich_world_news.assert_awaited_once()
             self.assertTrue(forecast.enrich_world_news.await_args.kwargs["forecast"])
             await forecast.start_forecast_run(True)

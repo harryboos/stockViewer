@@ -100,7 +100,11 @@ def refresh_comparisons(progress) -> dict:
     def priority(item):
         checked, report, board, days, _, position, deferred = item
         selected = any(row['code'] == board['code'] for row in report['result']['concepts'])
-        return (not selected, not deferred, checked, position, -report['id'], days)
+        plan = report['result'].get('evaluationPlan') or {}
+        evaluation_codes = set(plan.get('candidateCodes', []))
+        for baseline in plan.get('baselines', []):
+            evaluation_codes.update(baseline.get('codes', []))
+        return (not selected, board['code'] not in evaluation_codes, not deferred, checked, position, -report['id'], days)
     batch = sorted(pending, key=priority)
     requests = list(dict.fromkeys(history_request(board["code"], *span, closed=closed) for _, _, board, _, span, _, _ in batch))
     progress(0, len(requests), "读取同期概念日线（相同概念共用一次查询）")

@@ -119,6 +119,7 @@ def refresh_status() -> dict:
 
 
 def history_payload(page: int = 1, page_size: int = 10, *, as_of: datetime | None = None) -> dict:
+    from .forecast_evaluation import evaluation_payload
     from .forecast_feedback import pending_outcome
     now = as_of or datetime.now(database.CHINA_TZ)
     refresh = refresh_status()
@@ -139,6 +140,7 @@ def history_payload(page: int = 1, page_size: int = 10, *, as_of: datetime | Non
                  for row in db.execute(selected + """SELECT report_id, concept_code, horizon_days,
                      json_remove(result_json, '$.path') AS result_json FROM forecast_feedback
                      WHERE report_id IN (SELECT id FROM selected_ids)""", pagination)}
+        evaluation = evaluation_payload(db, as_of=now)
     cohorts = {str(days): [] for days in HORIZONS}
     entries, abstentions = [], 0
     for row in rows:
@@ -177,11 +179,12 @@ def history_payload(page: int = 1, page_size: int = 10, *, as_of: datetime | Non
     return {"reports": entries, "page": page, "pageSize": page_size, "totalReports": total,
             "forecastDays": sum(row["is_primary"] for row in rows), "abstentionDays": abstentions,
             "summaries": {days: summarize(items) for days, items in cohorts.items()},
-            "refresh": refresh, "asOf": now.isoformat(timespec="seconds")}
+            "refresh": refresh, "evaluation": evaluation, "asOf": now.isoformat(timespec="seconds")}
 
 
 def feedback_context(as_of: datetime | None = None) -> dict:
     """Only completed outcomes known before this prediction enter its prompt."""
+    from .forecast_comparison_feedback import missed_leader_cases
     now = as_of or datetime.now(database.CHINA_TZ)
     cohorts = {str(days): [] for days in HORIZONS}
     cases, reports = [], {}
@@ -211,7 +214,8 @@ def feedback_context(as_of: datetime | None = None) -> dict:
                               **{key: item.get(key) for key in ("entryDate", "exitDate", "returnPct", "maxDrawdownPct", "benchmarks")}})
     return {"asOf": now.isoformat(), "sampleUnit": "每日首次成功预测中的每个概念，等权",
             "summaries": {days: summarize(items) for days, items in cohorts.items()}, "recentCases": cases,
-            "limits": "仅已到期且已核对结果；重叠区间与重复概念非独立样本。30日是原15日预测的延伸观察。收益不证明因果或失效条件已经发生。"}
+            "missedLeaderCases": missed_leader_cases(now),
+            "limits": "仅已到期且已核对结果；重叠区间与重复概念非独立样本。漏选案例仅指已覆盖同源范围内最强，重叠赢家合并；无原始候选审计时不能判断是否入池。30日是原15日预测的延伸观察。收益不证明因果、事前可预测性或失效条件已经发生。"}
 
 
 def tracking_is_current(item: dict, calendar: list[str], now: datetime) -> bool:

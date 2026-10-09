@@ -1,0 +1,38 @@
+.panel { margin: 0 0 22px; padding: 18px; border: 1px solid var(--line); border-radius: 12px; background: #f4f8f4; }
+.panel > summary { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; cursor: pointer; color: #21583f; font-weight: 600; }
+.panel > summary::before { content: '▸'; }
+.panel[open] > summary::before { content: '▾'; }
+.panel > summary > span { flex: 1; }
+.panel > summary > small { color: #63776b; font-size: 12px; font-weight: 400; }
+.card { margin-top: 16px; padding: 18px; background: #fff; border: 1px solid var(--line); border-radius: 10px; min-width: 0; }
+.header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.header > div { min-width: 0; }
+.header h4 { margin: 0; font-size: 14px; overflow-wrap: anywhere; color: #294b38; }
+.header p { color: #6b7c70; font-size: 12px; margin: 5px 0 0; }
+.tag { flex-shrink: 0; font-size: 12px; color: #376447; padding: 4px 8px; background: #edf5ef; border-radius: 5px; }
+.stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin: 20px 0 12px; }
+.stats dt { font-size: 12px; color: #64756b; }
+.stats dd { margin: 6px 0; font-size: 23px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.stats small { font-size: 11px; color: #6b7c70; line-height: 1.6; }
+.note { margin: 12px 0 0; color: #64766b; font-size: 12px; line-height: 1.85; }
+.warning { margin: 12px 0; padding: 10px 12px; background: #fff2e8; border-radius: 6px; color: #955226; font-size: 12px; }
+.scroll { max-width: 100%; overflow-x: auto; margin-top: 18px; }
+.table { width: 100%; min-width: 570px; border-collapse: collapse; text-align: left; font-size: 12px; }
+.table caption { text-align: left; padding: 0 0 10px; font-weight: 600; color: #385343; }
+.table th, .table td { padding: 12px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.table thead th { background: #f7faf7; font-weight: 500; color: #637669; }
+.table tbody th { font-weight: 500; color: #385343; }
+.table td { font-variant-numeric: tabular-nums; }
+.details { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
+.details summary { color: #237249; cursor: pointer; font-size: 12px; }
+.cases { padding: 0; list-style: none; margin: 12px 0; }
+.cases li { padding: 10px 12px; margin-top: 8px; background: #f5f8f5; border-radius: 6px; font-size: 12px; }
+.cases li > div { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
+.cases small { display: block; color: #67796c; line-height: 1.7; margin-top: 6px; }
+@media (max-width: 700px) {
+  .panel, .card { padding: 14px; }
+  .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+  .stats dd { font-size: 21px; }
+  .header { flex-wrap: wrap; }
+  .panel > summary > small { flex-basis: 100%; margin-left: 16px; }
+}

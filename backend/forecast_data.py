@@ -19,7 +19,9 @@ def technical_metrics(history: list[dict], trade_date: str) -> dict:
     bars = sorted({row["date"]: row for row in history
                    if row["date"] <= trade_date and (number_or_none(row.get("close")) or 0) > 0}.values(),
                   key=lambda row: row["date"])
-    result = dict.fromkeys(("lastClose", "ma5", "ma10", "ma20", "rsi14", "distanceTo20dHigh", "amountRatio5d"))
+    result = dict.fromkeys(("lastClose", "ma5", "ma10", "ma20", "rsi14", "distanceTo20dHigh", "amountRatio5d",
+                           "change3d", "change20d", "previousChange5d", "momentumChange5d",
+                           "distanceToMa20", "ma5Slope5d", "upDays5d", "drawdown5d"))
     result["historyAsOf"] = bars[-1]["date"] if bars else None
     if not bars or bars[-1]["date"] != trade_date:
         return result
@@ -28,8 +30,26 @@ def technical_metrics(history: list[dict], trade_date: str) -> dict:
     for size in (5, 10, 20):
         if len(closes) >= size:
             result[f"ma{size}"] = round(statistics.mean(closes[-size:]), 2)
+    for size in (3, 20):
+        if len(closes) > size:
+            result[f"change{size}d"] = round((closes[-1] / closes[-size - 1] - 1) * 100, 2)
+    if len(closes) >= 6:
+        window = closes[-6:]
+        result["upDays5d"] = sum(right > left for left, right in zip(window, window[1:]))
+        peak, drawdown = window[0], 0.0
+        for close in window[1:]:
+            peak = max(peak, close)
+            drawdown = min(drawdown, (close / peak - 1) * 100)
+        result["drawdown5d"] = round(drawdown, 2)
+    if len(closes) >= 11:
+        previous = (closes[-6] / closes[-11] - 1) * 100
+        result["previousChange5d"] = round(previous, 2)
+        result["momentumChange5d"] = round((closes[-1] / closes[-6] - 1) * 100 - previous, 2)
+    if len(closes) >= 10:
+        result["ma5Slope5d"] = round((statistics.mean(closes[-5:]) / statistics.mean(closes[-10:-5]) - 1) * 100, 2)
     if len(closes) >= 20:
         result["distanceTo20dHigh"] = round((closes[-1] / max(closes[-20:]) - 1) * 100, 2)
+        result["distanceToMa20"] = round((closes[-1] / statistics.mean(closes[-20:]) - 1) * 100, 2)
     if len(closes) >= 15:
         changes = [right - left for left, right in zip(closes, closes[1:])]
         gain = statistics.mean(max(change, 0) for change in changes[:14])

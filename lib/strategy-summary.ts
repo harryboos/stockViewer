@@ -6,8 +6,6 @@ type Signal = {
   code: string;
   name: string;
   sources: string[];
-  scoreTotal: number;
-  scoreCount: number;
 };
 
 export function buildStrategySummary(
@@ -16,30 +14,28 @@ export function buildStrategySummary(
   dataSourceName: string,
 ): StrategySummary {
   const signals = new Map<string, Signal>();
-  const addSignal = (code: string, name: string, source: string, score: number) => {
-    const current = signals.get(code) ?? { code, name, sources: [], scoreTotal: 0, scoreCount: 0 };
+  const addSignal = (code: string, name: string, source: string) => {
+    const current = signals.get(code) ?? { code, name, sources: [] };
     if (current.sources.includes(source)) return;
     current.sources.push(source);
-    current.scoreTotal += score;
-    current.scoreCount += 1;
     signals.set(code, current);
   };
 
   publicStrategies.forEach((strategy) => {
-    strategy.picks.forEach((pick) => addSignal(pick.code, pick.name, strategy.name, pick.score));
+    strategy.picks.forEach((pick) => addSignal(pick.code, pick.name, strategy.name));
   });
   aiRuns.forEach((run) => {
     if (run.status !== 'succeeded') return;
-    run.result?.picks.forEach((pick) => addSignal(pick.code, pick.name, AI_META[run.provider].model, pick.score));
+    run.result?.picks.forEach((pick) => addSignal(pick.code, pick.name, AI_META[run.provider].model));
   });
 
   const ranked = [...signals.values()]
     .map((item) => ({
       ...item,
       count: item.sources.length,
-      averageScore: Math.round(item.scoreTotal / Math.max(item.scoreCount, 1)),
     }))
-    .sort((left, right) => right.count - left.count || right.averageScore - left.averageScore);
+    // Model/strategy scores are not calibrated to a shared scale.
+    .sort((left, right) => right.count - left.count || left.code.localeCompare(right.code));
   const consensus = ranked.filter((item) => item.count >= 2).slice(0, 5);
   const ruleCount = publicStrategies.filter((strategy) => strategy.runDate).length;
   const rulesWithPicks = publicStrategies.filter((strategy) => strategy.picks.length > 0).length;

@@ -12,7 +12,7 @@ export function SourceLinks({ sources }: { sources: ConceptSource[] }) {
   return sources.map((source) => (
     <div className="concept-ai-source" key={source.id}>
       <a href={source.url} target="_blank" rel="noopener noreferrer">
-        {source.title} ↗<small>{source.source} · {timestamp(source.publishedAt)}</small>
+        {source.title} ↗<small>{source.source} · {source.publishedAtPrecision === 'date' ? `${source.publishedAt.slice(0, 10)}（时刻未知）` : timestamp(source.publishedAt)}{source.temporalRelation === 'after_quote' ? ' · 晚于行情快照' : source.temporalRelation === 'unknown' ? ' · 与行情的先后未核实' : ''}</small>
       </a>
       {source.kind === 'news' && <details><summary>查看报道摘录</summary><p>{source.excerpt}</p></details>}
     </div>
@@ -33,7 +33,7 @@ export function ConceptResearchCards({ research, today }: { research: ConceptRes
           <article className="concept-ai-card" key={concept.code}>
             <header className="concept-ai-card-heading">
               <span className="concept-ai-rank">{String(index + 1).padStart(2, '0')}</span>
-              <div><small>{concept.strengthStatus === 'recent_strength' ? '近期强势' : '当日活跃观察'} · {concept.code}</small><h3>{concept.name}</h3></div>
+              <div><small>{concept.strengthStatus === 'recent_strength' ? '近期正收益观察' : '当日活跃观察'} · {concept.code}</small><h3>{concept.name}</h3></div>
               <div className="concept-ai-move"><small>{sessionLabel}</small><strong className={tone(concept.pctChg)}>{percent(concept.pctChg)}</strong></div>
             </header>
             <p className="concept-ai-reason">{concept.reason}</p>
@@ -49,6 +49,7 @@ export function ConceptResearchCards({ research, today }: { research: ConceptRes
             {concept.historyAsOf && concept.historyAsOf !== research.tradeDate && <p className="concept-ai-data-note">历史行情截至 {shortTradeDate(concept.historyAsOf)}，缺失的近期涨幅暂不展示。</p>}
             <section className="concept-ai-catalysts" aria-label={`${concept.name}现实催化`}>
               <h4>现实催化 · 为什么走强</h4>
+              {!concept.catalysts.length && <p className="concept-ai-data-note">尚未找到可核对的现实催化，行情强势的原因仍待确认。</p>}
               {concept.catalysts.map((catalyst, catalystIndex) => (
                 <div className="concept-ai-catalyst" key={catalystIndex}>
                   <div className="concept-ai-catalyst-title"><span className={`concept-ai-evidence ${catalyst.status === 'reported' ? 'news' : 'hypothesis'}`}>{catalyst.status === 'reported' ? '有报道支持' : '待验证机制'}</span><strong>{catalyst.title}</strong></div>

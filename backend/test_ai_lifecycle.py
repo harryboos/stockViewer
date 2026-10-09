@@ -26,6 +26,8 @@ class AiLifecycleTests(unittest.IsolatedAsyncioTestCase):
             target.start()
             self.addCleanup(target.stop)
         database.initialize()
+        self.candidates = [{"symbol": "600001", "name": "测试股票", "quote": {
+            "tradeDate": database.china_date(), "close": 10, "pctChg": 2, "amount": 100_000_000}}]
 
     async def test_ai_database_work_does_not_run_on_the_event_loop(self):
         loop_thread = threading.get_ident()
@@ -46,7 +48,7 @@ class AiLifecycleTests(unittest.IsolatedAsyncioTestCase):
             stack.enter_context(patch.object(concept_ai, "collect_concept_evidence", return_value=evidence))
             stack.enter_context(patch.object(concept_forecast, "collect_evidence", new_callable=AsyncMock, return_value=evidence))
             stack.enter_context(patch.object(concept_forecast, "feedback_context", return_value={}))
-            await ai._execute_provider("deepseek", [])
+            await ai._execute_provider("deepseek", self.candidates)
             await concept_ai.start_concept_run()
             await concept_forecast.start_forecast_run()
             while concept_ai._tasks or concept_forecast._tasks:
@@ -119,7 +121,7 @@ class AiLifecycleTests(unittest.IsolatedAsyncioTestCase):
         try:
             with patch.object(ai, "_call_compatible", new_callable=AsyncMock,
                               side_effect=Exception("Authorization: Bearer private-key; private prompt")):
-                await ai._execute_provider("deepseek", [])
+                await ai._execute_provider("deepseek", self.candidates)
             self.assertEqual(research_jobs.ai_token.get(), "outer-token")
             error = database.read_ai_run("deepseek", database.china_date())["error"]
             self.assertNotIn("private", error)

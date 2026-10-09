@@ -203,7 +203,10 @@ export function StrategiesView({
                     : run.status === 'failed' ? run.error : '点击生成后才开始分析真实行情。'
                 ) ?? '模型运行失败，请点击重试'} />
                 <div className="logic-line"><span>选股逻辑</span><ExpandableCopy className="logic-copy" previewLength={120} text={result?.logic ?? meta.logic} /></div>
+                {result?.snapshotDate && <p className="data-note">行情日期 {shortTradeDate(result.snapshotDate)} · 比较 {result.candidateCount ?? '—'} 只候选 · 评分为本次研究优先级</p>}
+                {!!result?.limitations?.length && <ExpandableCopy className="data-note" previewLength={100} text={result.limitations.join('；')} label="资料范围" />}
                 <div className="ai-picks">
+                  {result && !result.picks.length && <div className="ai-empty"><strong>本次保持观望</strong><span>当前证据不足以给出股票名单，原因见上方判断。</span></div>}
                   {result?.picks.map((pick, index) => (
                     <div className="ai-pick-row" key={pick.code}>
                       <span className="rank-circle">{index + 1}</span>
@@ -212,7 +215,7 @@ export function StrategiesView({
                         <ExpandableCopy className="ai-pick-reason" previewLength={110} text={pick.reason} />
                         <ExpandableCopy className="pick-risk" previewLength={80} text={pick.risk} label="风险" />
                       </div>
-                      <div className="score"><i style={{ width: `${Math.max(pick.score - 25, 10)}%` }} /><span>{pick.score}</span></div>
+                      <div className="score" title="本次候选内的研究优先级，不是胜率"><i style={{ width: `${Math.max(pick.score - 25, 10)}%` }} /><span>{pick.score}</span></div>
                     </div>
                   )) ?? (
                     <div className="ai-empty"><span className={run.status === 'running' ? 'loading-ring' : ''} /><strong>{run.status === 'running' ? '模型正在分析真实行情' : '暂无真实结果'}</strong></div>
@@ -242,7 +245,7 @@ export function StrategiesView({
         </div>
         <div className="summary-body">
           <div className="consensus-panel">
-            <div className="summary-subhead"><strong>多策略共识</strong><span>至少被两种独立方法选中</span></div>
+            <div className="summary-subhead"><strong>多策略共识</strong><span>至少被两种方法选中 · 按共同关注次数排列</span></div>
             {summary.consensus.length ? (
               <div className="consensus-list">{summary.consensus.map((item, index) => (
                 <div key={item.code}><span className="consensus-rank">{index + 1}</span><div><StockLink code={item.code}><strong>{item.name}</strong></StockLink><small>{item.code} · {item.sources.join(' / ')}</small></div><span className="consensus-count"><b>{item.count}</b> 种</span></div>

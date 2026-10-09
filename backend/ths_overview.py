@@ -7,6 +7,7 @@ from datetime import datetime
 
 from . import database
 from .config import MARKET
+from .forecast_candidates import forecast_candidate_metadata, select_forecast_boards
 from .source_errors import source_failure_reason
 from .storage_policy import SECTOR_OVERVIEW_CACHE_VERSION
 
@@ -94,6 +95,7 @@ def sector_overview(service, force: bool = False) -> dict:
         warnings.append("同花顺公开榜单活跃样本，非全市场；未取得的资金流和昨日成交额显示为空")
         scope = f"同花顺公开榜单活跃概念样本（本次核验 {len(rows['concept'])} 个，非全市场）"
         now = database.now_iso()
+        forecast_concepts = select_forecast_boards(rows["concept"])
         result = {
             "tradeDate": quoted_at.strftime("%Y%m%d"), "quoteAsOf": quoted_at.isoformat(timespec="seconds"),
             "updatedAt": now, "refreshAttemptedAt": now,
@@ -109,6 +111,9 @@ def sector_overview(service, force: bool = False) -> dict:
             "conceptBoards": rows["concept"][:SECTOR_DISPLAY_LIMIT],
             "researchConcepts": list({row["code"]: row for row in [*rows["concept"][:9],
                 *sorted(rows["concept"], key=lambda row: row.get("amount") or 0, reverse=True)[:3]]}.values()),
+            "forecastConcepts": forecast_concepts,
+            "forecastDiscoveryBoards": rows["concept"],
+            "forecastCandidateSelection": forecast_candidate_metadata(rows["concept"], forecast_concepts),
             "conceptUniverse": [{"code": row["code"], "name": row["name"]} for row in rows["concept"]],
             "turnoverBoards": turnover, "warnings": list(dict.fromkeys(warnings)),
         }

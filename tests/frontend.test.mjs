@@ -378,12 +378,46 @@ test('failed and running AI results never contribute to consensus', () => {
   }
 });
 
-test('a successful independent AI result contributes once to consensus', () => {
+test('a successful AI result contributes once to consensus', () => {
   const result = summary.buildStrategySummary([rule], [
     { provider: 'deepseek', status: 'succeeded', result: { picks: [pick, pick] } },
   ], 'AKShare');
   assert.equal(result.consensus[0].count, 2);
-  assert.equal(result.consensus[0].scoreCount, 2);
+  assert.equal(result.consensus[0].sources.length, 2);
+});
+
+test('consensus ordering never averages uncalibrated scores across methods', () => {
+  const picks = [{ ...pick, code: '600001', score: 1 }, { ...pick, code: '600002', score: 100 }];
+  const runs = [{ provider: 'deepseek', status: 'succeeded', result: { picks } }];
+  const ranked = summary.buildStrategySummary([{ ...rule, picks }], runs, 'AKShare').consensus;
+  assert.deepEqual(ranked.map(item => item.code), ['600001', '600002']);
+  assert.ok(ranked.every(item => item.count === 2 && !('averageScore' in item)));
+  assert.equal(summary.buildStrategySummary([rule], [{ ...runs[0], result: { picks: [] } }], 'AKShare').consensus.length, 0);
+});
+
+test('date-only news sources do not display invented midnight timestamps', () => {
+  const html = renderToStaticMarkup(createElement(concepts.SourceLinks, { sources: [{
+    id: 'BK1001:news:1', title: '测试公告', kind: 'news', source: '公告源', url: 'https://example.org/news',
+    excerpt: '公告内容', publishedAt: '2026-09-11T00:00:00+08:00', publishedAtPrecision: 'date', temporalRelation: 'unknown',
+  }] }));
+  assert.ok(html.includes('2026-09-11（时刻未知）'));
+  assert.ok(html.includes('与行情的先后未核实'));
+  assert.ok(!html.includes('00:00'));
+});
+
+test('successful stock abstention stays visible with its snapshot limitations', async () => {
+  const { StrategiesView } = await server.ssrLoadModule('/components/strategies-view.tsx');
+  const runs = [{ provider: 'glm', model: 'glm-5.3', status: 'succeeded', result: {
+    title: '当前保持观望', summary: '单日证据不足，不强行推荐。', logic: '根据已提供的快照比较。', picks: [],
+    snapshotDate: '20260930', candidateCount: 10, limitations: ['只有单日行情，未提供完整财报。'],
+  } }];
+  const html = renderToStaticMarkup(createElement(StrategiesView, {
+    today: '2026-10-01', status: null, strategies: [], aiRuns: runs, loading: false, onLoad() {}, onRerun() {},
+    summary: summary.buildStrategySummary([], runs, 'AKShare'),
+  }));
+  for (const text of ['本次保持观望', '2026-09-30', '10 只候选', '未提供完整财报', '评分为本次研究优先级']) {
+    assert.ok(html.includes(text), text);
+  }
 });
 
 test('JSON client reports malformed successful responses and backend errors', async (t) => {

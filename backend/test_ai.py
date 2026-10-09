@@ -75,7 +75,8 @@ class AiProviderTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_failed_current_run_can_retry_without_force(self) -> None:
         candidates = [
-            {"symbol": f"60000{index}", "name": f"测试股票{index}", "quote": {}}
+            {"symbol": f"60000{index}", "name": f"测试股票{index}", "quote": {
+                "tradeDate": "20260828", "close": 10, "pctChg": 2, "amount": 100_000_000}}
             for index in range(1, 4)
         ]
         raw = {

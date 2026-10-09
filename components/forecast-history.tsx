@@ -9,6 +9,7 @@ import { ComparisonPanel } from './research-panels';
 import { JobButton } from './research-common';
 import { startPolling } from '@/lib/polling';
 import { submissionMessage, type SubmissionFailure } from '@/lib/task-submission';
+import { ForecastEvaluation } from './forecast-evaluation';
 
 const benchmarks = [['sh000001', '上证指数'], ['sh000688', '科创50']] as const;
 const rate = (value: number | null) => value === null ? '—' : `${value.toFixed(1)}%`;
@@ -126,6 +127,7 @@ export function ForecastHistory({ finishedAt, renderResearch }: { finishedAt?: s
         <p>已到期的统计与近期案例会提供给下一次 GLM 5.3 MAX，帮助审视追涨、证据不足和催化失效风险；价格结果本身不能证明新闻因果或某项失效条件已经发生。更新反馈只读取行情，不额外调用 AI。</p>
       </details>
       <div className="feedback-list-heading"><div><h3>预测档案</h3><p>{data.forecastDays} 个预测日 · {data.totalReports} 个版本 · {data.abstentionDays} 天观望</p></div><div className="feedback-periods" role="group" aria-label="历史表现观察周期">{(['15', '30'] as const).map(horizon => <button key={horizon} aria-pressed={days === horizon} onClick={() => setDays(horizon)}>{horizon === '15' ? '半个月' : '一个月'}</button>)}</div></div>
+      <ForecastEvaluation data={data.evaluation} days={days} />
       {data.totalReports === 0 && <div className="concept-ai-state"><strong>还没有历史预测</strong><p>首次生成预测后会自动留档，随后跟踪实际行情。满 15 天、30 天且行情完整时，分别计入反馈统计；不会补造过去的预测。</p></div>}
       {data.page === page && data.reports.map(entry => <article className="feedback-report" key={entry.id}>
         <header><div><h4>{entry.runDate} 预测</h4><small>发布于 {timestamp(entry.publishedAt)} · 北京时间 · 版本 #{entry.id}{entry.conceptProvider && ` · ${entry.conceptProvider === 'ths' ? '同花顺概念' : '东方财富概念'}`}</small></div><span className={`feedback-cohort ${entry.includedInStats ? 'primary' : ''}`}>{entry.includedInStats ? '当日首次 · 计入统计' : '重生成版本 · 不计统计'}</span></header>

@@ -128,7 +128,9 @@ class AiRunStatusReviewTests(unittest.IsolatedAsyncioTestCase):
         report = {"title": "股票研究", "summary": "依据候选快照研究市场表现。", "logic": "比较行情和成交数据。",
                   "picks": [{"code": f"60000{index}", "name": f"测试{index}", "score": 70,
                              "reason": "相对成交活跃。", "risk": "走势存在不确定性。"} for index in range(1, 4)]}
-        candidates = [{"symbol": pick["code"], "name": pick["name"]} for pick in report["picks"]]
+        candidates = [{"symbol": pick["code"], "name": pick["name"], "quote": {
+            "tradeDate": database.china_date(), "close": 10, "pctChg": 2, "amount": 100_000_000}}
+            for pick in report["picks"]]
         with mock_http(lambda _: httpx.Response(200, json=completion(report, "length"))):
             result = await ai._execute_provider("glm", candidates)
         self.assertEqual(result["status"], "failed")

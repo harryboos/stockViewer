@@ -19,9 +19,11 @@ from .concept_identity import CONCEPT_CODE_PATTERN, single_provider
 from .concept_news import enrich_world_news
 from .forecast_data import forecast_window
 from .forecast_history import feedback_context
+from .forecast_review import REVIEW_INSTRUCTION, candidate_audit
+from .research_prompt import EVIDENCE_RULES, prepare_research_evidence
 from .run_dispatch import shared_start
 
-PROMPT_VERSION = "forecast-v4-concise-glm53-max"
+PROMPT_VERSION = "forecast-v7-discovery-risk-evaluation-glm53-max"
 RUN_NAMESPACE = "forecast:glm"
 logger = logging.getLogger(__name__)
 _tasks: set[asyncio.Task] = set()
@@ -30,12 +32,13 @@ _evidence_lock = threading.Lock()
 _evidence_future: Future | None = None
 
 
-async def collect_evidence() -> dict:
+async def collect_evidence(key: str | None = None) -> dict:
     """A timed-out synchronous fetch keeps running; subsequent jobs share it, not more threads."""
     global _evidence_future
     with _evidence_lock:
         if _evidence_future is None or _evidence_future.done():
-            _evidence_future = _evidence_executor.submit(collect_concept_evidence, forecast=True)
+            _evidence_future = _evidence_executor.submit(collect_concept_evidence, forecast=True,
+                                                       **({"discovery_key": key} if key else {}))
         future = _evidence_future
     wrapped = asyncio.wrap_future(future)
     # Retrieve late exceptions even if this waiting task times out or is cancelled.
@@ -55,6 +58,15 @@ def prompt_evidence(evidence: dict) -> dict:
     """Avoid serializing the same indicators twice; retain every news excerpt and source ID."""
     compact = copy.deepcopy(evidence)
     compact.pop("comparisonUniverse", None)  # Evaluation universe is not a model candidate pool.
+    compact = {key: value for key, value in compact.items() if not key.startswith("_")}
+    compact.pop("evaluationPlan", None)  # Baselines never anchor the model's selection.
+    compact.get("candidateSelection", {}).pop("baseline", None)
+    for pair in compact.get("riskContext", {}).get("pairs", []):
+        # Keep actual dates/counts and unavailable reasons; repeated source prose
+        # for every one of the 66 possible pairs needlessly inflates MAX input.
+        for name in ("correlation20d", "strongStockSampleOverlap", "sharedNewsSources"):
+            for repeated in ("source", "note"):
+                pair.get(name, {}).pop(repeated, None)
     for candidate in compact.get("candidates", []):
         for source in candidate.get("evidence", []):
             for suffix, field in (("technical", "technicalData"), ("fundamentals", "fundamentalData")):
@@ -76,7 +88,7 @@ class ForecastChoice(ResearchModel):
     technical: Assessment
     fundamental: Assessment
     news: Assessment
-    catalysts: list[Catalyst] = Field(min_length=1, max_length=3)
+    catalysts: list[Catalyst] = Field(max_length=3)
     stocks: list[StockChoice] = Field(max_length=3)
     confirmation: str = Field(min_length=4, max_length=800)
     invalidation: str = Field(min_length=4, max_length=800)
@@ -96,6 +108,8 @@ SYSTEM_INSTRUCTION = (
 
 
 def build_prompt(evidence: dict) -> str:
+    evidence = prepare_research_evidence(evidence)
+    _candidate_provider(evidence)
     return (
         "预测窗口以window.startDate至window.endDate为准，是生成日之后15个自然日，包含周末和休市日，"
         "不是15个交易日。比较候选池中哪些概念可能在此区间相对更强，不是重述今日涨幅榜。"
@@ -108,19 +122,23 @@ def build_prompt(evidence: dict) -> str:
         "盘中数据不能与昨日全天直接比较；历史日期不匹配时指标为空，不得当0或补造指标。"
         "fundamental分析供需、产品价格、订单、成本、竞争与盈利预期，说明受益和受损的公司差异。"
         "fundamentalData仅是强势成份股的动态PE/PB/市值，不是板块整体估值，也不是完整财报。"
-        "动态PE不是TTM；负PE不得作为低估依据。没有财报/订单证据就直说缺失，不得编造收入或利润增速。"
+        "动态PE不是TTM；负PE不得作为低估依据；估值高低不是订单增长或盈利改善的证据。"
+        "fundamental的supported仅用于有新闻/公告直接支持的经营事实；仅有估值时用hypothesis、evidenceIds=[]，"
+        "summary可描述估值背景，但必须写明订单、供需和盈利转化尚无直接依据，不把估值缺失等同于已有经营证据无效。"
+        "未给完整财报、行业估值分位和增长数据，不推断低估、高景气或编造收入利润增速。"
         "news分析近30天真实新闻、产业政策、天气、地缘政治或技术变化，并找反面证据、预期兑现风险。"
-        "发表于行情日之后的报道属于盘后新变量，不能解释此前涨幅；它可以影响本预测窗口的预期。"
         "技术、基本面、新闻三个Assessment都必须输出，summary说明已知事实、推断与缺口。"
         "status=supported仅表示引用材料支持输入事实，不代表预测被证实；必须引用本概念的evidenceIds。"
-        "technical可引用:market或:technical；fundamental可引用:fundamentals及相关news；news只能引用news。"
+        "technical仅引用kind=data的:market、:technical或:relative；fundamental与news仅引用本概念相关news，"
+        "经营分析不得用:fundamentals估值引用冒充经营事实。新闻只重复股价或笼统行业展望不算经营证据。"
         "如果相关证据不足或只是股价复述，status=hypothesis，evidenceIds=[]，明确待验证，不能编造事件。"
-        "catalysts列出1至3项现实原因：event说什么时间、主体发生了什么；transmission解释事件→供需/价格/成本/订单→盈利预期；"
+        "catalysts列出0至3项现实原因：event说什么时间、主体发生了什么；transmission解释事件→供需/价格/成本/订单→盈利预期；"
         "impact解释为何可能在预测期影响该概念，区分事实与推断。资金流入或上涨本身不能充当现实原因。"
-        "例如‘天气异常→甘蔗产量下降预期→糖价→制糖利润’仅是机制示例，不能未经证据断言厄尔尼诺严重。"
         "有新闻依据才可标reported并引用本概念news，否则hypothesis且evidenceIds=[]。"
+        "传导中的每一步都须区分材料直接支持和研究推断；不要为了凑催化项数生成通用假说。"
         "只能在所给报道明确支持时提及未来会议、政策执行、财报等具体事件日期，不能凭记忆编造日程。"
         "confirmation写预测期需要出现的可观察确认条件；invalidation写哪些反面数据或事件会推翻逻辑。"
+        "条件应具体到所给指标或可核对事件，不能都写‘持续关注’；数值阈值若为研究假设须标明，不能宣称经过回测验证。"
         "conviction只能medium或low，表示研究把握度，不是胜率；任一分析面缺证据、MA20缺失或成份股缺失时用low。"
         "最多选择3只所给强势成份股，解释与产业逻辑的关联、当前行情依据和追高风险；"
         "stocks候选为空必须输出[]，有候选则至少选1只。当前强势不保证未来继续上涨。"
@@ -135,6 +153,7 @@ def build_prompt(evidence: dict) -> str:
         "历史收益只反映价格结果，不能据此断言原基本面因果成立、某项确认/失效事件实际发生，也不能编造新事件。"
         "30日反馈只是原15日预测的延伸观察，不是另一个30日预测命中率。"
         "样本区间重叠、概念重复，不能视作独立试验；小样本不能外推未来胜率，历史成功不能取代当前新闻和技术证据。"
+        + REVIEW_INSTRUCTION + EVIDENCE_RULES +
         "完整保留上述核验要求，但最终报告应简练，避免多字段重复同一段论述：summary约100字；"
         "每概念thesis和每项Assessment约80字；每个催化的event/transmission/impact分别约60字；"
         "每只股票reason约50字；confirmation和invalidation分别约60字。引用使用evidenceIds，不抄写来源全文。"
@@ -143,11 +162,34 @@ def build_prompt(evidence: dict) -> str:
     )
 
 
-def assemble_result(raw: dict, evidence: dict) -> dict:
-    parsed = ForecastResult.model_validate(raw)
+def _candidate_provider(evidence: dict) -> str | None:
     provider = single_provider(evidence["candidates"])
     if evidence["candidates"] and provider is None:
         raise ValueError("概念候选必须来自同一行情来源，不能混用不同概念指数口径")
+    codes = [candidate["code"] for candidate in evidence["candidates"]]
+    if len(codes) != len(set(codes)):
+        raise ValueError("预测候选代码重复，无法核对唯一来源")
+    return provider
+
+
+def evaluation_plan(evidence: dict) -> dict:
+    """Freeze transparent baselines from this decision, never from later winners."""
+    codes = [row["code"] for row in evidence["candidates"]]
+    baseline = evidence.get("candidateSelection", {}).get("baseline", {})
+    baselines = []
+    if baseline.get("dailyTop3Codes") and baseline.get("dailyTop3Snapshot"):
+        baselines.append({"id": "daily_momentum", "name": "当日涨幅前三",
+                          "codes": copy.deepcopy(baseline["dailyTop3Codes"]),
+                          "snapshot": copy.deepcopy(baseline["dailyTop3Snapshot"])})
+    if codes:
+        baselines.append({"id": "candidate_equal_weight", "name": "模型候选等权", "codes": codes[:]})
+    return {"version": 1, "frozenAt": evidence["decisionAt"], "candidateCodes": codes, "baselines": baselines}
+
+
+def assemble_result(raw: dict, evidence: dict) -> dict:
+    evidence = prepare_research_evidence(evidence)
+    parsed = ForecastResult.model_validate(raw)
+    provider = _candidate_provider(evidence)
     pool = {candidate["code"]: candidate for candidate in evidence["candidates"]}
     concepts, seen = [], set()
     for choice in parsed.concepts:
@@ -168,8 +210,7 @@ def assemble_result(raw: dict, evidence: dict) -> dict:
         assessments = {}
         for field in ("technical", "fundamental", "news"):
             view = getattr(choice, field)
-            allowed = ({f"{choice.code}:market", f"{choice.code}:technical"} & references.keys() if field == "technical"
-                       else news_ids | ({f"{choice.code}:fundamentals"} & references.keys()) if field == "fundamental"
+            allowed = ({f"{choice.code}:market", f"{choice.code}:technical", f"{choice.code}:relative"} & references.keys() if field == "technical"
                        else news_ids)
             assessments[field] = {**view.model_dump(exclude={"evidenceIds"}),
                                   "sources": sources(view.evidenceIds, view.status == "supported", allowed)}
@@ -182,7 +223,6 @@ def assemble_result(raw: dict, evidence: dict) -> dict:
         if stock_pool and not selected:
             raise ValueError("预测遗漏了已提供的强势股票")
         incomplete = (not selected or candidate["technicalData"]["ma20"] is None
-                      or candidate["fundamentalData"]["coverage"] == "missing"
                       or any(view["status"] == "hypothesis" for view in assessments.values())
                       or not any(item["status"] == "reported" for item in catalysts))
         concepts.append({
@@ -192,9 +232,13 @@ def assemble_result(raw: dict, evidence: dict) -> dict:
             **assessments, "catalysts": catalysts,
             "stocks": [{**stock_pool[stock.code], "reason": stock.reason} for stock in choice.stocks],
         })
-    return {"summary": parsed.summary, "concepts": concepts, "conceptProvider": provider,
+    return {"summary": parsed.summary, "concepts": concepts, "conceptProvider": provider, "decisionAt": evidence["decisionAt"],
+            "candidateAudit": candidate_audit(evidence, seen),
+            "candidateSelection": evidence.get("candidateSelection"), "riskContext": evidence.get("riskContext"),
+            "evaluationPlan": evaluation_plan(evidence),
             "comparisonUniverse": evidence.get("comparisonUniverse"),
             "feedbackUsed": {"asOf": evidence.get("historicalFeedback", {}).get("asOf"),
+                             "missedLeaderCaseCount": len(evidence.get("historicalFeedback", {}).get("missedLeaderCases", [])),
                              "sampleCounts": {days: summary["sampleCount"] for days, summary in
                                               evidence.get("historicalFeedback", {}).get("summaries", {}).items()}},
             **{key: evidence[key] for key in ("window", "tradeDate", "dataAsOf", "scope", "warnings")}}
@@ -233,7 +277,8 @@ async def _execute(run_date: str, key: str, token: str) -> None:
 
     async def generate() -> dict:
         await set_stage("market_data")
-        evidence = await asyncio.wait_for(collect_evidence(), timeout=DATA_TIMEOUT_SECONDS)
+        evidence = await asyncio.wait_for(collect_evidence(key), timeout=DATA_TIMEOUT_SECONDS)
+        _candidate_provider(evidence)
         evidence["window"] = forecast_window(run_date)
         await set_stage("feedback")
         try:
@@ -248,6 +293,11 @@ async def _execute(run_date: str, key: str, token: str) -> None:
                     "summary": "暂未取得足够的概念行情，当前无法形成有依据的半个月预测。", "concepts": []}
         await set_stage("news")
         evidence = await enrich_world_news(evidence, key, forecast=True)
+        evidence["decisionAt"] = database.now_iso()
+        evidence = prepare_research_evidence(evidence)
+        if "_histories" in evidence:
+            from .forecast_pipeline import attach_risk_context
+            evidence = attach_risk_context(evidence)
         await set_stage("model")
         raw = await ai._call_compatible(PROVIDER, build_prompt(evidence), MODEL, key,
                                         system_instruction=SYSTEM_INSTRUCTION, reasoning_effort="max",

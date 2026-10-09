@@ -6,6 +6,8 @@ export type ConceptSource = {
   url: string;
   source: string;
   publishedAt: string;
+  publishedAtPrecision?: 'date' | 'second';
+  temporalRelation?: 'before_quote' | 'after_quote' | 'unknown';
 };
 
 export type RecommendedConcept = {

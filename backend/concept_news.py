@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import re
 from datetime import datetime, timedelta
 from urllib.parse import urlsplit
 
@@ -10,9 +11,45 @@ import httpx
 
 from . import ai, database
 from .concept_data import ConceptResearchClient, clean_text, research_terms
+from .research_prompt import publication_time
 
 SEARCH_TIMEOUT_SECONDS = 10
 NEWS_BUDGET_SECONDS = 25
+
+
+async def discover_world_news(boards: list[dict], key: str) -> tuple[dict, dict]:
+    """Two bounded broad searches before ranking; literal topic matches are clues only."""
+    if not key:
+        return {}, {"status": "unavailable", "queries": 0, "matchedCount": 0,
+                    "note": "未配置检索密钥，本次未使用事件发现通道"}
+    queries = ("产业政策 产品获批 新订单", "技术突破 供需 价格变化")
+    results = await asyncio.gather(*(search_world_news(query, "discovery", key, forecast=True)
+                                     for query in queries), return_exceptions=True)
+    successful = [rows for rows in results if isinstance(rows, list)]
+    articles = {row["url"]: row for rows in successful for row in rows}
+    mapped = {}
+    for board in boards:
+        # Use the actual index name, not an LLM-created industry-to-index mapping.
+        term = str(board.get("name", "")).removesuffix("概念").strip()
+        if len(term) < 2 or (term.isascii() and len(term) < 3):
+            continue
+        matches = []
+        for row in articles.values():
+            text = (row["title"] + " " + row["excerpt"]).casefold()
+            # ASCII abbreviations must be tokens, while adjacent Chinese text
+            # remains valid ("国内CRO订单"). A substring in Microsoft/micro is not CRO.
+            matched = (re.search(r"(?<![a-z0-9_])" + re.escape(term.casefold()) + r"(?![a-z0-9_])", text)
+                       if term.isascii() else term.casefold() in text)
+            if not matched:
+                continue
+            matches.append({**row, "id": f"{board['code']}:web:{hashlib.sha256(row['url'].encode()).hexdigest()[:16]}",
+                            "discoveryMatch": term})
+        if matches:
+            mapped[board["code"]] = sorted(matches, key=lambda row: row["publishedAt"], reverse=True)[:2]
+    # Public search coverage is limited; a zero match is not proof of no catalyst.
+    return mapped, {"status": "available" if len(successful) == len(queries) else "partial" if successful else "unavailable",
+                    "queries": len(queries), "articleCount": len(articles), "matchedCount": len(mapped),
+                    "note": "有限公开检索，按真实概念名称匹配；命中不等于新事件或利好，未命中不等于没有催化"}
 
 
 def search_query(name: str, *, forecast: bool = False) -> str:
@@ -31,13 +68,11 @@ def normalize_search_results(payload: dict, code: str) -> list[dict]:
         url = str(row.get("link") or "").strip()
         try:
             address = urlsplit(url)
-            published = datetime.fromisoformat(str(row.get("publish_date") or "").strip().replace("Z", "+00:00"))
-            if published.tzinfo is None:
-                published = published.replace(tzinfo=database.CHINA_TZ)
+            published, precision = publication_time(row.get("publish_date"))
         except ValueError:
             continue
         if (address.scheme not in ("http", "https") or not address.hostname or address.username
-                or not now - timedelta(days=30) <= published <= now):
+                or published is None or not now - timedelta(days=30) <= published <= now):
             continue
         title, content = clean_text(row.get("title"), 200), clean_text(row.get("content"), 1600)
         if not title or not content:
@@ -45,7 +80,7 @@ def normalize_search_results(payload: dict, code: str) -> list[dict]:
         sources[url] = {"id": f"{code}:web:{hashlib.sha256(url.encode()).hexdigest()[:16]}", "kind": "news",
                         "title": title, "excerpt": content, "url": url,
                         "source": clean_text(row.get("media"), 80) or address.hostname,
-                        "publishedAt": published.isoformat(timespec="seconds")}
+                        "publishedAt": published.isoformat(timespec="seconds"), "publishedAtPrecision": precision}
     # Keep the search engine's relevance order rather than preferring daily price recaps.
     return list(sources.values())[:6]
 
@@ -85,7 +120,8 @@ async def enrich_world_news(evidence: dict, key: str, *, forecast: bool = False)
                     )
                 except (TimeoutError, RuntimeError, ValueError, KeyError, TypeError):
                     pass
-        candidate["evidence"].extend(sources)
+        existing = {item.get("url") for item in candidate["evidence"] if item.get("kind") == "news"}
+        candidate["evidence"].extend(item for item in sources if item.get("url") not in existing)
         if not sources:
             candidate["warnings"].append("未取得近30天可核对的现实事件来源，催化因素仅能列为待验证机制")
 

@@ -1,0 +1,399 @@
+{
+  "code": "BK1063",
+  "name": "重组蛋白",
+  "source": "https://push2his.eastmoney.com/api/qt/stock/kline/get",
+  "range": [
+    "2026-08-01",
+    "2026-09-30"
+  ],
+  "note": "Rows transcribed from one verified live read on 2026-10-10; historical prices are a retrospective reconstruction, not a preserved forecast-time snapshot. Return5d = close[t]/close[t-5]-1; amount ratio denominator excludes current day.",
+  "rows": [
+    {
+      "date": "2026-08-03",
+      "close": 877.52,
+      "amount": 3003838960.0
+    },
+    {
+      "date": "2026-08-04",
+      "close": 919.47,
+      "amount": 5170279195.0
+    },
+    {
+      "date": "2026-08-05",
+      "close": 932.34,
+      "amount": 5328444791.0
+    },
+    {
+      "date": "2026-08-06",
+      "close": 927.09,
+      "amount": 5414116376.0
+    },
+    {
+      "date": "2026-08-07",
+      "close": 1000.36,
+      "amount": 9270644427.0
+    },
+    {
+      "date": "2026-08-10",
+      "close": 1022.8,
+      "amount": 12264696790.0
+    },
+    {
+      "date": "2026-08-11",
+      "close": 1047.05,
+      "amount": 12173840787.0
+    },
+    {
+      "date": "2026-08-12",
+      "close": 1042.11,
+      "amount": 8322218223.0
+    },
+    {
+      "date": "2026-08-13",
+      "close": 1080.33,
+      "amount": 12673017332.0
+    },
+    {
+      "date": "2026-08-14",
+      "close": 1089.49,
+      "amount": 11044956580.0
+    },
+    {
+      "date": "2026-08-17",
+      "close": 1090.24,
+      "amount": 9207789144.0
+    },
+    {
+      "date": "2026-08-18",
+      "close": 1067.96,
+      "amount": 10813391031.0
+    },
+    {
+      "date": "2026-08-19",
+      "close": 1025.68,
+      "amount": 10747693546.0
+    },
+    {
+      "date": "2026-08-20",
+      "close": 1094.11,
+      "amount": 18516283121.0
+    },
+    {
+      "date": "2026-08-21",
+      "close": 1051.0,
+      "amount": 15338738896.0
+    },
+    {
+      "date": "2026-08-24",
+      "close": 1002.07,
+      "amount": 10869568452.0
+    },
+    {
+      "date": "2026-08-25",
+      "close": 1018.62,
+      "amount": 9093996835.0
+    },
+    {
+      "date": "2026-08-26",
+      "close": 1021.71,
+      "amount": 13640693882.0
+    },
+    {
+      "date": "2026-08-27",
+      "close": 1023.87,
+      "amount": 11999249825.0
+    },
+    {
+      "date": "2026-08-28",
+      "close": 1004.67,
+      "amount": 9824642128.0
+    },
+    {
+      "date": "2026-08-31",
+      "close": 983.8,
+      "amount": 8793070758.0
+    },
+    {
+      "date": "2026-09-01",
+      "close": 986.91,
+      "amount": 7913834179.0
+    },
+    {
+      "date": "2026-09-02",
+      "close": 980.8,
+      "amount": 8812424017.0
+    },
+    {
+      "date": "2026-09-03",
+      "close": 978.44,
+      "amount": 6899504183.0
+    },
+    {
+      "date": "2026-09-04",
+      "close": 968.67,
+      "amount": 6858858670.0
+    },
+    {
+      "date": "2026-09-07",
+      "close": 973.31,
+      "amount": 5251466916.0
+    },
+    {
+      "date": "2026-09-08",
+      "close": 1005.77,
+      "amount": 10209070313.0
+    },
+    {
+      "date": "2026-09-09",
+      "close": 994.8,
+      "amount": 8546598891.0
+    },
+    {
+      "date": "2026-09-10",
+      "close": 967.48,
+      "amount": 6827325428.0
+    },
+    {
+      "date": "2026-09-11",
+      "close": 941.09,
+      "amount": 6786073216.0
+    },
+    {
+      "date": "2026-09-14",
+      "close": 974.14,
+      "amount": 8559731598.0
+    },
+    {
+      "date": "2026-09-15",
+      "close": 959.08,
+      "amount": 6661399762.0
+    },
+    {
+      "date": "2026-09-16",
+      "close": 974.5,
+      "amount": 7257094416.0
+    },
+    {
+      "date": "2026-09-17",
+      "close": 999.95,
+      "amount": 9801003323.0
+    },
+    {
+      "date": "2026-09-18",
+      "close": 1027.01,
+      "amount": 13464734880.0
+    },
+    {
+      "date": "2026-09-21",
+      "close": 1080.52,
+      "amount": 16022748506.0
+    },
+    {
+      "date": "2026-09-22",
+      "close": 1098.95,
+      "amount": 18365411421.0
+    },
+    {
+      "date": "2026-09-23",
+      "close": 1125.04,
+      "amount": 18761567746.0
+    },
+    {
+      "date": "2026-09-24",
+      "close": 1095.61,
+      "amount": 15212388200.0
+    },
+    {
+      "date": "2026-09-28",
+      "close": 1089.31,
+      "amount": 13735303757.0
+    },
+    {
+      "date": "2026-09-29",
+      "close": 1088.29,
+      "amount": 14586764417.0
+    },
+    {
+      "date": "2026-09-30",
+      "close": 1135.45,
+      "amount": 20733303895.0
+    }
+  ],
+  "asOfMetrics": [
+    {
+      "date": "2026-09-11",
+      "close": 941.09,
+      "amount": 6786073216.0,
+      "return1d": -2.7277,
+      "return5d": -2.8472,
+      "return10d": -6.3284,
+      "ma20": 1009.05,
+      "amountRatioPrevious5": 0.9002,
+      "amountE8": 67.8607,
+      "distanceMA20": -6.735
+    },
+    {
+      "date": "2026-09-14",
+      "close": 974.14,
+      "amount": 8559731598.0,
+      "return1d": 3.5119,
+      "return5d": 0.0853,
+      "return10d": -0.9819,
+      "ma20": 1003.245,
+      "amountRatioPrevious5": 1.1376,
+      "amountE8": 85.5973,
+      "distanceMA20": -2.9011
+    },
+    {
+      "date": "2026-09-15",
+      "close": 959.08,
+      "amount": 6661399762.0,
+      "return1d": -1.546,
+      "return5d": -4.6422,
+      "return10d": -2.8199,
+      "ma20": 997.801,
+      "amountRatioPrevious5": 0.8138,
+      "amountE8": 66.614,
+      "distanceMA20": -3.8806
+    },
+    {
+      "date": "2026-09-16",
+      "close": 974.5,
+      "amount": 7257094416.0,
+      "return1d": 1.6078,
+      "return5d": -2.0406,
+      "return10d": -0.6423,
+      "ma20": 995.242,
+      "amountRatioPrevious5": 0.9707,
+      "amountE8": 72.5709,
+      "distanceMA20": -2.0841
+    },
+    {
+      "date": "2026-09-17",
+      "close": 999.95,
+      "amount": 9801003323.0,
+      "return1d": 2.6116,
+      "return5d": 3.3561,
+      "return10d": 2.1984,
+      "ma20": 990.534,
+      "amountRatioPrevious5": 1.3578,
+      "amountE8": 98.01,
+      "distanceMA20": 0.9506
+    },
+    {
+      "date": "2026-09-18",
+      "close": 1027.01,
+      "amount": 13464734880.0,
+      "return1d": 2.7061,
+      "return5d": 9.1298,
+      "return10d": 6.0227,
+      "ma20": 989.3345,
+      "amountRatioPrevious5": 1.7234,
+      "amountE8": 134.6473,
+      "distanceMA20": 3.8082
+    },
+    {
+      "date": "2026-09-21",
+      "close": 1080.52,
+      "amount": 16022748506.0,
+      "return1d": 5.2103,
+      "return5d": 10.9204,
+      "return10d": 11.015,
+      "ma20": 993.257,
+      "amountRatioPrevious5": 1.7514,
+      "amountE8": 160.2275,
+      "distanceMA20": 8.7855
+    },
+    {
+      "date": "2026-09-30",
+      "close": 1135.45,
+      "amount": 20733303895.0,
+      "return1d": 4.3334,
+      "return5d": 3.3214,
+      "return10d": 18.3895,
+      "ma20": 1022.9105,
+      "amountRatioPrevious5": 1.2852,
+      "amountE8": 207.333,
+      "distanceMA20": 11.0019
+    }
+  ],
+  "retrievedOn": "2026-10-10",
+  "metricDefinitions": {
+    "amountRatioPrevious5": "当日完整成交额 / 此前五个交易日成交额均值；不是预测模块的完整5日/此前5日成交额比",
+    "distanceMA20": "收盘价/20日均线-1，百分比",
+    "reconstructionLimit": "目前获取的历史行情仅用于事后重建；不证明原预测时系统已收到这些行情或新闻"
+  },
+  "verifiedScreenshotWindows": [
+    {
+      "predictionDate": "2026-09-12",
+      "entryDate": "2026-09-14",
+      "exitDate": "2026-09-24",
+      "entryOpen": 938.82,
+      "exitClose": 1095.61,
+      "displayedReturn": 16.7,
+      "recomputedReturn": 16.7008
+    },
+    {
+      "predictionDate": "2026-09-14",
+      "entryDate": "2026-09-15",
+      "exitDate": "2026-09-29",
+      "entryOpen": 973.6,
+      "exitClose": 1088.29,
+      "displayedReturn": 11.78,
+      "recomputedReturn": 11.78
+    },
+    {
+      "predictionDate": "2026-09-15",
+      "entryDate": "2026-09-16",
+      "exitDate": "2026-09-30",
+      "entryOpen": 958.8,
+      "exitClose": 1135.45,
+      "displayedReturn": 18.42,
+      "recomputedReturn": 18.4241
+    },
+    {
+      "predictionDate": "2026-09-17",
+      "entryDate": "2026-09-18",
+      "exitDate": "2026-09-30",
+      "entryOpen": 1007.15,
+      "exitClose": 1135.45,
+      "displayedReturn": 12.74,
+      "recomputedReturn": 12.7389
+    },
+    {
+      "predictionDate": "2026-09-21",
+      "entryDate": "2026-09-22",
+      "exitDate": "2026-09-30",
+      "entryOpen": 1072.87,
+      "exitClose": 1135.45,
+      "displayedReturn": 5.83,
+      "recomputedReturn": 5.833
+    }
+  ],
+  "primarySources": [
+    {
+      "publishedDate": "2026-09-10",
+      "title": "百普赛斯投资者关系活动记录",
+      "url": "https://static.cninfo.com.cn/finalpage/2026-09-10/1225558587.PDF",
+      "fact": "公司介绍AI药物发现对标准化湿实验数据的需求与重组靶点蛋白、验证服务；不是全板块订单证据"
+    },
+    {
+      "publishedAt": "2026-09-16T20:00:00+08:00",
+      "title": "诺和诺德与Anthropic研发合作",
+      "url": "https://www.novonordisk.com/news-and-media/news-and-ir-materials/news-details.html?id=916768",
+      "fact": "研发合作公告；没有宣布中国蛋白试剂企业订单"
+    },
+    {
+      "publishedDate": "2026-09-16",
+      "title": "金斯瑞加入Lilly TuneLab",
+      "url": "https://www.genscript.com/genscript-joins-lilly-tunelab-to-advance-ai-enabled-drug-discovery.html",
+      "fact": "湿实验数据服务；公开时刻不明，不能确定9/17凌晨预测前可见"
+    }
+  ],
+  "limitations": [
+    "本机没有截图对应原始预测档案，因此不能证明某次漏选发生在召回还是模型排序阶段",
+    "同期最强只在已覆盖的约53%至55%东财概念内成立，多个窗口重叠",
+    "10/1同花顺预测的10/8至9表现未到期，不能与东财同名指数串接",
+    "这是案例诊断，不是新提示词的样本外回测，也不能证明单条新闻导致整段上涨"
+  ]
+}

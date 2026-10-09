@@ -1112,6 +1112,8 @@ class MarketDataService:
                                      if not category_rows.get(kind))
             if refresh_error and board_errors:
                 refresh_error += "。原因：" + "；".join(board_errors)
+            from .forecast_candidates import forecast_candidate_metadata, select_forecast_boards
+            forecast_concepts = select_forecast_boards(category_rows.get("concept", []))
             result = {
                 "tradeDate": trade_date,
                 "quoteAsOf": concept_quote.isoformat(timespec="seconds") if concept_quote else None,
@@ -1134,6 +1136,9 @@ class MarketDataService:
                     *category_rows.get("concept", [])[:9],
                     *sorted(category_rows.get("concept", []), key=lambda board: board.get("amount") or 0, reverse=True)[:3],
                 ]}.values()),
+                "forecastConcepts": forecast_concepts,
+                "forecastDiscoveryBoards": category_rows.get("concept", []),
+                "forecastCandidateSelection": forecast_candidate_metadata(category_rows.get("concept", []), forecast_concepts),
                 "conceptUniverse": [{"code": board["code"], "name": board["name"]}
                                     for board in category_rows.get("concept", [])],
                 "turnoverBoards": turnover_boards,

@@ -143,7 +143,9 @@ class ConceptEvidenceTests(unittest.TestCase):
             with self.subTest(ids=ids), self.assertRaisesRegex(ValueError, "现实催化"):
                 concept_ai.assemble_result(raw, evidence_fixture())
         evidence = evidence_fixture()
-        evidence["candidates"][0]["evidence"].append({"id": "BK1001:news:1", "kind": "news", "title": "产业订单公告"})
+        evidence["candidates"][0]["evidence"].append({"id": "BK1001:news:1", "kind": "news", "title": "产业订单公告",
+                                                    "publishedAt": "2026-09-11T10:00:00+08:00",
+                                                    "url": "https://example.com/industry-order"})
         raw["concepts"][0]["catalysts"][0].update(evidenceIds=["BK1001:news:1"])
         self.assertEqual(concept_ai.assemble_result(raw, evidence)["concepts"][0]["catalysts"][0]["sources"][0]["title"], "产业订单公告")
 
@@ -324,8 +326,8 @@ class WorldNewsTests(unittest.IsolatedAsyncioTestCase):
         for term in ("白糖", "天气", "厄尔尼诺", "产量", "供需"):
             self.assertIn(term, query)
         prompt = concept_ai.build_prompt(evidence_fixture())
-        self.assertIn("这是机制示例，不是本次已发生的事实", prompt)
-        self.assertIn("盘后新变量", prompt)
+        self.assertIn("不为填满字段编故事", prompt)
+        self.assertIn("不能倒推解释此前上涨", prompt)
         self.assertLessEqual(len(concept_news.search_query("长概念名称" * 20)), 70)
 
     async def test_search_request_matches_provider_contract(self) -> None:

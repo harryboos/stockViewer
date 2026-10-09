@@ -163,6 +163,8 @@ class AiRunRegressionTests(unittest.IsolatedAsyncioTestCase):
         env.start()
         self.addCleanup(env.stop)
         database.initialize()
+        self.candidates = [{"symbol": "600001", "name": "测试股票", "quote": {
+            "tradeDate": database.china_date(), "close": 10, "pctChg": 2, "amount": 100_000_000}}]
 
     async def test_no_configured_models_do_not_require_market_data(self) -> None:
         with patch.dict(os.environ, {}, clear=True), patch.object(ai, "candidate_snapshot") as fetch:
@@ -182,7 +184,7 @@ class AiRunRegressionTests(unittest.IsolatedAsyncioTestCase):
     async def test_cancelled_run_is_retryable(self) -> None:
         with patch.object(ai, "_call_compatible", AsyncMock(side_effect=asyncio.CancelledError)):
             with self.assertRaises(asyncio.CancelledError):
-                await ai._execute_provider("deepseek", [])
+                await ai._execute_provider("deepseek", self.candidates)
         self.assertEqual(ai.get_daily_ai_runs()["runs"][0]["status"], "failed")
 
     async def test_force_does_not_duplicate_an_active_model_call(self) -> None:
@@ -194,10 +196,10 @@ class AiRunRegressionTests(unittest.IsolatedAsyncioTestCase):
             raise RuntimeError("test failure")
 
         with patch.object(ai, "_call_compatible", AsyncMock(side_effect=response)) as call:
-            first = asyncio.create_task(ai._execute_provider("deepseek", [], True))
+            first = asyncio.create_task(ai._execute_provider("deepseek", self.candidates, True))
             await started.wait()
             try:
-                second = await ai._execute_provider("deepseek", [], True)
+                second = await ai._execute_provider("deepseek", self.candidates, True)
                 self.assertEqual(second["status"], "running")
                 call.assert_awaited_once()
             finally:

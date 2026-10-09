@@ -61,7 +61,10 @@ export type AiResult = {
   title: string;
   summary: string;
   logic: string;
-  picks: [AiPick, AiPick, AiPick];
+  picks: AiPick[];
+  snapshotDate?: string;
+  candidateCount?: number;
+  limitations?: string[];
 };
 
 export type WatchlistStock = StockBasic & {
@@ -243,7 +246,6 @@ export type StrategySummary = {
     name: string;
     sources: string[];
     count: number;
-    averageScore: number;
   }>;
   ruleCount: number;
   rulesWithPicks: number;

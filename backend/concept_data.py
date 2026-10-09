@@ -23,6 +23,7 @@ MARKET_RESEARCH_TIMEOUT = 40
 
 # Search vocabulary, not claims that an event has happened.
 TOPIC_TERMS = (
+    (("重组蛋白", "科研试剂", "生命科学工具"), ("重组蛋白", "科研试剂"), "AI制药 湿实验 验证 订单 创新药"),
     (("制糖", "糖业", "白糖", "甘蔗"), ("白糖", "糖价", "甘蔗"), "天气 厄尔尼诺 巴西 印度 产量 供需"),
     (("船舶", "造船"), ("造船", "船舶"), "新船订单 运价 交付 造船周期"),
     (("粮食", "农业", "种植"), ("粮食", "农业"), "天气 干旱 产量 出口政策 粮价"),
@@ -226,6 +227,7 @@ class ConceptResearchClient(EastmoneyClient):
                 "url": f"https://finance.eastmoney.com/a/{article}.html",
                 "source": clean_text(raw.get("mediaName"), 60) or "东方财富资讯",
                 "publishedAt": published.isoformat(timespec="seconds"),
+                "publishedAtPrecision": "date" if re.fullmatch(r"\d{4}-\d{2}-\d{2}|\d{8}", str(raw.get("date", "")).strip()) else "second",
             }
         return sorted(result.values(), key=lambda row: row["publishedAt"], reverse=True)[:5]
 
@@ -316,49 +318,60 @@ def _concept_overview(forecast: bool) -> tuple[dict, str | None]:
     raise AssertionError("unreachable")
 
 
-def collect_concept_evidence(*, forecast: bool = False) -> dict:
-    overview, freshness_note = _concept_overview(forecast)
+def candidate_view(board: dict, history: list[dict], stocks: list[dict], warnings: list[str],
+                   *, overview: dict, forecast: bool = False) -> dict:
     trade_date = overview["tradeDate"]
-    boards = {row["code"]: row for row in [
+    code = board["code"]
+    metrics = recent_metrics(history, trade_date)
+    if metrics["change5d"] is None:
+        warnings.append("近5日趋势暂无法核验，预测的技术面依据不完整" if forecast else
+                        "近5日趋势暂无法核验，按当日表现观察，不视为已确认的持续强势")
+    if metrics["change10d"] is None:
+        warnings.append("近10日涨幅暂缺")
+    if metrics["historyAsOf"] and metrics["historyAsOf"] != trade_date:
+        warnings.append(f"历史行情仅更新至 {metrics['historyAsOf']}，未计作当日趋势")
+    if not stocks:
+        warnings.append("暂未取得同一交易日上涨且成交额达到1亿元的成份股行情")
+    sustained = any(metrics[key] is not None and metrics[key] > 0 for key in ("change5d", "change10d"))
+    candidate = {
+        "code": code, "name": board["name"], "tradeDate": trade_date,
+        "pctChg": board["pctChg"], "amount": board.get("amount"),
+        "amountDelta": board.get("amountDelta"),
+        "breadth": board["breadth"], "upCount": board["upCount"], "downCount": board["downCount"],
+        "mainNetInflow": board.get("mainNetInflow"), **metrics, "stocks": stocks, "warnings": warnings,
+        "strengthStatus": "recent_strength" if sustained else "today_active",
+        "evidence": [{"id": f"{code}:market", "kind": "data", "title": "概念行情与可用历史表现",
+                      "source": "同花顺公开概念行情" if concept_provider(code) == "ths" else "东方财富概念板块",
+                      "publishedAt": overview.get("quoteAsOf") or overview["updatedAt"],
+                      "url": "https://q.10jqka.com.cn/gn/" if concept_provider(code) == "ths" else f"https://quote.eastmoney.com/bk/90.{code}.html",
+                      "excerpt": "见本卡片行情指标与成份股快照"}],
+    }
+    if history and history[-1].get("historySource"):
+        candidate["evidence"].append({"id": f"{code}:history", "kind": "data", "title": "概念历史日线",
+                                      "source": history[-1]["historySource"], "publishedAt": overview["updatedAt"],
+                                      "url": history[-1]["historyUrl"], "excerpt": "同来源、同代码概念指数历史表现"})
+    if forecast:
+        from .forecast_data import add_forecast_metrics
+        candidate["candidateSignals"] = board.get("candidateSignals", [])
+        add_forecast_metrics(candidate, history, overview["updatedAt"])
+    return candidate
+
+
+def collect_concept_evidence(*, forecast: bool = False, discovery_key: str | None = None) -> dict:
+    overview, freshness_note = _concept_overview(forecast)
+    if forecast and overview.get("forecastDiscoveryBoards"):
+        from .forecast_pipeline import collect_forecast_evidence
+        return collect_forecast_evidence(overview, freshness_note, discovery_key)
+    trade_date = overview["tradeDate"]
+    diversified = forecast and "forecastConcepts" in overview
+    board_candidates = overview["forecastConcepts"] if diversified else [
         *overview.get("researchConcepts", overview["conceptBoards"]),
         *(row for row in overview.get("turnoverBoards", []) if row["kind"] == "concept"),
-    ] if not any(marker in row["name"] for marker in ("风格", "小盘股", "做市商"))}
+    ]
+    boards = {row["code"]: row for row in board_candidates
+              if not any(marker in row["name"] for marker in ("风格", "小盘股", "做市商"))}
     client = ConceptResearchClient()
 
-    def candidate_view(board: dict, history: list[dict], stocks: list[dict], warnings: list[str]) -> dict:
-        code = board["code"]
-        metrics = recent_metrics(history, trade_date)
-        if metrics["change5d"] is None:
-            warnings.append("近5日趋势暂无法核验，预测的技术面依据不完整" if forecast else
-                            "近5日趋势暂无法核验，按当日表现观察，不视为已确认的持续强势")
-        if metrics["change10d"] is None:
-            warnings.append("近10日涨幅暂缺")
-        if metrics["historyAsOf"] and metrics["historyAsOf"] != trade_date:
-            warnings.append(f"历史行情仅更新至 {metrics['historyAsOf']}，未计作当日趋势")
-        if not stocks:
-            warnings.append("暂未取得同一交易日上涨且成交额达到1亿元的成份股行情")
-        sustained = any(metrics[key] is not None and metrics[key] > 0 for key in ("change5d", "change10d"))
-        candidate = {
-            "code": code, "name": board["name"], "tradeDate": trade_date,
-            "pctChg": board["pctChg"], "amount": board.get("amount"),
-            "amountDelta": board.get("amountDelta"),
-            "breadth": board["breadth"], "upCount": board["upCount"], "downCount": board["downCount"],
-            "mainNetInflow": board.get("mainNetInflow"), **metrics, "stocks": stocks, "warnings": warnings,
-            "strengthStatus": "recent_strength" if sustained else "today_active",
-            "evidence": [{"id": f"{code}:market", "kind": "data", "title": "概念行情与可用历史表现",
-                          "source": "同花顺公开概念行情" if concept_provider(code) == "ths" else "东方财富概念板块",
-                          "publishedAt": overview.get("quoteAsOf") or overview["updatedAt"],
-                          "url": "https://q.10jqka.com.cn/gn/" if concept_provider(code) == "ths" else f"https://quote.eastmoney.com/bk/90.{code}.html",
-                          "excerpt": "见本卡片行情指标与成份股快照"}],
-        }
-        if history and history[-1].get("historySource"):
-            candidate["evidence"].append({"id": f"{code}:history", "kind": "data", "title": "概念历史日线",
-                                          "source": history[-1]["historySource"], "publishedAt": overview["updatedAt"],
-                                          "url": history[-1]["historyUrl"], "excerpt": "同来源、同代码概念指数历史表现"})
-        if forecast:
-            from .forecast_data import add_forecast_metrics
-            add_forecast_metrics(candidate, history, overview["updatedAt"])
-        return candidate
 
     def enrich(board: dict) -> dict:
         warnings = []
@@ -372,7 +385,7 @@ def collect_concept_evidence(*, forecast: bool = False) -> dict:
         except Exception:
             stocks = []
             warnings.append("成份股行情接口暂不可用")
-        return candidate_view(board, history, stocks, warnings)
+        return candidate_view(board, history, stocks, warnings, overview=overview, forecast=forecast)
 
     selected = list(boards.values())[:MARKET_RESEARCH_LIMIT]
     if not selected:
@@ -387,10 +400,10 @@ def collect_concept_evidence(*, forecast: bool = False) -> dict:
             try:
                 candidates.append(future.result())
             except (ValueError, KeyError, TypeError):
-                candidates.append(candidate_view(futures[future], [], [], ["扩展行情格式异常，保留板块快照"]))
+                candidates.append(candidate_view(futures[future], [], [], ["扩展行情格式异常，保留板块快照"], overview=overview, forecast=forecast))
         for future in pending:
             future.cancel()
-            candidates.append(candidate_view(futures[future], [], [], ["扩展行情收集超时，保留已取得的板块快照"]))
+            candidates.append(candidate_view(futures[future], [], [], ["扩展行情收集超时，保留已取得的板块快照"], overview=overview, forecast=forecast))
     finally:
         executor.shutdown(wait=False, cancel_futures=True)
     if not forecast:
@@ -398,11 +411,15 @@ def collect_concept_evidence(*, forecast: bool = False) -> dict:
     candidates.sort(key=lambda row: (row["strengthStatus"] == "recent_strength", bool(row["stocks"]),
                                      row["change5d"] if row["change5d"] is not None else row["pctChg"], row["code"]), reverse=True)
     return {"tradeDate": trade_date, "dataAsOf": overview["updatedAt"], "quoteAsOf": overview.get("quoteAsOf"),
+            "candidateSelection": ({**overview.get("forecastCandidateSelection", {}), "selectedCount": len(selected)} if diversified else
+                                   {"method": "legacy-active-snapshot", "selectedCount": len(selected), "limit": MARKET_RESEARCH_LIMIT}),
             "comparisonUniverse": {"asOf": overview["updatedAt"],
                 "scope": overview.get("scope") or ("预测当时可获取的全部有效概念" if overview.get("conceptUniverse") else "预测当时可获取的概念候选（非全市场）"),
                 "boards": overview.get("conceptUniverse") or [{"code": row["code"], "name": row["name"]} for row in selected]},
             "scope": ((overview.get("scope", "") + "。" if overview.get("scope") else "")
-                      + f"从概念涨幅榜与成交额榜选取{len(selected)}个活跃方向比较（非全市场穷举）。"
+                      + (f"从已取得行情按涨幅、上涨广度、成交额多路选取{len(selected)}个候选比较（非全市场穷举）。" if diversified else
+                         f"从概念涨幅榜与成交额榜选取{len(selected)}个活跃方向比较（非全市场穷举）。")
+                      + ("当前沿用旧快照候选，更新板块行情后启用多路召回。" if forecast and not diversified else "")
                       + ("保留短期回调方向，预测的是候选间的相对强势机会。" if forecast else
                          "优先近5/10日正收益方向；历史缺失或短期回调时，仅将当日上涨方向列为活跃观察。")),
             "warnings": list(dict.fromkeys([*overview.get("warnings", []), *([freshness_note] if freshness_note else [])])),

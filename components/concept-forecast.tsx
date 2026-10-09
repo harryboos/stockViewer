@@ -7,6 +7,7 @@ import type { ForecastConcept, ForecastResearch } from '@/lib/forecast-types';
 import type { ConceptRun, ConceptSource } from '@/lib/concept-types';
 import { useDailyConceptRun } from '@/lib/use-daily-concept-run';
 import { ForecastHistory } from '@/components/forecast-history';
+import { ForecastCommonRisk, ForecastDiscoveryCoverage, ForecastRelativeStrength } from '@/components/forecast-risk';
 import { JobButton } from './research-common';
 import { StockLink } from './stock-detail';
 
@@ -42,8 +43,10 @@ function ForecastEvidence({ concept }: { concept: ForecastConcept }) {
         <div><dt>5 / 10 / 20 日均线</dt><dd>{number(concept.technicalData.ma5)} / {number(concept.technicalData.ma10)} / {number(concept.technicalData.ma20)}</dd></div>
         <div><dt>RSI（14 日）</dt><dd>{number(concept.technicalData.rsi14)}</dd></div>
         <div><dt>距 20 日最高收盘价</dt><dd>{percent(concept.technicalData.distanceTo20dHigh)}</dd></div>
+        {concept.technicalData.distanceToMa20 !== undefined && <div><dt>相对 20 日均线</dt><dd>{percent(concept.technicalData.distanceToMa20)}</dd></div>}
+        {concept.technicalData.momentumChange5d !== undefined && <div><dt>5 日动量变化</dt><dd>{number(concept.technicalData.momentumChange5d)}{concept.technicalData.momentumChange5d == null ? '' : ' 个百分点'}</dd></div>}
         <div><dt>完整 5 日成交额比</dt><dd>{number(concept.technicalData.amountRatio5d)}{concept.technicalData.amountRatio5d == null ? '' : ' 倍'}</dd></div>
-      </dl><p className="forecast-small-note">成交额比剔除行情当日，比较最近 5 个完整交易日与此前 5 日。历史截至 {concept.technicalData.historyAsOf ? shortTradeDate(concept.technicalData.historyAsOf) : '暂缺'}。</p></>}
+      </dl><p className="forecast-small-note">成交额比剔除行情当日，比较最近 5 个完整交易日与此前 5 日。历史截至 {concept.technicalData.historyAsOf ? shortTradeDate(concept.technicalData.historyAsOf) : '暂缺'}。</p><ForecastRelativeStrength data={concept.relativeStrength} name={concept.name} /></>}
       {key === 'fundamental' && <p className="forecast-small-note">{concept.fundamentalData.note}</p>}
       <EvidenceSources sources={concept[key].sources} />
       <span className="sr-only">{label}预测依据</span>
@@ -85,6 +88,7 @@ export function ForecastResearchCards({ research, today }: { research: ForecastR
   return <div className="forecast-research">
     <div className="forecast-window"><div><span>本次预测区间</span><strong>{research.window.startDate}<i aria-hidden="true">→</i>{research.window.endDate}</strong></div><span>{research.window.calendarDays} 个自然日 · 含休市日</span></div>
     <section className="forecast-overview"><div className="forecast-overview-label"><span>本次判断</span><small>{research.concepts.length ? `${research.concepts.length} 个观察方向` : '保持观望'}</small></div><div><p>{research.summary}</p><span className="forecast-asof">{sessionLabel}行情 · {shortTradeDate(research.tradeDate)} · 快照更新 {timestamp(research.dataAsOf)}（北京时间）{research.conceptProvider && ` · ${research.conceptProvider === 'ths' ? '同花顺样本' : '东方财富概念'}`}</span></div></section>
+    <ForecastDiscoveryCoverage selection={research.candidateSelection} />
     {research.feedbackUsed?.asOf && <p className="forecast-feedback-note"><span aria-hidden="true">↻</span> 本次已参考到期反馈：半个月 {research.feedbackUsed.sampleCounts['15'] ?? 0} 个样本 · 一个月 {research.feedbackUsed.sampleCounts['30'] ?? 0} 个样本。仅使用生成前已核对的结果。</p>}
     {!research.concepts.length && <div className="forecast-empty-result"><span aria-hidden="true">—</span><div><strong>等待更充分的证据</strong><p>当前证据不足以选出预测方向，暂不强行给出名单。可在行情或新闻更新后重新分析。</p></div></div>}
     {research.concepts.length > 1 && <nav className="forecast-direction-list" aria-label="切换预测概念">{research.concepts.map((item, index) => <button key={item.code} type="button" aria-pressed={item.code === concept?.code} aria-controls={`${id}-concept`} onClick={() => setSelected(item.code)}><span className="forecast-direction-top"><small>方向 {String(index + 1).padStart(2, '0')}</small><span aria-hidden="true">↗</span></span><strong>{item.name}</strong><span className="forecast-direction-values"><span>{sessionLabel} <b className={tone(item.pctChg)}>{percent(item.pctChg)}</b></span><span>近 5 日 <b className={tone(item.change5d)}>{percent(item.change5d)}</b></span></span></button>)}</nav>}
@@ -97,7 +101,8 @@ export function ForecastResearchCards({ research, today }: { research: ForecastR
       <div className="forecast-conditions"><section><span className="forecast-condition-icon" aria-hidden="true">↗</span><div><h4>什么出现，判断更成立</h4><p>{concept.confirmation}</p></div></section><section><span className="forecast-condition-icon" aria-hidden="true">!</span><div><h4>什么出现，预测应失效</h4><p>{concept.invalidation}</p></div></section></div>
       {!!concept.warnings.length && <p className="forecast-data-warning"><strong>数据提示</strong>{concept.warnings.join('；')}</p>}
     </article>}
-    <details className="forecast-method-note"><summary>研究口径与数据说明</summary><p>{research.scope} 研究把握度不是统计胜率；以上为基于当前资料的条件推演，不保证收益。新闻提供事实线索，未来影响仍需验证，缺失数据以“—”展示。</p>{!!research.warnings.length && <p>行情提示：{research.warnings.join('；')}</p>}</details>
+    <ForecastCommonRisk context={research.riskContext} concepts={research.concepts} />
+    <details className="forecast-method-note"><summary>研究口径与数据说明</summary><p>{research.scope} 研究把握度不是统计胜率；以上为基于当前资料的条件推演，不保证收益。新闻提供事实线索，未来影响仍需验证，缺失数据以“—”或“未知”展示。</p>{!!research.warnings.length && <p>行情提示：{research.warnings.join('；')}</p>}</details>
   </div>;
 }
 
