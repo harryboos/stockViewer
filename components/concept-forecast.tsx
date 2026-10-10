@@ -1,8 +1,8 @@
 'use client';
 
 import { useId, useState, type KeyboardEvent } from 'react';
-import { amount, percent, timestamp, tone, shortTradeDate } from '@/lib/format';
-import { SourceLinks } from '@/components/concept-recommendations';
+import { amount, percent, timestamp, tone, shortTradeDate, decimal as number, rate } from '@/lib/format';
+import { SourceLinks } from './source-links';
 import type { ForecastConcept, ForecastResearch } from '@/lib/forecast-types';
 import type { ConceptRun, ConceptSource } from '@/lib/concept-types';
 import { useDailyConceptRun } from '@/lib/use-daily-concept-run';
@@ -11,7 +11,6 @@ import { ForecastCommonRisk, ForecastDiscoveryCoverage, ForecastRelativeStrength
 import { JobButton } from './research-common';
 import { StockLink } from './stock-detail';
 
-const number = (value: number | null | undefined) => value == null || !Number.isFinite(value) ? '—' : value.toFixed(2);
 const perspectives = [['technical', '技术面'], ['fundamental', '基本面'], ['news', '时事新闻']] as const;
 type Perspective = typeof perspectives[number][0];
 
@@ -72,7 +71,7 @@ function ForecastStocks({ concept, sessionLabel }: { concept: ForecastConcept; s
     {concept.stocks.map(stock => {
       const valuation = concept.fundamentalData.valuations.find(row => row.code === stock.code);
       return <article className="forecast-stock" key={stock.code}><div className="forecast-stock-quote"><div><StockLink code={stock.code}><strong>{stock.name}</strong></StockLink><small>{stock.code} · ¥{number(stock.price)}</small></div><b className={tone(stock.pctChg)}>{percent(stock.pctChg)}</b></div>
-        <p className="forecast-stock-turnover">成交 {amount(stock.amount)} · 换手 {number(stock.turnoverRate)}{stock.turnoverRate == null ? '' : '%'}</p><p className="forecast-stock-reason">{stock.reason}</p>
+        <p className="forecast-stock-turnover">成交 {amount(stock.amount)} · 换手 {rate(stock.turnoverRate, 2)}</p><p className="forecast-stock-reason">{stock.reason}</p>
         <details className="forecast-stock-valuation"><summary>估值快照</summary><p>动态 PE {number(valuation?.peDynamic)} · PB {number(valuation?.pb)} · 市值 {amount(valuation?.marketCap)}</p></details>
       </article>;
     })}

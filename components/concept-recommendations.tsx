@@ -1,23 +1,13 @@
 'use client';
 import { StockLink } from './stock-detail';
+import { SourceLinks } from './source-links';
 
 import { useDailyConceptRun } from '@/lib/use-daily-concept-run';
-import type { ConceptResearch, ConceptSource } from '@/lib/concept-types';
-import { shortTradeDate, percent, amount, tone, timestamp } from '@/lib/format';
+import type { ConceptResearch } from '@/lib/concept-types';
+import { shortTradeDate, percent, amount, tone, timestamp, decimal, rate } from '@/lib/format';
 
 const endpoint = '/api/market/concepts/ai';
 const driverLabels = { data: '行情依据', news: '资讯线索', hypothesis: '待验证推测' };
-
-export function SourceLinks({ sources }: { sources: ConceptSource[] }) {
-  return sources.map((source) => (
-    <div className="concept-ai-source" key={source.id}>
-      <a href={source.url} target="_blank" rel="noopener noreferrer">
-        {source.title} ↗<small>{source.source} · {source.publishedAtPrecision === 'date' ? `${source.publishedAt.slice(0, 10)}（时刻未知）` : timestamp(source.publishedAt)}{source.temporalRelation === 'after_quote' ? ' · 晚于行情快照' : source.temporalRelation === 'unknown' ? ' · 与行情的先后未核实' : ''}</small>
-      </a>
-      {source.kind === 'news' && <details><summary>查看报道摘录</summary><p>{source.excerpt}</p></details>}
-    </div>
-  ));
-}
 
 export function ConceptResearchCards({ research, today }: { research: ConceptResearch; today: string }) {
   const isToday = shortTradeDate(research.tradeDate) === today;
@@ -66,10 +56,10 @@ export function ConceptResearchCards({ research, today }: { research: ConceptRes
               {concept.stocks.map((stock) => (
                 <div className="concept-ai-stock" key={stock.code}>
                   <div className="concept-ai-stock-quote">
-                    <div><StockLink code={stock.code}><strong>{stock.name}</strong></StockLink><small>{stock.code} · ¥{stock.price.toFixed(2)}</small></div>
+                    <div><StockLink code={stock.code}><strong>{stock.name}</strong></StockLink><small>{stock.code} · ¥{decimal(stock.price)}</small></div>
                     <b className={tone(stock.pctChg)}>{percent(stock.pctChg)}</b>
                   </div>
-                  <span>成交 {amount(stock.amount)} · 换手 {stock.turnoverRate === null ? '—' : `${stock.turnoverRate.toFixed(2)}%`}</span>
+                  <span>成交 {amount(stock.amount)} · 换手 {rate(stock.turnoverRate, 2)}</span>
                   <p>{stock.reason}</p>
                 </div>
               ))}

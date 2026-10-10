@@ -118,7 +118,8 @@ def refresh_status() -> dict:
     return status
 
 
-def history_payload(page: int = 1, page_size: int = 10, *, as_of: datetime | None = None) -> dict:
+def history_payload(page: int = 1, page_size: int = 10, *, as_of: datetime | None = None,
+                    include_evaluation: bool = True) -> dict:
     from .forecast_evaluation import evaluation_payload
     from .forecast_feedback import pending_outcome
     now = as_of or datetime.now(database.CHINA_TZ)
@@ -140,7 +141,7 @@ def history_payload(page: int = 1, page_size: int = 10, *, as_of: datetime | Non
                  for row in db.execute(selected + """SELECT report_id, concept_code, horizon_days,
                      json_remove(result_json, '$.path') AS result_json FROM forecast_feedback
                      WHERE report_id IN (SELECT id FROM selected_ids)""", pagination)}
-        evaluation = evaluation_payload(db, as_of=now)
+        evaluation = evaluation_payload(db, as_of=now) if include_evaluation else None
     cohorts = {str(days): [] for days in HORIZONS}
     entries, abstentions = [], 0
     for row in rows:
@@ -170,7 +171,8 @@ def history_payload(page: int = 1, page_size: int = 10, *, as_of: datetime | Non
                 outcomes[str(days)] = {key: value for key, value in outcome.items() if key != "path"}
                 if primary:
                     cohorts[str(days)].append(outcome)
-            concepts.append({"code": concept["code"], "name": concept["name"], "outcomes": outcomes})
+            if row["on_page"]:
+                concepts.append({"code": concept["code"], "name": concept["name"], "outcomes": outcomes})
         if row["on_page"]:
             entries.append({key: value for key, value in report.items() if key != "result"} | {
                 "includedInStats": primary, "window": report["result"]["window"],

@@ -6,7 +6,7 @@ import { useState } from 'react';
 
 import { ConceptRecommendations } from '@/components/concept-recommendations';
 
-import { shortTradeDate } from '@/lib/format';
+import { shortTradeDate, compactAmount, percent as formatPct, tone as changeTone, rate } from '@/lib/format';
 import type { SectorBoard, SectorOverview } from '@/lib/types';
 
 
@@ -16,27 +16,6 @@ type SectorConceptViewProps = {
   loading: boolean;
   onRefresh: () => void;
 };
-
-function formatAmount(value: number | null | undefined): string {
-  if (value === null || value === undefined || !Number.isFinite(value)) return '—';
-  const yi = value / 100_000_000;
-  if (Math.abs(yi) >= 10_000) return `${(yi / 10_000).toFixed(2)}万亿`;
-  return `${yi >= 0 ? '+' : ''}${yi.toFixed(Math.abs(yi) >= 100 ? 0 : 1)}亿`;
-}
-
-function formatTurnover(value: number | null | undefined): string {
-  return formatAmount(value).replace(/^\+/, '');
-}
-
-function formatPct(value: number | null | undefined): string {
-  if (value === null || value === undefined || !Number.isFinite(value)) return '—';
-  return `${value >= 0 ? '+' : ''}${value.toFixed(2)}%`;
-}
-
-function changeTone(value: number | null | undefined): string {
-  if (value === null || value === undefined || !Number.isFinite(value)) return '';
-  return value >= 0 ? 'up-text' : 'down-text';
-}
 
 function BoardRanking({ title, eyebrow, boards }: { title: string; eyebrow: string; boards: SectorBoard[] }) {
   const maxMove = Math.max(...boards.map((board) => Math.abs(board.pctChg)), 1);
@@ -54,11 +33,11 @@ function BoardRanking({ title, eyebrow, boards }: { title: string; eyebrow: stri
               <div className="sector-rank-name">
                 <strong>{board.name}</strong>
                 <small>{board.code} · 上涨广度 {board.breadth.toFixed(0)}%</small>
-                <small className="sector-rank-amount">成交 {formatTurnover(board.amount)} · <i className={changeTone(board.amountDelta)}>较昨 {formatAmount(board.amountDelta)}</i></small>
+                <small className="sector-rank-amount">成交 {compactAmount(board.amount)} · <i className={changeTone(board.amountDelta)}>较昨 {compactAmount(board.amountDelta, true)}</i></small>
               </div>
               <div className="sector-strength"><i className={board.pctChg >= 0 ? 'positive' : 'negative'} style={{ width: `${Math.max(Math.abs(board.pctChg) / maxMove * 100, 4)}%` }} /></div>
-              <b className={board.pctChg >= 0 ? 'up-text' : 'down-text'}>{formatPct(board.pctChg)}</b>
-              <em className={(board.mainNetInflow ?? 0) >= 0 ? 'up-text' : 'down-text'}>{formatAmount(board.mainNetInflow)}</em>
+              <b className={changeTone(board.pctChg)}>{formatPct(board.pctChg)}</b>
+              <em className={changeTone(board.mainNetInflow)}>{compactAmount(board.mainNetInflow, true)}</em>
             </div>
           ))}
         </div>
@@ -92,8 +71,8 @@ function TurnoverMatrix({ boards }: { boards: SectorBoard[] }) {
               <h3>{board.name}</h3>
               <p>{board.code} · 上涨广度 {board.breadth.toFixed(0)}%</p>
               <div className="sector-turnover-values">
-                <span><small>今日成交额</small><strong>{formatTurnover(board.amount)}</strong></span>
-                <span><small>较昨日</small><strong className={changeTone(board.amountDelta)}>{formatAmount(board.amountDelta)}</strong></span>
+                <span><small>今日成交额</small><strong>{compactAmount(board.amount)}</strong></span>
+                <span><small>较昨日</small><strong className={changeTone(board.amountDelta)}>{compactAmount(board.amountDelta, true)}</strong></span>
               </div>
               <div className="sector-turnover-bar" aria-hidden="true">
                 <i style={{ width: `${Math.max(((board.amount ?? 0) / maxAmount) * 100, 4)}%` }} />
@@ -112,24 +91,24 @@ function LeaderBoardCard({ board, index }: { board: SectorBoard; index: number }
       <div className="sector-card-head">
         <span>{String(index + 1).padStart(2, '0')}</span>
         <div><small>{board.kind === 'industry' ? '行业板块' : '概念主题'} · {board.code}</small><h3>{board.name}</h3></div>
-        <b className={board.pctChg >= 0 ? 'up-text' : 'down-text'}>{formatPct(board.pctChg)}</b>
+        <b className={changeTone(board.pctChg)}>{formatPct(board.pctChg)}</b>
       </div>
       <div className="sector-card-turnover">
-        <span><small>今日成交额</small><strong>{formatTurnover(board.amount)}</strong></span>
-        <span><small>较昨日</small><strong className={changeTone(board.amountDelta)}>{formatAmount(board.amountDelta)}</strong></span>
+        <span><small>今日成交额</small><strong>{compactAmount(board.amount)}</strong></span>
+        <span><small>较昨日</small><strong className={changeTone(board.amountDelta)}>{compactAmount(board.amountDelta, true)}</strong></span>
       </div>
       <div className="sector-card-metrics">
         <span><small>上涨广度</small><strong>{board.breadth.toFixed(0)}%</strong></span>
-        <span><small>换手率</small><strong>{formatPct(board.turnoverRate)}</strong></span>
-        <span><small>主力净流入</small><strong className={(board.mainNetInflow ?? 0) >= 0 ? 'up-text' : 'down-text'}>{formatAmount(board.mainNetInflow)}</strong></span>
+        <span><small>换手率</small><strong>{rate(board.turnoverRate, 2)}</strong></span>
+        <span><small>主力净流入</small><strong className={changeTone(board.mainNetInflow)}>{compactAmount(board.mainNetInflow, true)}</strong></span>
       </div>
       <div className="sector-leaders">
         {board.leaders.length ? board.leaders.map((leader) => (
           <div key={`${leader.role}-${leader.code ?? leader.name}`}>
             <span>{leader.role}</span>
             <div>{leader.code ? <StockLink code={leader.code}><strong>{leader.name}</strong></StockLink> : <strong>{leader.name}</strong>}<small>{leader.code ?? '代码待补充'} · {leader.price === null ? '价格暂缺' : `现价 ${leader.price.toFixed(2)}`}</small></div>
-            <b className={(leader.pctChg ?? 0) >= 0 ? 'up-text' : 'down-text'}>{formatPct(leader.pctChg)}</b>
-            <em>{leader.amount === null ? '成交额暂缺' : `成交 ${formatAmount(leader.amount).replace('+', '')}`}</em>
+            <b className={changeTone(leader.pctChg)}>{formatPct(leader.pctChg)}</b>
+            <em>{leader.amount === null ? '成交额暂缺' : `成交 ${compactAmount(leader.amount)}`}</em>
           </div>
         )) : <p>上游暂未返回可核对的龙头股行情。</p>}
       </div>
@@ -168,7 +147,7 @@ export function SectorConceptView({ today, data, loading, onRefresh }: SectorCon
         <article className="market-kpi market-kpi-dark"><span className="market-kpi-icon">行</span><div><small>{data.sourceProvider === 'ths' ? '样本上涨行业' : '上涨行业'}</small><strong>{data.summary.risingIndustryCount}<i> / {data.summary.industryCount}</i></strong><p>{data.sourceProvider === 'ths' ? '同花顺公开行业样本' : '东方财富行业板块口径'}</p></div></article>
         <article className="market-kpi"><span className="market-kpi-icon">概</span><div><small>{data.sourceProvider === 'ths' ? '样本上涨概念' : '上涨概念'}</small><strong>{data.summary.risingConceptCount}<i> / {data.summary.conceptCount}</i></strong><p>已过滤连板、重仓等标签型概念</p></div></article>
         <article className="market-kpi"><span className="market-kpi-icon">强</span><div><small>{data.sourceProvider === 'ths' ? '样本强度第一' : '强度冠军'}</small><strong className="up-text">{topBoard?.name ?? '—'}</strong><p>{topBoard ? `${topBoard.kind === 'industry' ? '行业' : '概念'} · ${formatPct(topBoard.pctChg)}` : '板块强度暂缺'}</p></div></article>
-        <article className="market-kpi"><span className="market-kpi-icon">资</span><div><small>资金冠军</small><strong className={(topFundBoard?.mainNetInflow ?? 0) >= 0 ? 'up-text' : 'down-text'}>{topFundBoard?.name ?? '—'}</strong><p>{topFundBoard ? `主力净流入 ${formatAmount(topFundBoard.mainNetInflow)}` : '板块资金流暂缺'}</p></div></article>
+        <article className="market-kpi"><span className="market-kpi-icon">资</span><div><small>资金冠军</small><strong className={changeTone(topFundBoard?.mainNetInflow)}>{topFundBoard?.name ?? '—'}</strong><p>{topFundBoard ? `主力净流入 ${compactAmount(topFundBoard.mainNetInflow, true)}` : '板块资金流暂缺'}</p></div></article>
       </div>
 
       <ConceptRecommendations />

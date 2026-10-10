@@ -155,6 +155,16 @@
 .forecast-empty-result p { color: #7a8c7e; font-size: 13px; line-height: 1.85; margin: 8px 0 0; }
 .forecast-workspace .forecast-history-section { margin-top: 44px; padding: 28px; border-radius: 16px; border: 1px solid #dee6e0; background: #edf2ee; }
 .forecast-workspace #forecast-history-title { scroll-margin-top: 140px; font-size: 25px; }
+.forecast-history-section .feedback-heading { display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 360px); align-items: start; gap: 24px; }
+.feedback-actions { min-width: 0; }
+.feedback-actions .research-job-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.feedback-actions .refresh-button { width: 100%; min-height: 44px; padding: 10px 12px; border-radius: 9px; font-size: 13px; }
+.feedback-actions .feedback-update-button { background: var(--green); border-color: var(--green); color: #fff; }
+.feedback-actions .feedback-update-button:hover:not(:disabled) { background: #145c3c; border-color: #145c3c; }
+.feedback-actions .research-job-control > small { max-width: none; overflow-wrap: anywhere; }
+@media (max-width: 900px) {
+  .forecast-history-section .feedback-heading { grid-template-columns: minmax(0, 1fr); gap: 18px; }
+}
 .forecast-workspace .forecast-history-section > .concept-ai-heading > div > p:last-child { font-size: 13px; }
 .forecast-workspace .forecast-history-section .eyebrow { font-size: 10px; letter-spacing: .06em; margin-bottom: 7px; }
 .forecast-workspace .feedback-summary-card { padding: 20px; border-radius: 11px; }

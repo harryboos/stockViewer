@@ -1,4 +1,4 @@
-import { shortTradeDate, timestamp } from '@/lib/format';
+import { shortTradeDate, timestamp, compactAmount, percent as formatPct, tone } from '@/lib/format';
 import { StockLink } from './stock-detail';
 import type { MarketOverview } from '@/lib/types';
 
@@ -9,23 +9,6 @@ type MarketOverviewViewProps = {
   loading: boolean;
   onRefresh: () => void;
 };
-
-function formatAmount(value: number | null | undefined): string {
-  if (value === null || value === undefined || !Number.isFinite(value)) return '—';
-  const yi = value / 100_000_000;
-  if (Math.abs(yi) >= 10_000) return `${(yi / 10_000).toFixed(2)}万亿`;
-  return `${yi.toFixed(Math.abs(yi) >= 100 ? 0 : 1)}亿`;
-}
-
-function formatSignedAmount(value: number | null | undefined): string {
-  if (value === null || value === undefined || !Number.isFinite(value)) return '—';
-  return `${value >= 0 ? '+' : ''}${formatAmount(value)}`;
-}
-
-function formatPct(value: number | null | undefined): string {
-  if (value === null || value === undefined || !Number.isFinite(value)) return '—';
-  return `${value >= 0 ? '+' : ''}${value.toFixed(2)}%`;
-}
 
 function compactDate(value: string): string {
   return value.length === 8 ? `${value.slice(4, 6)}-${value.slice(6, 8)}` : value;
@@ -73,7 +56,6 @@ export function MarketOverviewView({ today, data, loading, onRefresh }: MarketOv
   const { snapshot, latestFlow } = data;
   const turnoverMax = Math.max(...data.turnoverHistory.map((item) => item.turnover), 1);
   const flowMax = Math.max(...data.fundFlowHistory.map((item) => Math.abs(item.mainNetInflow)), 1);
-  const flowPositive = (latestFlow?.mainNetInflow ?? 0) >= 0;
   const breadthPositive = snapshot.breadth >= 50;
   const warnings = friendlyWarnings(data.warnings);
   const turnoverSource = data.dataStatus?.turnoverComparison?.source;
@@ -89,15 +71,15 @@ export function MarketOverviewView({ today, data, loading, onRefresh }: MarketOv
       <div className="market-kpi-grid">
         <article className="market-kpi market-kpi-dark">
           <span className="market-kpi-icon">量</span>
-          <div><small>A 股成交额</small><strong>{formatAmount(snapshot.turnover)}</strong><p>{data.stale ? '最近成功快照汇总' : '全市场最新快照汇总'}</p></div>
+          <div><small>A 股成交额</small><strong>{compactAmount(snapshot.turnover)}</strong><p>{data.stale ? '最近成功快照汇总' : '全市场最新快照汇总'}</p></div>
         </article>
         <article className="market-kpi">
           <span className="market-kpi-icon">增</span>
-          <div><small>实时量能同比</small><strong className={(snapshot.turnoverDelta ?? 0) >= 0 ? 'up-text' : 'down-text'}>{formatSignedAmount(snapshot.turnoverDelta)}</strong><p>{formatPct(snapshot.turnoverDeltaPct)} · {snapshot.turnoverComparisonDate && snapshot.turnoverComparisonTime ? `对比 ${shortTradeDate(snapshot.turnoverComparisonDate)} ${snapshot.turnoverComparisonTime}` : '同期数据暂不可用'}{turnoverSource ? ` · ${turnoverSource}` : ''}</p></div>
+          <div><small>实时量能同比</small><strong className={tone(snapshot.turnoverDelta)}>{compactAmount(snapshot.turnoverDelta, true)}</strong><p>{formatPct(snapshot.turnoverDeltaPct)} · {snapshot.turnoverComparisonDate && snapshot.turnoverComparisonTime ? `对比 ${shortTradeDate(snapshot.turnoverComparisonDate)} ${snapshot.turnoverComparisonTime}` : '同期数据暂不可用'}{turnoverSource ? ` · ${turnoverSource}` : ''}</p></div>
         </article>
         <article className="market-kpi">
           <span className="market-kpi-icon">资</span>
-          <div><small>主力净流入</small><strong className={flowPositive ? 'up-text' : 'down-text'}>{formatSignedAmount(latestFlow?.mainNetInflow)}</strong><p>{latestFlow ? `${shortTradeDate(latestFlow.date)} · 净占比 ${formatPct(latestFlow.mainNetInflowRatio)}${flowSource ? ` · ${flowSource}` : ''}` : '资金流历史暂不可用'}</p></div>
+          <div><small>主力净流入</small><strong className={tone(latestFlow?.mainNetInflow)}>{compactAmount(latestFlow?.mainNetInflow, true)}</strong><p>{latestFlow ? `${shortTradeDate(latestFlow.date)} · 净占比 ${formatPct(latestFlow.mainNetInflowRatio)}${flowSource ? ` · ${flowSource}` : ''}` : '资金流历史暂不可用'}</p></div>
         </article>
         <article className="market-kpi">
           <span className="market-kpi-icon">温</span>
@@ -113,7 +95,7 @@ export function MarketOverviewView({ today, data, loading, onRefresh }: MarketOv
               {data.fundFlowHistory.map((item) => {
                 const height = `${Math.max(Math.abs(item.mainNetInflow) / flowMax * 45, 3)}%`;
                 return (
-                  <div className="fund-flow-column" key={item.date} title={`${shortTradeDate(item.date)} ${formatSignedAmount(item.mainNetInflow)} · ${item.source}`}>
+                  <div className="fund-flow-column" key={item.date} title={`${shortTradeDate(item.date)} ${compactAmount(item.mainNetInflow, true)} · ${item.source}`}>
                     <div className="flow-bar-space"><i className={item.mainNetInflow >= 0 ? 'positive' : 'negative'} style={{ height }} /></div>
                     <small>{compactDate(item.date)}</small>
                   </div>
@@ -142,7 +124,7 @@ export function MarketOverviewView({ today, data, loading, onRefresh }: MarketOv
           <div className="market-panel-heading"><div><small>量能趋势</small><h2>近 {data.turnoverHistory.length} 个交易日成交额</h2></div><span>沪深历史 + {data.stale ? '缓存快照' : '最新快照'}</span></div>
           <div className="turnover-chart" role="img" aria-label="近期市场成交额柱状图">
             {data.turnoverHistory.map((item) => (
-              <div className="turnover-column" key={item.date} title={`${shortTradeDate(item.date)} ${formatAmount(item.turnover)}`}>
+              <div className="turnover-column" key={item.date} title={`${shortTradeDate(item.date)} ${compactAmount(item.turnover)}`}>
                 <i style={{ height: `${Math.max(item.turnover / turnoverMax * 100, 5)}%` }} />
                 <small>{compactDate(item.date)}</small>
               </div>
@@ -154,7 +136,7 @@ export function MarketOverviewView({ today, data, loading, onRefresh }: MarketOv
           <div className="market-panel-heading"><div><small>量能焦点</small><h2>成交额前列</h2></div><span>{data.stale ? '缓存快照' : '最新快照'}</span></div>
           <div className="turnover-focus-list">
             {data.topTurnover.map((item, index) => (
-              <div key={item.code}><span>{index + 1}</span><div><StockLink code={item.code}><strong>{item.name}</strong></StockLink><small>{item.code}</small></div><b className={(item.pctChg ?? 0) >= 0 ? 'up-text' : 'down-text'}>{formatPct(item.pctChg)}</b><em>{formatAmount(item.amount)}</em></div>
+              <div key={item.code}><span>{index + 1}</span><div><StockLink code={item.code}><strong>{item.name}</strong></StockLink><small>{item.code}</small></div><b className={tone(item.pctChg)}>{formatPct(item.pctChg)}</b><em>{compactAmount(item.amount)}</em></div>
             ))}
           </div>
         </article>

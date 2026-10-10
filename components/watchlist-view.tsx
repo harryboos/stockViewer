@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-import { marketLabel, shortTradeDate } from '@/lib/format';
+import { marketLabel, shortTradeDate, percent, decimal, isFiniteNumber } from '@/lib/format';
 import type { WatchlistStock } from '@/lib/types';
 import { summarizeWatchlist } from '@/lib/watchlist-summary';
 import { StockLink } from './stock-detail';
@@ -71,7 +71,7 @@ export function WatchlistView({
       <div className="summary-grid">
         <article className="summary-card dark-card">
           <div className="card-topline"><span>自选组合今日均值</span><span className="status-pill">{tradeDate ? shortTradeDate(tradeDate) : '无行情'}</span></div>
-          <strong className="metric-large">{averageChange === null ? '—' : `${averageChange >= 0 ? '+' : ''}${averageChange.toFixed(2)}%`}</strong>
+          <strong className="metric-large">{percent(averageChange)}</strong>
         </article>
         <article className="summary-card">
           <span className="card-label">上涨 / 下跌</span>
@@ -111,13 +111,11 @@ export function WatchlistView({
               <tr role="row" key={stock.tsCode}>
                 <th scope="row" role="rowheader"><div className="stock-name">
                   <span className="market-tag">{marketLabel(stock.exchange)}</span>
-                  <div><StockLink code={stock.symbol}><strong>{stock.name}</strong></StockLink><small>{stock.symbol} · {stock.groupName || '未分组'}</small><button className="watch-note-button" onClick={() => setEditing(stock)}>编辑分组与笔记{stock.note || stock.reason ? ' · 已记录' : ''}</button>{stock.referencePrice != null && <small>关注参考价 {stock.referencePrice.toFixed(2)} · 行情 {shortTradeDate(stock.referenceDate)}</small>}</div>
+                  <div><StockLink code={stock.symbol}><strong>{stock.name}</strong></StockLink><small>{stock.symbol} · {stock.groupName || '未分组'}</small><button className="watch-note-button" onClick={() => setEditing(stock)}>编辑分组与笔记{stock.note || stock.reason ? ' · 已记录' : ''}</button>{stock.referencePrice != null && <small>关注参考价 {decimal(stock.referencePrice)} · 行情 {shortTradeDate(stock.referenceDate)}</small>}</div>
                 </div></th>
                 <td role="cell" data-label="行情价"><strong className="price">{stock.quote ? stock.quote.close.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—'}</strong></td>
-                <td role="cell" data-label="涨跌幅"><span className={`change ${stock.quote?.pctChg == null || stock.quote.pctChg === 0 ? 'neutral' : stock.quote.pctChg > 0 ? 'up' : 'down'}`}>
-                  {stock.quote?.pctChg === null || stock.quote?.pctChg === undefined
-                    ? '待更新'
-                    : `${stock.quote.pctChg >= 0 ? '+' : ''}${stock.quote.pctChg.toFixed(2)}%`}
+                <td role="cell" data-label="涨跌幅"><span className={`change ${!isFiniteNumber(stock.quote?.pctChg) || stock.quote.pctChg === 0 ? 'neutral' : stock.quote.pctChg > 0 ? 'up' : 'down'}`}>
+                  {isFiniteNumber(stock.quote?.pctChg) ? percent(stock.quote.pctChg) : '待更新'}
                 </span></td>
                 <td role="cell" data-label="行业"><span className="industry">{stock.industry ?? '未分类'}</span></td>
                 <td role="cell" data-label="交易日"><span className="trade-date-cell">{shortTradeDate(stock.quote?.tradeDate)}</span></td>

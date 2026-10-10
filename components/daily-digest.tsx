@@ -2,12 +2,12 @@
 
 import type { DailyDigestData } from '@/lib/research-types';
 import { useResearch } from '@/lib/use-research';
-import { percent, timestamp, tone, shortTradeDate as tradeDate } from '@/lib/format';
+import { percent, timestamp, tone, shortTradeDate as tradeDate, isFiniteNumber } from '@/lib/format';
 import { ResearchError } from './research-common';
 import { StockLink } from './stock-detail';
 
 type Navigate = (tab: 'watchlist' | 'market' | 'sectors' | 'strategies' | 'forecast') => void;
-const turnover = (value?: number | null) => value == null ? '—' : value >= 1e12 ? `${(value / 1e12).toFixed(2)} 万亿` : `${(value / 1e8).toLocaleString('zh-CN', { maximumFractionDigits: 0 })} 亿`;
+const turnover = (value?: number | null) => !isFiniteNumber(value) ? '—' : value >= 1e12 ? `${(value / 1e12).toFixed(2)} 万亿` : `${(value / 1e8).toLocaleString('zh-CN', { maximumFractionDigits: 0 })} 亿`;
 
 export function DailyDigest({ navigate }: { navigate: Navigate }) {
   const { data, error, refresh } = useResearch<DailyDigestData>('/api/research/digest', 15000);

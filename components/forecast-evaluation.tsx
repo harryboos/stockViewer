@@ -1,9 +1,7 @@
-import { percent, tone } from '@/lib/format';
+import { percent, tone, rate, percentagePoints as gap } from '@/lib/format';
 import type { ForecastEvaluationData, ForecastEvaluationGroup, Horizon } from '@/lib/forecast-history-types';
 import styles from './forecast-evaluation.module.css';
 
-const rate = (value: number | null) => value === null ? '—' : `${value.toFixed(1)}%`;
-const gap = (value: number | null) => value === null ? '—' : `${value > 0 ? '+' : ''}${value.toFixed(2)} 个百分点`;
 const availability = { in_pool: '已入池但未选', outside_pool: '未进入候选池', unknown: '原始候选记录不足' };
 
 function VersionEvaluation({ group }: { group: ForecastEvaluationGroup }) {

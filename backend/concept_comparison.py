@@ -71,7 +71,7 @@ def refresh_comparisons(progress) -> dict:
         ids = [row[0] for row in db.execute("SELECT id FROM forecast_reports ORDER BY id")]
         saved = {(row["report_id"], row["code"], row["horizon_days"]): (json.loads(row["result_json"]), row["updated_at"])
                  for row in db.execute("SELECT * FROM comparison_outcomes")}
-    pending = []
+    pending, priorities = [], {}
     unavailable, invalid_windows = 0, 0
     for report_id in ids:
         report = get_report(report_id)
@@ -79,6 +79,12 @@ def refresh_comparisons(progress) -> dict:
         if universe is None:
             unavailable += 1
             continue
+        selected = {row['code'] for row in report['result']['concepts']}
+        plan = report['result'].get('evaluationPlan') or {}
+        evaluation_codes = set(plan.get('candidateCodes', []))
+        for baseline in plan.get('baselines', []):
+            evaluation_codes.update(baseline.get('codes', []))
+        priorities[report_id] = selected, evaluation_codes
         for days in (15, 30):
             window, dates = observation_window(report, days, calendar, now)
             if not dates:
@@ -99,12 +105,9 @@ def refresh_comparisons(progress) -> dict:
     # hundreds of never-checked broad-pool concepts on every retry.
     def priority(item):
         checked, report, board, days, _, position, deferred = item
-        selected = any(row['code'] == board['code'] for row in report['result']['concepts'])
-        plan = report['result'].get('evaluationPlan') or {}
-        evaluation_codes = set(plan.get('candidateCodes', []))
-        for baseline in plan.get('baselines', []):
-            evaluation_codes.update(baseline.get('codes', []))
-        return (not selected, board['code'] not in evaluation_codes, not deferred, checked, position, -report['id'], days)
+        selected, evaluation_codes = priorities[report['id']]
+        return (board['code'] not in selected, board['code'] not in evaluation_codes,
+                not deferred, checked, position, -report['id'], days)
     batch = sorted(pending, key=priority)
     requests = list(dict.fromkeys(history_request(board["code"], *span, closed=closed) for _, _, board, _, span, _, _ in batch))
     progress(0, len(requests), "读取同期概念日线（相同概念共用一次查询）")

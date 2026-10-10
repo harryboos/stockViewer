@@ -11,6 +11,8 @@ import statistics
 from datetime import datetime
 from urllib.parse import urlsplit, urlunsplit
 
+from .market_numbers import number_or_none as _finite
+
 
 BENCHMARKS = (("sh000001", "上证指数"), ("sh000688", "科创50"))
 LIMITS = [
@@ -32,16 +34,6 @@ def _date(value: object) -> str | None:
         if parsed.strftime(pattern) == value:
             return parsed.date().isoformat()
     return None
-
-
-def _finite(value: object) -> float | None:
-    if isinstance(value, bool):
-        return None
-    try:
-        numeric = float(value)
-    except (TypeError, ValueError, OverflowError):
-        return None
-    return numeric if math.isfinite(numeric) else None
 
 
 def _history(rows: object, cutoff: str) -> dict:

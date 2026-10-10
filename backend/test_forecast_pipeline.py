@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 import math
+import sqlite3
 import unittest
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
@@ -48,9 +49,17 @@ def cache_row(code: str, rows: list[dict], *, fetched: str = QUOTE, closed: bool
 
 @contextmanager
 def fake_connection(meta: list[dict], research: list[dict] | None = None):
-    db = Mock()
-    db.execute.side_effect = lambda query: meta if "app_meta" in query else (research or [])
-    yield db
+    # Exercise the actual indexed prefix query against an isolated database.
+    db = sqlite3.connect(":memory:")
+    db.row_factory = sqlite3.Row
+    db.executescript("CREATE TABLE app_meta (key TEXT PRIMARY KEY,value TEXT);"
+                     "CREATE TABLE research_cache (cache_key TEXT PRIMARY KEY,payload_json TEXT,updated_at TEXT);")
+    db.executemany("INSERT INTO app_meta VALUES (:key,:value)", meta)
+    db.executemany("INSERT INTO research_cache VALUES (:cache_key,:payload_json,:updated_at)", research or [])
+    try:
+        yield db
+    finally:
+        db.close()
 
 
 def execute_batch(items, fetch, **kwargs):
@@ -112,6 +121,25 @@ class ForecastPipelineTests(unittest.TestCase):
             found = pipeline.cached_histories({f"BK{index:04d}" for index in range(1, 5)}, TRADE_DATE, DECISION)
         self.assertEqual(set(found), {"BK0004"})
         self.assertEqual(found["BK0004"][-1]["date"], TRADE_DATE)
+
+    def test_cache_query_filters_exact_codes_and_source_before_reading_json(self):
+        meta = [cache_row("BK0001", history()), cache_row("BK00010", history()),
+                cache_row("THS:885955", history()), {"key": "unrelated:BK0001", "value": "not JSON"}]
+        research = [{"cache_key": "evaluation:sh000001:2026-08-01:2026-09-11", "updated_at": QUOTE,
+                     "payload_json": json.dumps({"rows": history()})},
+                    {"cache_key": "evaluation:600000:2026-08-01:2026-09-11", "updated_at": QUOTE,
+                     "payload_json": "not JSON"}]
+        codes = {"BK0001", "sh000001"} | {f"BK{1000 + index}" for index in range(250)}
+        with fake_connection(meta, research) as db:
+            snapshots = list(pipeline._cache_snapshots(db, codes))
+        self.assertEqual({row["key"] for row in snapshots},
+                         {meta[0]["key"], research[0]["cache_key"]})
+
+    def test_empty_codes_or_invalid_cutoff_do_not_open_database(self):
+        with patch.object(pipeline.database, "connection") as connect:
+            self.assertEqual(pipeline.cached_histories(set(), TRADE_DATE, DECISION), {})
+            self.assertEqual(pipeline.cached_histories({"BK0001"}, TRADE_DATE, "invalid"), {})
+        connect.assert_not_called()
 
     def test_invalid_or_conflicting_prices_reject_series_without_filling_the_gap(self):
         valid = history()

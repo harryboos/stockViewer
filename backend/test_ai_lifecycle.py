@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 
-from backend import ai, concept_ai, concept_forecast, database, glm_transport, research_jobs
+from backend import ai, concept_ai, concept_forecast, database, glm_transport, research_jobs, run_dispatch
 from backend.test_concept_ai import evidence_fixture
 from backend.test_glm_transport import Chunks, delta, mock_http
 
@@ -135,6 +135,25 @@ class AiLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(research_jobs.ai_token.get(), "outer-token")
         finally:
             research_jobs.ai_token.reset(outer)
+
+    async def test_detached_worker_failure_is_retrieved_and_released(self):
+        loop = asyncio.get_running_loop()
+        prior_handler = loop.get_exception_handler()
+        failures = []
+        loop.set_exception_handler(lambda _, context: failures.append(context))
+        tasks = set()
+
+        async def fail():
+            raise RuntimeError("worker storage unavailable")
+
+        try:
+            run_dispatch.track_task(asyncio.create_task(fail()), tasks)
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            self.assertFalse(tasks)
+            self.assertFalse(failures)
+        finally:
+            loop.set_exception_handler(prior_handler)
 
     def test_replacing_an_expired_lease_closes_its_attempt_and_rejects_late_results(self):
         day = database.china_date()

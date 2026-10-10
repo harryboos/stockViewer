@@ -56,15 +56,32 @@ def _history_quality(rows: list[dict]) -> tuple:
     return len(rows) >= 21, amounts, len(rows)
 
 
+def _cache_snapshots(db, codes: set[str]):
+    """Use exact code-prefix index ranges before loading potentially large JSON."""
+    ordered = sorted(codes)
+    for table, key, payload, stamp, namespace in (
+        ("app_meta", "key", "value", "NULL", "concept_history"),
+        ("research_cache", "cache_key", "payload_json", "updated_at", "evaluation"),
+    ):
+        # Keep parameters below SQLite's conservative 999-variable limit.
+        for offset in range(0, len(ordered), 200):
+            prefixes = [f"{namespace}:{code}:" for code in ordered[offset:offset + 200]]
+            bounds = [bound for prefix in prefixes for bound in (prefix, prefix + "\uffff")]
+            placeholders = ",".join("(?,?)" for _ in prefixes)
+            query = f"""WITH wanted(first,last) AS (VALUES {placeholders})
+                SELECT cache.{key} AS key, cache.{payload} AS value, {stamp} AS stored_at
+                FROM wanted JOIN {table} AS cache ON cache.{key} >= first AND cache.{key} < last"""
+            yield from db.execute(query, bounds)
+
+
 def cached_histories(codes: set[str], trade_date: str, decision_at: str) -> dict:
     """Read existing caches once. Only already available, aligned snapshots qualify."""
     cutoff, _ = publication_time(decision_at)
+    if not codes or cutoff is None:
+        return {}
     found = {}
     with database.connection() as db:
-        snapshots = [(row["key"], row["value"], None) for row in db.execute(
-            "SELECT key,value FROM app_meta WHERE key LIKE 'concept_history:%'")]
-        snapshots.extend((row["cache_key"], row["payload_json"], row["updated_at"]) for row in db.execute(
-            "SELECT cache_key,payload_json,updated_at FROM research_cache WHERE cache_key LIKE 'evaluation:%'"))
+        snapshots = [(row["key"], row["value"], row["stored_at"]) for row in _cache_snapshots(db, codes)]
     for key, encoded, stored_at in snapshots:
         match = re.match(r"^(?:concept_history|evaluation):(BK\d+|THS:88\d{4}|sh000001|sh000688):", key)
         if not match or match[1] not in codes:

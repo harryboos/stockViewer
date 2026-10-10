@@ -15,13 +15,16 @@ from . import ai, database
 from .concept_ai import Catalyst, ResearchModel, StockChoice, MODEL, PROVIDER
 from .forecast_limits import DATA_TIMEOUT_SECONDS, FEEDBACK_TIMEOUT_SECONDS, MODEL_TIMEOUT_SECONDS, RUN_TIMEOUT_SECONDS
 from .concept_data import collect_concept_evidence, concept_snapshot_warning
-from .concept_identity import CONCEPT_CODE_PATTERN, single_provider
+from .concept_identity import CONCEPT_CODE_PATTERN
 from .concept_news import enrich_world_news
 from .forecast_data import forecast_window
 from .forecast_history import feedback_context
 from .forecast_review import REVIEW_INSTRUCTION, candidate_audit
-from .research_prompt import EVIDENCE_RULES, prepare_research_evidence
-from .run_dispatch import shared_start
+from .research_prompt import (
+    EVIDENCE_RULES, candidate_provider as _candidate_provider, cited_sources,
+    prepare_research_evidence, selected_stocks,
+)
+from .run_dispatch import current_run, launch_claimed_run, shared_start
 
 PROMPT_VERSION = "forecast-v7-discovery-risk-evaluation-glm53-max"
 RUN_NAMESPACE = "forecast:glm"
@@ -56,10 +59,9 @@ async def collect_evidence(key: str | None = None) -> dict:
 
 def prompt_evidence(evidence: dict) -> dict:
     """Avoid serializing the same indicators twice; retain every news excerpt and source ID."""
-    compact = copy.deepcopy(evidence)
-    compact.pop("comparisonUniverse", None)  # Evaluation universe is not a model candidate pool.
-    compact = {key: value for key, value in compact.items() if not key.startswith("_")}
-    compact.pop("evaluationPlan", None)  # Baselines never anchor the model's selection.
+    # Exclude bulky private histories and evaluation-only data before copying.
+    compact = copy.deepcopy({key: value for key, value in evidence.items()
+                             if not key.startswith("_") and key not in {"comparisonUniverse", "evaluationPlan"}})
     compact.get("candidateSelection", {}).pop("baseline", None)
     for pair in compact.get("riskContext", {}).get("pairs", []):
         # Keep actual dates/counts and unavailable reasons; repeated source prose
@@ -162,16 +164,6 @@ def build_prompt(evidence: dict) -> str:
     )
 
 
-def _candidate_provider(evidence: dict) -> str | None:
-    provider = single_provider(evidence["candidates"])
-    if evidence["candidates"] and provider is None:
-        raise ValueError("概念候选必须来自同一行情来源，不能混用不同概念指数口径")
-    codes = [candidate["code"] for candidate in evidence["candidates"]]
-    if len(codes) != len(set(codes)):
-        raise ValueError("预测候选代码重复，无法核对唯一来源")
-    return provider
-
-
 def evaluation_plan(evidence: dict) -> dict:
     """Freeze transparent baselines from this decision, never from later winners."""
     codes = [row["code"] for row in evidence["candidates"]]
@@ -199,13 +191,6 @@ def assemble_result(raw: dict, evidence: dict) -> dict:
         candidate = pool[choice.code]
         references = {ref["id"]: ref for ref in candidate["evidence"]}
 
-        def sources(ids: list[str], supported: bool, allowed: set[str]) -> list[dict]:
-            if supported and (not ids or any(ref not in allowed for ref in ids)):
-                raise ValueError("预测判断缺少该概念的匹配来源")
-            if not supported and ids:
-                raise ValueError("待验证预测不能冒用事实来源")
-            return [references[ref] for ref in dict.fromkeys(ids)]
-
         news_ids = {ref for ref, source in references.items() if source["kind"] == "news"}
         assessments = {}
         for field in ("technical", "fundamental", "news"):
@@ -213,16 +198,14 @@ def assemble_result(raw: dict, evidence: dict) -> dict:
             allowed = ({f"{choice.code}:market", f"{choice.code}:technical", f"{choice.code}:relative"} & references.keys() if field == "technical"
                        else news_ids)
             assessments[field] = {**view.model_dump(exclude={"evidenceIds"}),
-                                  "sources": sources(view.evidenceIds, view.status == "supported", allowed)}
+                                  "sources": cited_sources(view.evidenceIds, references, allowed,
+                                                           supported=view.status == "supported", context="预测判断")}
         catalysts = [{**item.model_dump(exclude={"evidenceIds"}),
-                      "sources": sources(item.evidenceIds, item.status == "reported", news_ids)} for item in choice.catalysts]
-        stock_pool = {stock["code"]: stock for stock in candidate["stocks"]}
-        selected = [stock.code for stock in choice.stocks]
-        if len(selected) != len(set(selected)) or any(code not in stock_pool for code in selected):
-            raise ValueError("预测返回了成份候选外或重复的股票")
-        if stock_pool and not selected:
-            raise ValueError("预测遗漏了已提供的强势股票")
-        incomplete = (not selected or candidate["technicalData"]["ma20"] is None
+                      "sources": cited_sources(item.evidenceIds, references, news_ids,
+                                               supported=item.status == "reported", context="预测判断")}
+                     for item in choice.catalysts]
+        stocks = selected_stocks(candidate, choice.stocks)
+        incomplete = (not stocks or candidate["technicalData"]["ma20"] is None
                       or any(view["status"] == "hypothesis" for view in assessments.values())
                       or not any(item["status"] == "reported" for item in catalysts))
         concepts.append({
@@ -230,7 +213,7 @@ def assemble_result(raw: dict, evidence: dict) -> dict:
             "thesis": choice.thesis, "conviction": "low" if incomplete else choice.conviction,
             "confirmation": choice.confirmation, "invalidation": choice.invalidation,
             **assessments, "catalysts": catalysts,
-            "stocks": [{**stock_pool[stock.code], "reason": stock.reason} for stock in choice.stocks],
+            "stocks": stocks,
         })
     return {"summary": parsed.summary, "concepts": concepts, "conceptProvider": provider, "decisionAt": evidence["decisionAt"],
             "candidateAudit": candidate_audit(evidence, seen),
@@ -251,12 +234,8 @@ def get_forecast_run(*, include_result: bool = True) -> dict:
             "maxRunSeconds": RUN_TIMEOUT_SECONDS}
     if base["status"] == "not_configured":
         return base
-    current = database.read_ai_run(RUN_NAMESPACE, base["runDate"], include_result=include_result)
-    if current and (current["status"] == "running" or (
-        current.get("promptVersion") == PROMPT_VERSION and current.get("model") == MODEL
-    )):
-        return {**base, **current, "provider": PROVIDER}
-    return base
+    current = current_run(RUN_NAMESPACE, base["runDate"], MODEL, PROMPT_VERSION, include_result=include_result)
+    return {**base, **current, "provider": PROVIDER} if current else base
 
 
 async def _execute(run_date: str, key: str, token: str) -> None:
@@ -343,12 +322,6 @@ async def _start_forecast_run(force: bool) -> dict:
     if not key:
         return await asyncio.to_thread(get_forecast_run)
 
-    async def claim_and_launch() -> dict:
-        token = await asyncio.to_thread(database.start_ai_run, RUN_NAMESPACE, MODEL, current["runDate"], PROMPT_VERSION, force)
-        if token:
-            task = asyncio.create_task(_execute(current["runDate"], key, token))
-            _tasks.add(task)
-            task.add_done_callback(_tasks.discard)
-        return await asyncio.to_thread(get_forecast_run)
-
-    return await claim_and_launch()
+    await launch_claimed_run(RUN_NAMESPACE, MODEL, current["runDate"], PROMPT_VERSION, force,
+                             lambda token: _execute(current["runDate"], key, token), _tasks)
+    return await asyncio.to_thread(get_forecast_run)

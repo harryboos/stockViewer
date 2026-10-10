@@ -384,3 +384,15 @@ class WorldNewsTests(unittest.IsolatedAsyncioTestCase):
             result = await concept_news.enrich_world_news(evidence_fixture(), "test-key")
         self.assertEqual(len(result["candidates"][0]["evidence"]), 1)
         self.assertTrue(any("来源不足" in note for note in result["candidates"][0]["warnings"]))
+
+    async def test_empty_followup_search_keeps_discovered_news_without_false_missing_warning(self) -> None:
+        evidence = evidence_fixture()
+        source = {"id": "BK1001:web:discovery", "kind": "news", "title": "已检索到的产业事件",
+                  "url": "https://example.org/discovered-event"}
+        evidence["candidates"][0]["evidence"].append(source)
+        with (patch.object(concept_news, "search_world_news", return_value=[]),
+              patch.object(concept_news.ConceptResearchClient, "news", return_value=[])):
+            result = await concept_news.enrich_world_news(evidence, "test-key", forecast=True)
+        candidate = result["candidates"][0]
+        self.assertIn(source, candidate["evidence"])
+        self.assertFalse(candidate["warnings"])

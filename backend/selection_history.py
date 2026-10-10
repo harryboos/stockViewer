@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import json
+from bisect import bisect_left
 from datetime import datetime, date, time
 
 from . import database
-from .forecast_feedback import evaluate
-from .forecast_history import BENCHMARKS, summarize, tracking_is_current
+from .forecast_feedback import evaluate, retain_audited_outcome
+from .forecast_history import BENCHMARKS, audited_timestamp, summarize, tracking_is_current
 from .forecast_prices import FeedbackPriceClient, normalize_bars
 from .research_data import stock_history, history_request, index_history, last_closed_day, fetch_batch
 from .research_pool import HISTORY_WAITING_KINDS, history_result
@@ -26,12 +27,17 @@ def recent_entries(limit: int = 5) -> list[dict]:
 
 def selection_outcome(report: dict, sessions: int, rows: list, indexes: dict,
                       calendar: list[str], now: datetime) -> dict:
-    published = datetime.fromisoformat(report["published_at"])
-    eligible = [day for day in calendar
-                if day >= published.date().isoformat()
-                and datetime.combine(date.fromisoformat(day), time(9, 30), database.CHINA_TZ) > published]
     empty = {"status": "pending", "returnPct": None, "maxDrawdownPct": None, "benchmarks": {},
              "entryDate": None, "exitDate": None, "note": "等待发布后交易日行情", "horizonSessions": sessions}
+    published = audited_timestamp(report["published_at"])
+    if published is None:
+        return {**empty, "status": "missing_data", "note": "历史发布时间无效或缺少时区，无法可靠计算"}
+    published = published.astimezone(database.CHINA_TZ)
+    day = published.date().isoformat()
+    offset = bisect_left(calendar, day)
+    if offset < len(calendar) and calendar[offset] == day and published.time() >= time(9, 30):
+        offset += 1
+    eligible = calendar[offset:offset + sessions]
     if len(eligible) < sessions:
         return {**empty, "status": "missing_data", "note": "交易日历覆盖不足，无法核定观察窗口"}
     if calendar[0] > published.date().isoformat():
@@ -91,6 +97,7 @@ def refresh_selections(progress) -> dict:
             continue
         start = report["published_at"][:10]
         indexes = {code: history_result(index_prices, history_request(code, start, end, closed=end)) for code in BENCHMARKS}
+        outcomes = []
         for n in HORIZONS:
             value = selection_outcome(report, n, histories.get(pick["code"], []), indexes, calendar, now)
             if value.get("dataStatus") == "unavailable" or value["status"] == "missing_data":
@@ -101,28 +108,22 @@ def refresh_selections(progress) -> dict:
                     missing += 1
                 elif absent:
                     benchmark_waiting += 1
-            with database._write_lock, database.connection() as db:
-                db.execute("BEGIN IMMEDIATE")
+            outcomes.append((n, value))
+        # All horizons for this pick share one short transaction; fetches have
+        # already finished, so the write lock never covers a network request.
+        with database._write_lock, database.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            for n, value in outcomes:
                 current = db.execute("SELECT result_json FROM selection_outcomes WHERE report_id=? AND code=? AND sessions=?",
                                      (report["id"], pick["code"], n)).fetchone()
                 original = json.loads(current[0]) if current else None
-                # Re-read under the write transaction: another process may have
-                # completed its audit while this worker was fetching prices.
-                if original and original.get("returnPct") is not None:
-                    if value.get("returnPct") is None:
-                        value = original if original["status"] == "completed" else {
-                            **original, "status": value["status"], "dataStatus": "unavailable",
-                            "note": "行情暂不可用，保留上次核对日期与价格；阶段表现不计入最终统计"}
-                    elif original["status"] == "completed":
-                        if value["entryDate"] == original["entryDate"] and value["exitDate"] == original["exitDate"]:
-                            paired = dict(original.get("benchmarks", {}))
-                            for code in BENCHMARKS:
-                                update = value.get("benchmarks", {}).get(code, {})
-                                if paired.get(code, {}).get("returnPct") is None and update.get("returnPct") is not None:
-                                    paired[code] = {**update, "excessPct": round(original["returnPct"] - update["returnPct"], 4)}
-                            value = {**original, "benchmarks": paired}
-                        else:
-                            value = original
+                value = retain_audited_outcome(original, value)
+                if value is original:
+                    # Queue order uses the latest attempt, including a failed
+                    # benchmark refill; preserve final prices without starving later picks.
+                    db.execute("UPDATE selection_outcomes SET updated_at=? WHERE report_id=? AND code=? AND sessions=?",
+                               (database.now_iso(), report["id"], pick["code"], n))
+                    continue
                 db.execute("INSERT OR REPLACE INTO selection_outcomes VALUES (?,?,?,?,?)",
                            (report["id"], pick["code"], n, json.dumps(value, ensure_ascii=False), database.now_iso()))
         progress(index + 1, len(batch), "核对选股后的真实日线")

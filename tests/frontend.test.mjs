@@ -64,14 +64,59 @@ test('JSON request deadline includes a stalled response body and preserves expli
 
 test('shared numeric formatters never show missing or nonfinite data as zero', async () => {
   const format = await server.ssrLoadModule('/lib/format.ts');
-  for (const value of [null, undefined, NaN, Infinity]) {
+  for (const value of [null, undefined, NaN, Infinity, -Infinity]) {
     assert.equal(format.percent(value), '—');
     assert.equal(format.amount(value), '—');
+    assert.equal(format.compactAmount(value, true), '—');
+    assert.equal(format.decimal(value), '—');
+    assert.equal(format.rate(value), '—');
+    assert.equal(format.percentagePoints(value), '—');
+    assert.equal(format.percentagePoints(value, '未知'), '未知');
     assert.equal(format.tone(value), '');
   }
   assert.equal(format.percent(0), '+0.00%');
   assert.equal(format.percent(-3.5), '-3.50%');
+  assert.equal(format.rate(0), '0.0%');
+  assert.equal(format.rate(75.25, 2), '75.25%');
+  assert.equal(format.percentagePoints(0), '0.00 个百分点');
+  assert.equal(format.percentagePoints(3.5), '+3.50 个百分点');
+  assert.equal(format.compactAmount(120000000), '1.2亿');
+  assert.equal(format.compactAmount(120000000, true), '+1.2亿');
+  assert.equal(format.compactAmount(1200000000000, true), '+1.20万亿');
+  assert.equal(format.compactAmount(-1200000000000, true), '-1.20万亿');
   assert.equal(format.timestamp('invalid'), '时间暂缺');
+});
+
+test('shared task controls use supplied running state and preserve progress and errors', async () => {
+  const { JobControl } = await server.ssrLoadModule('/components/research-common.tsx');
+  const props = { jobKey: 'comparison', label: '核对同期最强', refresh() {}, job: {
+    key: 'comparison', name: '同期核对', status: 'running', startedAt: '2026-10-10T09:00:00+08:00',
+    progress: { stage: '正在读取历史行情', done: 4, total: 20 },
+  } };
+  const running = renderToStaticMarkup(createElement(JobControl, props));
+  for (const text of ['disabled=""', '后台更新中', '正在读取历史行情', '4/20']) assert.ok(running.includes(text), text);
+  const failed = renderToStaticMarkup(createElement(JobControl, {
+    ...props, job: { ...props.job, status: 'failed', error: '行情暂不可用' },
+  }));
+  assert.ok(failed.includes('核对同期最强'));
+  assert.ok(failed.includes('行情暂不可用'));
+  assert.ok(!failed.includes('disabled=""'));
+  const compactProps = { ...props, compactError: '同期核对暂未完成', job: {
+    ...props.job, status: 'failed', error: '仍有 4087 项尚未取得查询结果；行情来源连续不可用',
+  } };
+  const compact = renderToStaticMarkup(createElement(JobControl, compactProps));
+  assert.ok(compact.includes('同期核对暂未完成'));
+  assert.ok(compact.includes(compactProps.job.error));
+  assert.ok(compact.includes('<details'));
+  const retrying = renderToStaticMarkup(createElement(JobControl, {
+    ...compactProps, job: { ...compactProps.job, status: 'running', progress: { done: 0, total: 20 } },
+  }));
+  assert.ok(retrying.includes('上次任务未完成'));
+  assert.ok(retrying.includes('0/20'));
+  const unreadable = renderToStaticMarkup(createElement(JobControl, { ...compactProps, readError: '状态读取失败' }));
+  assert.ok(unreadable.includes('任务状态暂不可用'));
+  assert.ok(unreadable.includes('状态读取失败'));
+  assert.ok(!unreadable.includes(compactProps.job.error));
 });
 
 test('daily digest formats market units and dates and distinguishes completed and tracking feedback', async () => {
@@ -395,8 +440,9 @@ test('consensus ordering never averages uncalibrated scores across methods', () 
   assert.equal(summary.buildStrategySummary([rule], [{ ...runs[0], result: { picks: [] } }], 'AKShare').consensus.length, 0);
 });
 
-test('date-only news sources do not display invented midnight timestamps', () => {
-  const html = renderToStaticMarkup(createElement(concepts.SourceLinks, { sources: [{
+test('date-only news sources do not display invented midnight timestamps', async () => {
+  const { SourceLinks } = await server.ssrLoadModule('/components/source-links.tsx');
+  const html = renderToStaticMarkup(createElement(SourceLinks, { sources: [{
     id: 'BK1001:news:1', title: '测试公告', kind: 'news', source: '公告源', url: 'https://example.org/news',
     excerpt: '公告内容', publishedAt: '2026-09-11T00:00:00+08:00', publishedAtPrecision: 'date', temporalRelation: 'unknown',
   }] }));

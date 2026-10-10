@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 import random
 import re
 import threading
@@ -12,6 +11,7 @@ import pandas as pd
 import requests
 
 from .config import CHINA_TZ
+from .market_numbers import number_or_none
 
 
 class TencentClient:
@@ -212,13 +212,7 @@ class TencentClient:
             normalized.append(item)
         return pd.DataFrame(normalized)
 
-    @staticmethod
-    def _number(value: Any) -> float | None:
-        try:
-            parsed = float(value)
-        except (TypeError, ValueError):
-            return None
-        return parsed if math.isfinite(parsed) else None
+    _number = staticmethod(number_or_none)
 
     def market_fund_flow_snapshot(self, trade_date: str) -> dict[str, Any]:
         rows = self.fetch_rank_rows()

@@ -13,6 +13,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from . import database
+from .run_dispatch import current_run
 from .strategies import candidate_snapshot
 
 logger = logging.getLogger(__name__)
@@ -133,12 +134,7 @@ def _empty_run(provider: Provider, status: str) -> dict[str, Any]:
 
 
 def _current_run(provider: Provider, run_date: str, *, include_result: bool = True) -> dict[str, Any] | None:
-    existing = database.read_ai_run(provider, run_date, include_result=include_result)
-    if existing and (existing["status"] == "running" or (
-        existing.get("promptVersion") == PROMPT_VERSION and existing.get("model") == model_for(provider)
-    )):
-        return existing
-    return None
+    return current_run(provider, run_date, model_for(provider), PROMPT_VERSION, include_result=include_result)
 
 
 def _quote_date(value: Any) -> str | None:

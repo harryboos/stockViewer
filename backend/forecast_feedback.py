@@ -125,6 +125,31 @@ def claim_refresh() -> str | None:
     return token
 
 
+def retain_audited_outcome(saved: dict | None, value: dict) -> dict:
+    """Keep final prices immutable; fill only absent, same-window benchmarks.
+
+    Call under the write transaction with the freshly read saved record. Returning
+    that same object means no write is needed. Tracking prices may survive an
+    outage but cannot be promoted to a completed result.
+    """
+    if not saved or saved.get("returnPct") is None:
+        return value
+    if saved["status"] == "completed":
+        if (value["status"] != "completed" or
+                (value.get("entryDate"), value.get("exitDate")) != (saved["entryDate"], saved["exitDate"])):
+            return saved
+        paired = dict(saved.get("benchmarks", {}))
+        for code in BENCHMARKS:
+            update = value.get("benchmarks", {}).get(code, {})
+            if paired.get(code, {}).get("returnPct") is None and update.get("returnPct") is not None:
+                paired[code] = {**update, "excessPct": round(saved["returnPct"] - update["returnPct"], 4)}
+        return {**saved, "benchmarks": paired} if paired != saved.get("benchmarks", {}) else saved
+    if value.get("returnPct") is None:
+        return {**saved, "status": value["status"], "dataStatus": "unavailable",
+                "note": f"{value.get('note') or '行情暂不可用'}；保留截至 {saved['exitDate']} 的上次行情，阶段表现不计入最终统计"}
+    return value
+
+
 def refresh_feedback(token: str) -> None:
     # A process-local guard also prevents overlap if a stale lease is reclaimed.
     if not _refresh_lock.acquire(blocking=False):
@@ -189,27 +214,9 @@ def refresh_feedback(token: str) -> None:
                     old = db.execute("SELECT result_json FROM forecast_feedback WHERE report_id = ? AND concept_code = ? AND horizon_days = ?",
                                      (report["id"], code, days)).fetchone()
                     saved = json.loads(old["result_json"]) if old else None
-                    # A temporary outage must not erase an audited outcome or a
-                    # previously available same-date benchmark observation.
-                    if saved and saved["status"] == "completed":
-                        if value["status"] != "completed":
-                            continue
-                        if value["entryDate"] != saved["entryDate"] or value["exitDate"] != saved["exitDate"]:
-                            continue
-                        revised = dict(saved["benchmarks"])
-                        for benchmark in BENCHMARKS:
-                            current = value["benchmarks"][benchmark]
-                            if (revised.get(benchmark, {}).get("returnPct") is None
-                                    and current["returnPct"] is not None):
-                                revised[benchmark] = {**current, "excessPct": round(saved["returnPct"] - current["returnPct"], 4)}
-                        if revised == saved["benchmarks"]:
-                            continue
-                        value = {**saved, "benchmarks": revised}
-                    elif saved and saved.get("returnPct") is not None and value.get("returnPct") is None:
-                        # Keep a dated tracking observation during an outage, but
-                        # never promote a partial window to a final outcome.
-                        value = {**saved, "status": value["status"], "dataStatus": "unavailable",
-                                 "note": f"{value['note']}；保留截至 {saved['exitDate']} 的上次行情"}
+                    value = retain_audited_outcome(saved, value)
+                    if value is saved:
+                        continue
                     value["checkedAt"] = database.now_iso()
                     db.execute("INSERT OR REPLACE INTO forecast_feedback VALUES (?, ?, ?, ?, ?)",
                                (report["id"], code, days, json.dumps(value, ensure_ascii=False), value["checkedAt"]))

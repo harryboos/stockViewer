@@ -8,13 +8,14 @@ from __future__ import annotations
 
 import copy
 import hashlib
-import math
 from datetime import date, datetime, time, timedelta
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 from .concept_identity import concept_provider
-from .forecast_candidates import _available_boards, _metric, daily_change_baseline, select_forecast_boards
+from .market_numbers import number_or_none as _finite
+from .forecast_candidates import (_available_boards, _metric, _ranked_round_robin,
+                                  daily_change_baseline, select_forecast_boards)
 
 METHOD = "dated-discovery-round-robin-v2"
 CHINA_TZ = ZoneInfo("Asia/Shanghai")
@@ -36,16 +37,6 @@ def _date(value: object) -> str | None:
         parsed = date.fromisoformat(value)
         return parsed.isoformat() if len(value) == 10 else None
     except ValueError:
-        return None
-
-
-def _finite(value: object) -> float | None:
-    if value is None or isinstance(value, bool):
-        return None
-    try:
-        number = float(value)
-        return number if math.isfinite(number) else None
-    except (ValueError, TypeError, OverflowError):
         return None
 
 
@@ -236,33 +227,7 @@ def build_discovery_pool(boards: list[dict], histories: dict, trade_date: str,
         if clues:
             row["eventClues"] = clues
         enriched.append(row)
-    rankings = {channel: sorted((row for row in enriched if _channel_value(row, channel) is not None),
-                               key=lambda row: (-_channel_value(row, channel), row["code"]))
-                for channel in CHANNELS}
-    ranks = {channel: {row["code"]: rank for rank, row in enumerate(rows, 1)} for channel, rows in rankings.items()}
-    cursors, seen, selected = dict.fromkeys(CHANNELS, 0), set(), []
-    channel_counts = dict.fromkeys(CHANNELS, 0)
-    while len(selected) < limit:
-        added = False
-        for channel in CHANNELS:
-            rows = rankings[channel]
-            while cursors[channel] < len(rows) and rows[cursors[channel]]["code"] in seen:
-                cursors[channel] += 1
-            if cursors[channel] >= len(rows):
-                continue
-            row = rows[cursors[channel]]
-            cursors[channel] += 1
-            selected.append({**row, "candidateSignals": [
-                {"metric": metric, "rank": ranks[metric][row["code"]], "value": _channel_value(row, metric),
-                 "selectedBy": metric == channel}
-                for metric in CHANNELS if row["code"] in ranks[metric]]})
-            seen.add(row["code"])
-            channel_counts[channel] += 1
-            added = True
-            if len(selected) >= limit:
-                break
-        if not added:
-            break
+    selected, channels = _ranked_round_robin(enriched, CHANNELS, _channel_value, limit)
     metadata = {"method": METHOD, "provider": provider, "tradeDate": day,
                 "eventCutoff": cutoff.isoformat(timespec="seconds"),
                 "availableCount": len(available), "snapshotCount": len(all_available),
@@ -272,8 +237,7 @@ def build_discovery_pool(boards: list[dict], histories: dict, trade_date: str,
                 "historyFeatureReadyCount": enough, "historyInsufficientCount": aligned - enough,
                 "ignoredFutureBars": ignored_future, "ignoredInvalidBars": ignored_invalid,
                 "selectedCount": len(selected), "limit": limit,
-                "channels": {channel: {"availableCount": len(rankings[channel]), "selectedCount": channel_counts[channel]}
-                             for channel in CHANNELS},
+                "channels": channels,
                 "baseline": {"dailyTop3Codes": daily_change_baseline(available),
                              "candidateEqualWeightCodes": [row["code"] for row in selected]},
                 "channelDefinitions": {

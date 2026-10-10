@@ -1,9 +1,7 @@
-import { shortTradeDate, tone } from '@/lib/format';
+import { shortTradeDate, tone, isFiniteNumber as finite, percentagePoints } from '@/lib/format';
 import type { ForecastCandidateSelection, ForecastConcept, ForecastRelativeStrength, ForecastRiskContext, ForecastRiskPair } from '@/lib/forecast-types';
 
-const finite = (value: number | null | undefined): value is number => value != null && Number.isFinite(value);
 const count = (value: number | null | undefined) => finite(value) && value >= 0 ? String(value) : '未知';
-const points = (value: number | null | undefined) => finite(value) ? `${value > 0 ? '+' : ''}${value.toFixed(2)} 个百分点` : '未知';
 const period = (start?: string | null, end?: string | null) => start && end ? `${shortTradeDate(start)} → ${shortTradeDate(end)}` : '观察区间未知';
 
 export function ForecastDiscoveryCoverage({ selection }: { selection?: ForecastCandidateSelection }) {
@@ -29,7 +27,7 @@ export function ForecastRelativeStrength({ data, name }: { data?: ForecastRelati
         const value = comparison.status === 'available' ? comparison.excessPctPoints : null;
         return <div key={`${benchmark.code}-${key}`}>
           <dt>近 {key === '5d' ? 5 : 10} 日 · 相对{benchmark.name}</dt>
-          <dd className={tone(value)}>{points(value)}</dd>
+          <dd className={tone(value)}>{percentagePoints(value, '未知')}</dd>
           <p className="forecast-small-note">{period(comparison.startDate, comparison.endDate)}{comparison.reason && <><br />{comparison.reason}</>}</p>
         </div>;
       }))}

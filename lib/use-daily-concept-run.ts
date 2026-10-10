@@ -5,10 +5,7 @@ import { errorMessage, jsonFetch } from '@/lib/client-api';
 import type { ConceptRun } from '@/lib/concept-types';
 import { startPolling } from './polling';
 import { submissionMessage, type SubmissionFailure } from './task-submission';
-
-export function chinaDay() {
-  return new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
-}
+import { chinaDay } from './format';
 
 // Reading a tab never starts paid work. Both modules keep their own daily server cache.
 export function useDailyConceptRun<Result>(endpoint: string, label: string) {

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 import os
 import re
 import threading
@@ -13,6 +12,7 @@ from datetime import date, timedelta
 import requests
 
 from .eastmoney import EastmoneyClient
+from .market_numbers import number_or_none
 
 
 def normalize_bars(rows: list, start: str, end: str) -> list[dict]:
@@ -20,8 +20,8 @@ def normalize_bars(rows: list, start: str, end: str) -> list[dict]:
     for row in rows:
         try:
             day = date.fromisoformat(str(row[0])).isoformat()
-            values = [float(value) for value in row[1:5]]
-            if len(values) != 4 or not all(math.isfinite(value) and value > 0 for value in values):
+            values = [number_or_none(value) for value in row[1:5]]
+            if len(values) != 4 or not all(value is not None and value > 0 for value in values):
                 continue
             opening, close, high, low = values
             if high < max(opening, close) or low > min(opening, close) or not start <= day <= end:
@@ -105,11 +105,8 @@ def ths_concept_history(code: str, start: str, end: str) -> dict:
                 day = row[0]
                 day = f"{day[:4]}-{day[4:6]}-{day[6:]}"
                 raw_rows.append([day, row[1], row[4], row[2], row[3]])
-                try:
-                    amount = float(row[6])
-                    amounts[day] = amount if math.isfinite(amount) and amount >= 0 else None
-                except (IndexError, TypeError, ValueError):
-                    amounts[day] = None
+                amount = number_or_none(row[6]) if len(row) > 6 else None
+                amounts[day] = amount if amount is not None and amount >= 0 else None
     rows = normalize_bars(raw_rows, start, end)
     for index, row in enumerate(rows):
         row["amount"] = amounts.get(row["date"])
@@ -217,12 +214,9 @@ class TushareHistoryClient:
             raw_rows.append([day, row["open"], row["close"], row["high"], row["low"]])
             extras[day] = {}
             for key, field in (("amount", "amount"), ("pctChg", "pct_change")):
-                try:
-                    value = float(row.get(field))
-                    if math.isfinite(value) and (key != "amount" or value >= 0):
-                        extras[day][key] = value
-                except (TypeError, ValueError):
-                    pass
+                value = number_or_none(row.get(field))
+                if value is not None and (key != "amount" or value >= 0):
+                    extras[day][key] = value
         rows = [{**r, **extras.get(r["date"], {})} for r in normalize_bars(raw_rows, start, end)]
         return {"rows": rows, "source": "Tushare · 东方财富概念指数日线",
                 "url": "https://tushare.pro/document/2?doc_id=382"}

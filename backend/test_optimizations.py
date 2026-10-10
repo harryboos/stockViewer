@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import tempfile
 import threading
@@ -11,7 +12,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from backend import database, forecast_feedback as feedback, forecast_history as history
-from backend import research_data, research_jobs, research_pool, research_store, selection_history
+from backend import forecast_evaluation, research_data, research_jobs, research_pool, research_store, selection_history
 from backend.test_forecast_feedback import instant, outcome, report_fixture
 from backend.test_forecast_feedback import calendar_fixture, prices
 
@@ -50,9 +51,25 @@ class ReadOptimizationTests(unittest.TestCase):
                 research_store.archive_selection(db, '2026-09-12', f'rule:{index}', str(index),
                                                  '2026-09-12T18:00:00+08:00', [{'code': '600519', 'name': '股票'}])
         with (patch.object(selection_history, 'history_payload', side_effect=AssertionError('unnecessary full history')),
+              patch.object(forecast_evaluation, 'evaluation_payload', side_effect=AssertionError('unused version evaluation')),
               patch.object(research_data, 'rotation_payload', side_effect=AssertionError('unused rankings'))):
             data = research_jobs.daily_digest()
         self.assertEqual([row['name'] for row in data['recentSelections']], ['11', '10', '9', '8', '7'])
+
+    def test_summary_only_read_keeps_same_counts_without_building_report_cards(self):
+        with patch.object(database, 'now_iso', return_value='2026-09-12T18:00:00+08:00'):
+            token = database.start_ai_run('forecast:glm', 'glm-5.3', '2026-09-12', 'test')
+            database.finish_ai_run('forecast:glm', '2026-09-12', report_fixture()['result'], None, token)
+        with database.connection() as db:
+            db.execute('INSERT INTO forecast_feedback VALUES (?,?,?,?,?)',
+                       (1, 'BK1001', 15, json.dumps(outcome()), database.now_iso()))
+        now = instant('2026-10-20T18:00:00')
+        full = history.history_payload(as_of=now)
+        with patch.object(forecast_evaluation, 'evaluation_payload', side_effect=AssertionError('unused evaluation')):
+            summary = history.history_payload(page_size=0, include_evaluation=False, as_of=now)
+        self.assertEqual(summary['summaries'], full['summaries'])
+        self.assertEqual(summary['reports'], [])
+        self.assertIsNone(summary['evaluation'])
 
     def test_status_only_reads_do_not_decode_reports(self):
         token = database.start_ai_run('glm', 'glm-5.3', database.china_date(), 'test')
@@ -95,6 +112,87 @@ class ReadOptimizationTests(unittest.TestCase):
         self.assertIsNone(value['benchmarks']['sh000001']['returnPct'])
         self.assertEqual(value['benchmarks']['sh000688']['returnPct'], 12)
         self.assertEqual(history.refresh_status()['status'], 'failed')
+
+    def test_selection_retries_rotate_past_unchanged_completed_prices(self):
+        now = instant('2026-10-20T18:00:00')
+        published = '2026-09-12T18:00:00+08:00'
+        completed = {days: json.dumps(selection_history.selection_outcome(
+            {'published_at': published}, days, prices()['rows'], {}, calendar_fixture(), now))
+            for days in selection_history.HORIZONS}
+        self.assertTrue(all(json.loads(value)['status'] == 'completed' for value in completed.values()))
+        original = {}
+        with database.connection() as db:
+            for index in range(1, 26):
+                code = str(600000 + index)
+                research_store.archive_selection(db, '2026-09-12', f'rule:{index}', str(index), published,
+                                                 [{'code': code, 'name': str(index)}])
+                stamp = '2026-09-17T18:00:00+08:00' if index == 25 else '2026-09-16T18:00:00+08:00'
+                for days, value in completed.items():
+                    original[index, code, days] = value
+                    db.execute('INSERT INTO selection_outcomes VALUES (?,?,?,?,?)',
+                               (index, code, days, value, stamp))
+        batches = []
+
+        def unavailable(items, fetch, **kwargs):
+            if items and isinstance(items[0], str):
+                batches.append(items)
+            return {item: [] if isinstance(item, str) else {'rows': []} for item in items}
+
+        with (patch.object(selection_history.FeedbackPriceClient, 'calendar', return_value=calendar_fixture()),
+              patch.object(selection_history, 'fetch_batch', side_effect=unavailable),
+              patch.object(database, 'now_iso', return_value=now.isoformat()),
+              patch.object(selection_history, 'datetime') as clock):
+            clock.now.return_value = now
+            clock.combine, clock.fromisoformat = datetime.combine, datetime.fromisoformat
+            for _ in range(2):
+                with self.assertRaisesRegex(RuntimeError, '已保留此前结果'):
+                    selection_history.refresh_selections(Mock())
+        with database.connection() as db:
+            saved = {(row['report_id'], row['code'], row['sessions']): row['result_json']
+                     for row in db.execute('SELECT * FROM selection_outcomes')}
+        self.assertEqual(saved, original)  # Retrying cannot rewrite final prices or their evidence.
+        self.assertEqual(len(batches), 2)
+        self.assertEqual(len(batches[0]), 24)
+        self.assertNotIn('600025', batches[0])
+        self.assertIn('600025', batches[1])
+
+
+class OutcomeReuseTests(unittest.TestCase):
+    def test_final_prices_only_accept_absent_benchmarks_from_the_same_final_window(self):
+        saved = outcome(108, benchmark_missing=True)
+        newer = outcome(110)
+        before = copy.deepcopy(saved)
+        merged = feedback.retain_audited_outcome(saved, newer)
+        self.assertEqual(saved, before)
+        self.assertEqual(merged['returnPct'], 8)
+        self.assertEqual(merged['exitPrice'], 108)
+        self.assertEqual(merged['benchmarks']['sh000688']['excessPct'], -4)
+        self.assertEqual(merged['benchmarks']['sh000001'], saved['benchmarks']['sh000001'])
+        self.assertIs(feedback.retain_audited_outcome(merged, newer), merged)
+        for incompatible in ({**newer, 'status': 'tracking'}, {**newer, 'exitDate': '2026-09-23'}):
+            self.assertIs(feedback.retain_audited_outcome(saved, incompatible), saved)
+
+    def test_outage_keeps_dated_tracking_observation_out_of_completed_statistics(self):
+        saved = {**outcome(), 'status': 'tracking'}
+        missing = {**saved, 'status': 'missing_data', 'returnPct': None, 'note': '行情暂不可用'}
+        merged = feedback.retain_audited_outcome(saved, missing)
+        self.assertEqual(merged['status'], 'missing_data')
+        self.assertEqual(merged['exitDate'], saved['exitDate'])
+        self.assertEqual(merged['returnPct'], saved['returnPct'])
+        self.assertEqual(history.summarize([merged])['sampleCount'], 0)
+
+    def test_selection_entry_uses_china_open_time_with_explicit_timezone(self):
+        calendar = calendar_fixture()
+        now = instant('2026-10-20T18:00:00')
+        for published, expected in [('2026-09-14T01:29:59+00:00', '2026-09-14'),
+                                    ('2026-09-14T01:30:00+00:00', '2026-09-15'),
+                                    ('2026-09-14T09:30:00+08:00', '2026-09-15')]:
+            with self.subTest(published=published):
+                result = selection_history.selection_outcome({'published_at': published}, 5, prices()['rows'], {}, calendar, now)
+                self.assertEqual(result['entryDate'], expected)
+        result = selection_history.selection_outcome({'published_at': '2026-09-14T09:30:00'}, 5, prices()['rows'], {}, calendar, now)
+        self.assertIsNone(result['returnPct'])
+        self.assertIn('时区', result['note'])
 
 
 class WorkerPoolTests(unittest.TestCase):

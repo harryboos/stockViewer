@@ -1,23 +1,18 @@
 """Bounded, provider-specific forecast recall from an already dated snapshot."""
 from __future__ import annotations
 
-import math
+from collections.abc import Callable
 
 from .concept_identity import concept_provider
+from .market_numbers import number_or_none
 
 SELECTION_METHOD = "snapshot-rank-round-robin-v1"
 METRICS = ("pctChg", "breadth", "amount")
 
 
 def _metric(board: dict, field: str) -> float | None:
-    raw = board.get(field)
-    if raw is None or isinstance(raw, bool):
-        return None
-    try:
-        value = float(raw)
-    except (TypeError, ValueError, OverflowError):
-        return None
-    if not math.isfinite(value):
+    value = number_or_none(board.get(field))
+    if value is None:
         return None
     if field == "breadth" and not 0 <= value <= 100:
         return None
@@ -43,6 +38,43 @@ def _available_boards(boards: list[dict]) -> list[dict]:
     return list(unique.values())
 
 
+def _ranked_round_robin(boards: list[dict], channels: tuple[str, ...],
+                        value_for: Callable[[dict, str], float | None], limit: int) -> tuple[list[dict], dict]:
+    """Share deterministic ranking; compute each board/channel metric only once."""
+    values = {row["code"]: {channel: value_for(row, channel) for channel in channels} for row in boards}
+    rankings = {
+        channel: sorted((row for row in boards if values[row["code"]][channel] is not None),
+                        key=lambda row: (-values[row["code"]][channel], row["code"]))
+        for channel in channels
+    }
+    ranks = {channel: {row["code"]: rank for rank, row in enumerate(rows, 1)}
+             for channel, rows in rankings.items()}
+    cursors, counts, seen, selected = dict.fromkeys(channels, 0), dict.fromkeys(channels, 0), set(), []
+    while len(selected) < limit:
+        before = len(selected)
+        for channel in channels:
+            rows = rankings[channel]
+            while cursors[channel] < len(rows) and rows[cursors[channel]]["code"] in seen:
+                cursors[channel] += 1
+            if cursors[channel] == len(rows):
+                continue
+            row = rows[cursors[channel]]
+            code = row["code"]
+            cursors[channel] += 1
+            counts[channel] += 1
+            selected.append({**row, "candidateSignals": [
+                {"metric": metric, "rank": ranks[metric][code], "value": values[code][metric],
+                 "selectedBy": metric == channel}
+                for metric in channels if code in ranks[metric]]})
+            seen.add(code)
+            if len(selected) >= limit:
+                break
+        if len(selected) == before:
+            break
+    return selected, {channel: {"availableCount": len(rankings[channel]), "selectedCount": counts[channel]}
+                      for channel in channels}
+
+
 def select_forecast_boards(boards: list[dict], limit: int = 12) -> list[dict]:
     """Give daily change, breadth and turnover equal turns without extra reads.
 
@@ -53,38 +85,7 @@ def select_forecast_boards(boards: list[dict], limit: int = 12) -> list[dict]:
     """
     if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
         raise ValueError("预测候选数量必须是非负整数")
-    available = _available_boards(boards)
-    rankings = {
-        field: sorted((board for board in available if _metric(board, field) is not None),
-                      key=lambda board: (-_metric(board, field), board["code"]))
-        for field in METRICS
-    }
-    ranks = {field: {board["code"]: rank for rank, board in enumerate(rows, 1)}
-             for field, rows in rankings.items()}
-    cursors = dict.fromkeys(METRICS, 0)
-    selected, seen = [], set()
-    while len(selected) < limit:
-        added = False
-        for field in METRICS:
-            rows = rankings[field]
-            while cursors[field] < len(rows) and rows[cursors[field]]["code"] in seen:
-                cursors[field] += 1
-            if cursors[field] == len(rows):
-                continue
-            board = rows[cursors[field]]
-            cursors[field] += 1
-            code = board["code"]
-            selected.append({**board, "candidateSignals": [
-                {"metric": metric, "rank": ranks[metric][code], "value": _metric(board, metric),
-                 "selectedBy": metric == field}
-                for metric in METRICS if code in ranks[metric]]})
-            seen.add(code)
-            added = True
-            if len(selected) >= limit:
-                break
-        if not added:
-            break
-    return selected
+    return _ranked_round_robin(_available_boards(boards), METRICS, _metric, limit)[0]
 
 
 def forecast_candidate_metadata(boards: list[dict], selected: list[dict], limit: int = 12) -> dict:

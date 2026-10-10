@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import copy
 import json
-import math
 import re
 import threading
 import time
@@ -20,19 +19,13 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import requests
 
+from .market_numbers import number_or_none as _number
+
 CHINA_TZ = ZoneInfo("Asia/Shanghai")
 SOURCE = "同花顺公开行情（独立口径·有限样本）"
 ROOT = "https://q.10jqka.com.cn"
 QUOTE_ROOT = "https://d.10jqka.com.cn/v4/realhead"
 BOARD_LIMITS = {"concept": 24, "industry": 12}
-
-
-def _number(value: Any) -> float | None:
-    try:
-        result = float(value)
-    except (TypeError, ValueError):
-        return None
-    return result if math.isfinite(result) else None
 
 
 class _Page(HTMLParser):

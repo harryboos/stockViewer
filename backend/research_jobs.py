@@ -158,7 +158,8 @@ def daily_digest() -> dict:
     watches = database.get_watchlist_rows()
     market = cache_get("latest-market")
     sectors = cache_get("latest-sectors")
-    forecasts = history_payload(page_size=1)
+    # The digest needs aggregate feedback only, not archived cards or version evaluation.
+    forecasts = history_payload(page_size=0, include_evaluation=False)
     latest_quote_day = max((stock["quote"]["tradeDate"] for stock in watches if stock.get("quote")), default=None)
     movers = sorted((stock for stock in watches if stock.get("quote") and stock["quote"]["tradeDate"] == latest_quote_day
                      and stock["quote"].get("pctChg") is not None), key=lambda stock: abs(stock["quote"]["pctChg"]), reverse=True)[:5]

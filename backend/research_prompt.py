@@ -8,6 +8,7 @@ import re
 from urllib.parse import urlsplit
 
 from . import database
+from .concept_identity import single_provider
 
 
 EVIDENCE_RULES = (
@@ -21,6 +22,39 @@ EVIDENCE_RULES = (
     "有利与不利证据都要考虑；未搜到反证不等于不存在风险；区分已发生事实、影响传导推断与未来确认条件。"
     "没有可核对的现实事件允许catalysts=[]，不得为填字段捏造原因。缺失数据不作0，不用记忆补造财报、客户关系、新闻或收益。"
 )
+
+
+def candidate_provider(evidence: dict) -> str | None:
+    """Reject ambiguous candidate identities before prompting or joining results."""
+    candidates = evidence["candidates"]
+    provider = single_provider(candidates)
+    if candidates and provider is None:
+        raise ValueError("概念候选必须来自同一行情来源，不能混用不同概念指数口径")
+    codes = [candidate["code"] for candidate in candidates]
+    if len(set(codes)) != len(codes):
+        raise ValueError("概念候选代码重复，无法核对唯一来源")
+    return provider
+
+
+def selected_stocks(candidate: dict, choices: list) -> list[dict]:
+    """Join model reasons onto authoritative candidate quotes without changing membership."""
+    pool = {stock["code"]: stock for stock in candidate["stocks"]}
+    codes = [choice.code for choice in choices]
+    if len(set(codes)) != len(codes) or any(code not in pool for code in codes):
+        raise ValueError("模型返回了概念成份候选外或重复的股票")
+    if pool and not codes:
+        raise ValueError("模型遗漏了已提供的强势股候选")
+    return [{**pool[choice.code], "reason": choice.reason} for choice in choices]
+
+
+def cited_sources(ids: list[str], references: dict, allowed: set[str], *, supported: bool,
+                  context: str) -> list[dict]:
+    """Facts require eligible references; hypotheses cannot borrow factual authority."""
+    if supported and (not ids or any(ref not in allowed or ref not in references for ref in ids)):
+        raise ValueError(f"{context}缺少该概念的匹配来源")
+    if not supported and ids:
+        raise ValueError(f"待验证{context}不能冒用事实来源")
+    return [references[ref] for ref in dict.fromkeys(ids)]
 
 
 def publication_time(value: object, precision: object = None) -> tuple[datetime | None, str]:

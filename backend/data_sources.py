@@ -15,6 +15,7 @@ from . import database
 from .config import MARKET, SECTOR_DATA_SOURCE
 from .eastmoney import EastmoneyClient
 from .tencent import TencentClient
+from .market_numbers import number_or_none
 from .source_errors import BoardSourceError, source_failure_reason
 from .storage_policy import (
     CONCEPT_CACHE_VERSION, SECTOR_OVERVIEW_CACHE_VERSION,
@@ -43,16 +44,6 @@ CONCEPT_EXCLUDED_MARKERS = (
     "深证成指", "深成500", "创业板指", "创业板综", "中证500", "中证1000",
     "HS300",
 )
-
-
-def number_or_none(value: Any) -> float | None:
-    if value is None or value == "" or value == "-":
-        return None
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError):
-        return None
-    return parsed if math.isfinite(parsed) else None
 
 
 def volume_in_shares(value: Any) -> float | None:

@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { percent, timestamp, tone } from '@/lib/format';
+import { percent, timestamp, tone, rate, decimal as price, percentagePoints as excess } from '@/lib/format';
 import { errorMessage, jsonFetch } from '@/lib/client-api';
 import type { ForecastResearch } from '@/lib/forecast-types';
 import type { BenchmarkCode, FeedbackRefresh, FeedbackSummary, ForecastHistoryData, ForecastOutcome, HistoryEntry, Horizon } from '@/lib/forecast-history-types';
@@ -12,9 +12,6 @@ import { submissionMessage, type SubmissionFailure } from '@/lib/task-submission
 import { ForecastEvaluation } from './forecast-evaluation';
 
 const benchmarks = [['sh000001', '上证指数'], ['sh000688', '科创50']] as const;
-const rate = (value: number | null) => value === null ? '—' : `${value.toFixed(1)}%`;
-const price = (value: number | null | undefined) => value == null ? '—' : value.toFixed(2);
-const excess = (value: number | null | undefined) => value == null ? '—' : `${value > 0 ? '+' : ''}${value.toFixed(2)} 个百分点`;
 
 export function FeedbackSummaryCard({ days, summary }: { days: Horizon; summary: FeedbackSummary }) {
   return <article className="feedback-summary-card">
@@ -114,7 +111,14 @@ export function ForecastHistory({ finishedAt, renderResearch }: { finishedAt?: s
   const busy = submitting || data?.refresh.status === 'running';
   const error = submissionMessage(submissionFailure, data?.refresh.startedAt) || readError;
   return <section className="concept-ai-section forecast-history-section" aria-labelledby="forecast-history-title" aria-busy={busy}>
-    <div className="concept-ai-heading"><div><p className="eyebrow">预测 → 实际表现 → 反馈</p><h2 id="forecast-history-title">历史预测与准确率</h2><p>保留当时的判断，用之后的行情检验，让下一次预测有据可循。</p></div><div className="research-filters"><button className="refresh-button" disabled={busy || !data?.totalReports} onClick={update}>{busy ? '正在核对行情…' : '更新实际表现'}</button><JobButton jobKey="comparison" label="核对同期最强" /></div></div>
+    <div className="concept-ai-heading feedback-heading">
+      <div><p className="eyebrow">预测 → 实际表现 → 反馈</p><h2 id="forecast-history-title">历史预测与准确率</h2><p>保留当时的判断，用之后的行情检验，让下一次预测有据可循。</p></div>
+      <div className="feedback-actions">
+        <JobButton jobKey="comparison" label="核对同期最强" compactError="同期核对暂未完成">
+          <button className="refresh-button feedback-update-button" disabled={busy || !data?.totalReports} onClick={update}>{busy ? '正在核对行情…' : '更新实际表现'}</button>
+        </JobButton>
+      </div>
+    </div>
     {error && <p className="concept-ai-error" role="alert">{error} <button onClick={() => setRevision(value => value + 1)}>重试</button></p>}
     {!data && !error && <p className="concept-ai-state">正在读取历史预测…</p>}
     {data && <>

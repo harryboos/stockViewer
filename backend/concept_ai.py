@@ -9,10 +9,13 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from . import ai, database
 from .concept_data import collect_concept_evidence
-from .concept_identity import CONCEPT_CODE_PATTERN, single_provider
+from .concept_identity import CONCEPT_CODE_PATTERN
 from .concept_news import enrich_world_news
-from .research_prompt import EVIDENCE_RULES, prepare_research_evidence
-from .run_dispatch import shared_start
+from .research_prompt import (
+    EVIDENCE_RULES, candidate_provider as _candidate_provider, cited_sources,
+    prepare_research_evidence, selected_stocks,
+)
+from .run_dispatch import current_run, launch_claimed_run, shared_start
 
 PROMPT_VERSION = "concept-v4-evidence-review-glm53-max"
 PROVIDER: ai.Provider = "glm"
@@ -70,17 +73,6 @@ SYSTEM_INSTRUCTION = (
 )
 
 
-def _candidate_provider(evidence: dict) -> str | None:
-    candidates = evidence["candidates"]
-    provider = single_provider(candidates)
-    if candidates and provider is None:
-        raise ValueError("概念候选必须来自同一行情来源，不能混用不同概念指数口径")
-    codes = [candidate["code"] for candidate in candidates]
-    if len(set(codes)) != len(codes):
-        raise ValueError("概念候选代码重复，无法核对唯一来源")
-    return provider
-
-
 def build_prompt(evidence: dict) -> str:
     evidence = prepare_research_evidence(evidence)
     _candidate_provider(evidence)
@@ -131,39 +123,25 @@ def assemble_result(raw: dict, evidence: dict) -> dict:
             raise ValueError("模型返回了候选池外或重复的概念")
         seen.add(choice.code)
         candidate = pool[choice.code]
-        stock_pool = {stock["code"]: stock for stock in candidate["stocks"]}
-        stock_codes = [stock.code for stock in choice.stocks]
-        if len(set(stock_codes)) != len(stock_codes) or any(code not in stock_pool for code in stock_codes):
-            raise ValueError("模型返回了概念成份候选外或重复的股票")
-        if stock_pool and not stock_codes:
-            raise ValueError("模型遗漏了已提供的强势股候选")
+        stocks = selected_stocks(candidate, choice.stocks)
         references = {ref["id"]: ref for ref in candidate["evidence"]}
-        catalysts = []
-        for catalyst in choice.catalysts:
-            ids = catalyst.evidenceIds
-            if catalyst.status == "reported":
-                if not ids or any(ref not in references or references[ref]["kind"] != "news" for ref in ids):
-                    raise ValueError("现实催化缺少可核对的新闻或公告来源")
-            elif ids:
-                raise ValueError("待验证催化不能冒用事实来源")
-            catalysts.append({**catalyst.model_dump(exclude={"evidenceIds"}),
-                              "sources": [references[ref] for ref in dict.fromkeys(ids)]})
+        source_ids = {kind: {ref for ref, source in references.items() if source["kind"] == kind}
+                      for kind in ("data", "news")}
+        catalysts = [{**item.model_dump(exclude={"evidenceIds"}),
+                      "sources": cited_sources(item.evidenceIds, references, source_ids["news"],
+                                               supported=item.status == "reported", context="现实催化")}
+                     for item in choice.catalysts]
         drivers = []
         if not any(driver.kind == "data" for driver in choice.drivers):
             raise ValueError("概念分析缺少行情依据")
         for driver in choice.drivers:
-            ids = driver.evidenceIds
-            if driver.kind == "hypothesis":
-                if ids:
-                    raise ValueError("待验证推测不能冒用事实来源")
-            elif not ids or any(ref not in references or references[ref]["kind"] != driver.kind for ref in ids):
-                raise ValueError("模型引用的影响因素缺少匹配来源")
             drivers.append({"kind": driver.kind, "title": driver.title, "explanation": driver.explanation,
-                            "sources": [references[ref] for ref in dict.fromkeys(ids)]})
+                            "sources": cited_sources(driver.evidenceIds, references, source_ids.get(driver.kind, set()),
+                                                     supported=driver.kind != "hypothesis", context="影响因素")})
         concepts.append({
             **{key: value for key, value in candidate.items() if key not in ("stocks", "evidence")},
             "reason": choice.reason, "risk": choice.risk, "drivers": drivers, "catalysts": catalysts,
-            "stocks": [{**stock_pool[stock.code], "reason": stock.reason} for stock in choice.stocks],
+            "stocks": stocks,
         })
     return {"summary": parsed.summary, "concepts": concepts, "conceptProvider": provider,
             "decisionAt": evidence["decisionAt"], "quoteAsOf": evidence.get("quoteAsOf"),
@@ -178,12 +156,8 @@ def get_concept_run(*, include_result: bool = True) -> dict:
             "result": None, "error": None, "finishedAt": None}
     if not configured:
         return base
-    current = database.read_ai_run(f"concept:{PROVIDER}", run_date, include_result=include_result)
-    if current and (current["status"] == "running" or (
-        current.get("promptVersion") == PROMPT_VERSION and current.get("model") == base["model"]
-    )):
-        return {**base, **current, "provider": PROVIDER}
-    return base
+    current = current_run(f"concept:{PROVIDER}", run_date, MODEL, PROMPT_VERSION, include_result=include_result)
+    return {**base, **current, "provider": PROVIDER} if current else base
 
 
 async def _execute(run_date: str, key: str, token: str) -> None:
@@ -240,12 +214,6 @@ async def _start_concept_run(force: bool) -> dict:
     if not key:
         return await asyncio.to_thread(get_concept_run)
 
-    async def claim_and_launch() -> dict:
-        token = await asyncio.to_thread(database.start_ai_run, f"concept:{PROVIDER}", MODEL, run_date, PROMPT_VERSION, force)
-        if token:
-            task = asyncio.create_task(_execute(run_date, key, token))
-            _tasks.add(task)
-            task.add_done_callback(_tasks.discard)
-        return await asyncio.to_thread(get_concept_run)
-
-    return await claim_and_launch()
+    await launch_claimed_run(f"concept:{PROVIDER}", MODEL, run_date, PROMPT_VERSION, force,
+                             lambda token: _execute(run_date, key, token), _tasks)
+    return await asyncio.to_thread(get_concept_run)

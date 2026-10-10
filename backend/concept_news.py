@@ -122,7 +122,7 @@ async def enrich_world_news(evidence: dict, key: str, *, forecast: bool = False)
                     pass
         existing = {item.get("url") for item in candidate["evidence"] if item.get("kind") == "news"}
         candidate["evidence"].extend(item for item in sources if item.get("url") not in existing)
-        if not sources:
+        if not sources and not existing:
             candidate["warnings"].append("未取得近30天可核对的现实事件来源，催化因素仅能列为待验证机制")
 
     tasks = [asyncio.create_task(enrich(candidate)) for candidate in evidence["candidates"]]
