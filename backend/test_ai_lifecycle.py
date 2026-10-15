@@ -56,7 +56,8 @@ class AiLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue({"start_ai_run", "finish_ai_run", "read_ai_run", "stage"}.issubset({name for name, _ in calls}))
         self.assertTrue(all(thread != loop_thread for _, thread in calls), calls)
         self.assertEqual(concept_ai.get_concept_run()["status"], "succeeded")
-        self.assertEqual(concept_forecast.get_forecast_run()["status"], "succeeded")
+        self.assertEqual(concept_forecast.get_forecast_run()["status"], "failed")
+        self.assertEqual(concept_forecast.get_forecast_run()["result"]["dataStatus"], "unavailable")
 
     async def test_cancelled_daily_claim_is_finalized_without_a_model_request(self):
         claimed = asyncio.Event()
@@ -125,7 +126,7 @@ class AiLifecycleTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(research_jobs.ai_token.get(), "outer-token")
             error = database.read_ai_run("deepseek", database.china_date())["error"]
             self.assertNotIn("private", error)
-            for module, namespace in ((concept_ai, "concept:glm"), (concept_forecast, "forecast:glm")):
+            for module, namespace in ((concept_ai, concept_ai.RUN_NAMESPACE), (concept_forecast, concept_forecast.RUN_NAMESPACE)):
                 token = database.start_ai_run(namespace, module.MODEL, database.china_date(), module.PROMPT_VERSION)
                 empty = {**evidence_fixture(), "candidates": []}
                 with (patch.object(concept_ai, "collect_concept_evidence", return_value=empty),

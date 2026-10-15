@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from . import database
 from .ai import get_daily_ai_runs, provider_status, run_daily_ai
 from .config import SCHEDULER
+from .diagnostic_logging import install_access_log_filter
 from .concept_ai import get_concept_run, start_concept_run
 from .concept_forecast import get_forecast_run, start_forecast_run
 from .forecast_feedback import start_feedback_refresh
@@ -71,6 +72,7 @@ async def maintain_storage() -> None:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    install_access_log_filter()
     database.initialize()
     scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
     scheduler.add_job(maintain_storage, trigger="cron", hour=4, minute=0,

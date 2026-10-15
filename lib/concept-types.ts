@@ -51,8 +51,9 @@ export type ConceptResearch = {
 };
 
 export type ConceptRun = {
-  provider: 'glm';
+  provider: 'deepseek' | 'glm';
   model: string | null;
+  promptVersion?: string | null;
   runDate: string;
   status: 'idle' | 'running' | 'succeeded' | 'failed' | 'not_configured';
   result: ConceptResearch | null;

@@ -7,9 +7,28 @@ import { percent, timestamp, tone, percentagePoints as diff, decimal, rate } fro
 import { JobButton, JobControl, ResearchError } from './research-common';
 import { StockLink } from './stock-detail';
 import { jsonFetch, errorMessage } from '@/lib/client-api';
+import { activeConceptModelLabel } from '@/lib/concept-model';
 
 const statusText: Record<string, string> = { idle: '未开始', pending: '待生成', running: '运行中', succeeded: '已完成', failed: '失败', not_configured: '未配置' };
 const operationsPolling = { active: 5000, idle: 30000, isActive: (data: Operations) => data.jobs.some(job => job.status === 'running') || data.aiRuns.some(run => run.status === 'running') };
+
+function researchTaskFamily(provider: string) {
+  return provider.startsWith('forecast:') ? 'forecast' : provider.startsWith('concept:') ? 'concept' : null;
+}
+
+export function aiTaskEndpoint(provider: string) {
+  const family = researchTaskFamily(provider);
+  return family === 'forecast' ? '/api/forecast/concepts'
+    : family === 'concept' ? '/api/market/concepts/ai' : `/api/strategies/ai?provider=${encodeURIComponent(provider)}`;
+}
+
+export function AiAnalysisTask({ run, busy, onRun }: {
+  run: Operations['aiRuns'][number]; busy: string | null; onRun: (provider: string, succeeded: boolean) => void;
+}) {
+  const family = researchTaskFamily(run.provider);
+  const title = family === 'forecast' ? '半个月预测' : family === 'concept' ? '近期概念推荐' : `${run.provider} 选股`;
+  return <article className="research-card"><h3>{title}</h3><small>{family ? activeConceptModelLabel(run) : run.model}</small><p>{statusText[run.status]}{run.status === 'running' && run.stage ? ` · ${run.stage}` : ''}</p>{run.error && <p className="research-error">{run.error}</p>}<button className="refresh-button" disabled={!!busy || run.status === 'running' || run.status === 'not_configured'} onClick={() => onRun(run.provider, run.status === 'succeeded')}>{busy === run.provider ? '提交中…' : run.status === 'failed' ? '仅重试此 AI 任务' : run.status === 'succeeded' ? '重新生成' : '生成'}</button></article>;
+}
 
 export function RotationPanel() {
   const { data, error, refresh } = useResearch<Rotation>('/api/research/rotation', 12_000);
@@ -73,7 +92,7 @@ export function OperationsView() {
   const [busy, setBusy] = useState<string | null>(null); const [actionError, setActionError] = useState<string | null>(null);
   async function runAi(provider: string, succeeded: boolean) {
     if (busy || !window.confirm('这会调用 AI 分析接口，可能产生费用。继续吗？')) return;
-    const endpoint = provider === 'forecast:glm' ? '/api/forecast/concepts' : provider === 'concept:glm' ? '/api/market/concepts/ai' : `/api/strategies/ai?provider=${provider}`;
+    const endpoint = aiTaskEndpoint(provider);
     setBusy(provider); setActionError(null);
     try { await jsonFetch(`${endpoint}${succeeded ? `${endpoint.includes('?') ? '&' : '?'}force=true` : ''}`, { method: 'POST' }); refresh(); }
     catch (cause) { setActionError(errorMessage(cause, 'AI 任务启动失败')); }
@@ -82,6 +101,6 @@ export function OperationsView() {
   return <div className="content"><header className="research-heading"><div><p className="eyebrow">数据与任务中心</p><h1>数据与任务</h1><p>页面只读取状态；付费分析由你明确发起。</p></div><button className="refresh-button" onClick={refresh}>刷新状态</button></header><ResearchError error={error || actionError} retry={refresh} />
     <div className="research-card-grid">{data?.sources.map(source => <article className="research-card" key={source.key}><h3>{source.name}</h3><strong>{({ fresh: '最近取得数据', cached: '已有缓存', degraded: '部分来源异常', unavailable: '尚无成功数据' })[source.state]}</strong><p>行情日期 {source.tradeDate || '—'}<br />最近成功 {source.updatedAt ? timestamp(source.updatedAt) : '—'}</p>{source.error && <p className="research-error">{source.error}</p>}</article>)}</div>
     <section className="research-panel"><h2>后台数据任务</h2><div className="research-card-grid">{data?.jobs.map(job => <article className="research-card" key={job.key}><h3>{job.name}</h3><p>{statusText[job.status]} · {job.finishedAt ? timestamp(job.finishedAt) : '尚未完成'}</p><JobControl jobKey={job.key} job={job} refresh={refresh} label={job.status === 'failed' ? '重试此任务' : '更新此模块'} /></article>)}</div><p className="data-note">下一次规则策略：{data?.nextRulesAt ? timestamp(data.nextRulesAt) : '未启用定时规则策略'} · {data?.researchSchedule}</p></section>
-    <section className="research-panel"><h2>AI 分析任务</h2><p>今日生成任务 {data?.aiUsage.runsToday ?? 0} 次 · 分析请求 {data?.aiUsage.requestsToday ?? 0} 次 · 失败任务 {data?.aiUsage.failedToday ?? 0} 次</p><p className="data-note">{data?.aiUsage.note}</p><div className="research-card-grid">{data?.aiRuns.map(run => <article className="research-card" key={run.provider}><h3>{run.provider === 'forecast:glm' ? '半个月预测' : run.provider === 'concept:glm' ? '近期概念推荐' : `${run.provider} 选股`}</h3><small>{run.provider.endsWith(':glm') ? 'GLM 5.3 MAX' : run.model}</small><p>{statusText[run.status]}{run.status === 'running' && run.stage ? ` · ${run.stage}` : ''}</p>{run.error && <p className="research-error">{run.error}</p>}<button className="refresh-button" disabled={!!busy || run.status === 'running' || run.status === 'not_configured'} onClick={() => runAi(run.provider, run.status === 'succeeded')}>{busy === run.provider ? '提交中…' : run.status === 'failed' ? '仅重试此 AI 任务' : run.status === 'succeeded' ? '重新生成' : '生成'}</button></article>)}</div></section>
+    <section className="research-panel"><h2>AI 分析任务</h2><p>今日生成任务 {data?.aiUsage.runsToday ?? 0} 次 · 分析请求 {data?.aiUsage.requestsToday ?? 0} 次 · 失败任务 {data?.aiUsage.failedToday ?? 0} 次</p><p className="data-note">{data?.aiUsage.note}</p><div className="research-card-grid">{data?.aiRuns.map(run => <AiAnalysisTask run={run} key={run.provider} busy={busy} onRun={runAi} />)}</div></section>
   </div>;
 }

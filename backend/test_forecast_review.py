@@ -67,18 +67,20 @@ class ForecastReviewTests(unittest.TestCase):
                     "conceptBoards": [a], "researchConcepts": [a], "forecastConcepts": [b],
                     "forecastCandidateSelection": {"method": "snapshot-rank-round-robin-v1", "availableCount": 20}, "warnings": []}
         with (patch.object(concept_data, "_concept_overview", return_value=(overview, None)),
+              patch("backend.forecast_pipeline.cached_histories", return_value={}),
+              patch("backend.forecast_prices.FeedbackPriceClient.calendar", return_value=[]),
               patch.object(concept_data.ConceptResearchClient, "daily_history", return_value=[]),
               patch.object(concept_data.ConceptResearchClient, "strong_stocks", return_value=[])):
             forecast = concept_data.collect_concept_evidence(forecast=True)
             recommended = concept_data.collect_concept_evidence()
             del overview["forecastConcepts"]
             legacy = concept_data.collect_concept_evidence(forecast=True)
-        self.assertEqual([row["code"] for row in forecast["candidates"]], ["BK1002"])
-        self.assertEqual(forecast["candidates"][0]["candidateSignals"], b["candidateSignals"])
+        self.assertEqual(forecast["candidates"], [])
+        self.assertEqual([row["code"] for row in forecast["comparisonUniverse"]["boards"]], ["BK1002"])
         self.assertIn("多路", forecast["scope"])
         self.assertEqual([row["code"] for row in recommended["candidates"]], ["BK1001"])
-        self.assertEqual(legacy["candidateSelection"]["method"], "legacy-active-snapshot")
-        self.assertIn("旧快照", legacy["scope"])
+        self.assertEqual([row["code"] for row in legacy["comparisonUniverse"]["boards"]], ["BK1001"])
+        self.assertEqual(legacy["candidateSelection"]["historyQuality"]["eligibleCount"], 0)
 
     def test_prompt_learns_conditions_not_a_named_hindsight_winner(self):
         prompt = concept_forecast.build_prompt(forecast_evidence())
@@ -87,8 +89,8 @@ class ForecastReviewTests(unittest.TestCase):
             self.assertIn(term, prompt)
         self.assertNotIn("重组蛋白", REVIEW_INSTRUCTION)
         self.assertNotIn("BK1063", REVIEW_INSTRUCTION)
-        self.assertEqual(concept_forecast.MODEL, "glm-5.3")
-        self.assertIn("v7", concept_forecast.PROMPT_VERSION)
+        self.assertEqual(concept_forecast.MODEL, "deepseek-flash")
+        self.assertEqual(concept_forecast.PROMPT_VERSION, "forecast-v10-complete-history-deepseek-flash-max")
 
     def test_scientific_tool_terms_include_real_business_but_do_not_merge_collagen(self):
         _, topics = concept_data.research_terms("重组蛋白")

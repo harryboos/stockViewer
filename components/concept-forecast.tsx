@@ -10,6 +10,7 @@ import { ForecastHistory } from '@/components/forecast-history';
 import { ForecastCommonRisk, ForecastDiscoveryCoverage, ForecastRelativeStrength } from '@/components/forecast-risk';
 import { JobButton } from './research-common';
 import { StockLink } from './stock-detail';
+import { activeConceptModelLabel, CONCEPT_MODEL_LABEL } from '@/lib/concept-model';
 
 const perspectives = [['technical', '技术面'], ['fundamental', '基本面'], ['news', '时事新闻']] as const;
 type Perspective = typeof perspectives[number][0];
@@ -111,11 +112,12 @@ type ForecastTaskStateProps = {
 };
 
 export function ForecastTaskState({ current, busy, submitting, requestError, refresh }: ForecastTaskStateProps) {
+  const modelLabel = activeConceptModelLabel(current);
   return <div className="forecast-task-states" aria-live="polite">
     {!current && !requestError && <div className="forecast-status-card"><span className="loading-ring" /><div><strong>正在读取当天预测</strong><p>先查看已保存的分析与任务状态。</p></div></div>}
-    {current?.status === 'idle' && !submitting && <div className="forecast-intro"><div><span className="forecast-intro-mark" aria-hidden="true">↗</span><h3>下一段行情，从哪些方向开始？</h3><p>比较近期趋势，核对产业与新闻催化，寻找未来半个月值得持续观察的概念。</p></div><ol><li><span>01</span><div><strong>看趋势</strong><p>近期强度、成交与技术结构</p></div></li><li><span>02</span><div><strong>找原因</strong><p>产业、政策与供需变化</p></div></li><li><span>03</span><div><strong>留验证条件</strong><p>最多 3 个方向，持续跟踪与复盘</p></div></li></ol><p className="forecast-small-note">预测从生成日次日起算，当天结果会保存。点击生成后才调用 GLM 5.3 MAX 与联网检索。</p></div>}
-    {current?.status === 'not_configured' && <div className="forecast-status-card"><span className="forecast-status-symbol" aria-hidden="true">◇</span><div><strong>尚未配置 GLM 5.3 MAX</strong><p>请在服务配置中填写 GLM 的密钥，重启服务后即可生成预测。</p><button className="refresh-button" onClick={refresh}>重新检查</button></div></div>}
-    {busy && <div className="forecast-status-card forecast-running"><span className="loading-ring" /><div><span className="forecast-status-eyebrow">预测任务进行中</span><strong>{current?.status === 'running' && current.stage ? current.stage : '正在准备 MAX 深度预测'}</strong><p>高峰时自动排队重试，接入后保留完整的深度分析时间。{current?.maxRunSeconds ? `整个任务最长约 ${Math.ceil(current.maxRunSeconds / 60)} 分钟。` : ''}可以切换页面，返回后继续查看进度和结果。</p>{current?.status === 'running' && current.startedAt && <small>开始于 {timestamp(current.startedAt)} · 仅展示完整核对后的预测</small>}</div></div>}
+    {current?.status === 'idle' && !submitting && <div className="forecast-intro"><div><span className="forecast-intro-mark" aria-hidden="true">↗</span><h3>下一段行情，从哪些方向开始？</h3><p>比较近期趋势，核对产业与新闻催化，寻找未来半个月值得持续观察的概念。</p></div><ol><li><span>01</span><div><strong>看趋势</strong><p>近期强度、成交与技术结构</p></div></li><li><span>02</span><div><strong>找原因</strong><p>产业、政策与供需变化</p></div></li><li><span>03</span><div><strong>留验证条件</strong><p>最多 3 个方向，持续跟踪与复盘</p></div></li></ol><p className="forecast-small-note">预测从生成日次日起算，当天结果会保存。点击生成后才调用 {modelLabel} 与联网检索。</p></div>}
+    {current?.status === 'not_configured' && <div className="forecast-status-card"><span className="forecast-status-symbol" aria-hidden="true">◇</span><div><strong>尚未配置 {CONCEPT_MODEL_LABEL}</strong><p>请在服务配置中填写 DeepSeek 的密钥，重启服务后即可生成预测。</p><button className="refresh-button" onClick={refresh}>重新检查</button></div></div>}
+    {busy && <div className="forecast-status-card forecast-running"><span className="loading-ring" /><div><span className="forecast-status-eyebrow">{modelLabel} · 预测任务进行中</span><strong>{current?.status === 'running' && current.stage ? current.stage : '正在准备 MAX 深度预测'}</strong><p>高峰时自动排队重试，接入后保留完整的深度分析时间。{current?.maxRunSeconds ? `整个任务最长约 ${Math.ceil(current.maxRunSeconds / 60)} 分钟。` : ''}可以切换页面，返回后继续查看进度和结果。</p>{current?.status === 'running' && current.startedAt && <small>开始于 {timestamp(current.startedAt)} · 仅展示完整核对后的预测</small>}</div></div>}
     {current?.status === 'failed' && !submitting && <div className="forecast-failure" role="alert"><span className="forecast-status-symbol" aria-hidden="true">!</span><div><strong>本次预测尚未完成</strong><p>{current.error || '预测未完成，请稍后重新生成。'}</p><div className="forecast-recovery-actions"><JobButton jobKey="sectors" label="更新板块行情" /><button className="text-button" onClick={refresh}>重新读取状态</button></div><small>可先更新行情，或稍后重新生成。已保存的预测仍可查看。</small></div></div>}
     {requestError && <div className="forecast-failure" role="alert"><span className="forecast-status-symbol" aria-hidden="true">!</span><div><strong>暂时未能取得最新状态</strong><p>{requestError}</p><button className="text-button" onClick={refresh}>重新读取</button><small>重新读取仅检查已有任务，不会再次提交预测。</small></div></div>}
   </div>;
@@ -123,14 +125,19 @@ export function ForecastTaskState({ current, busy, submitting, requestError, ref
 
 export function ConceptForecast() {
   const { current, result, busy, submitting, requestError, today, generate, refresh } = useDailyConceptRun<ForecastResearch>('/api/forecast/concepts', '预测');
+  const modelLabel = activeConceptModelLabel(current);
   return <div className="content forecast-content forecast-workspace">
     <section className="forecast-section" aria-labelledby="concept-forecast-title" aria-busy={busy}>
-      <header className="forecast-hero"><div><div className="forecast-hero-kicker"><span className="eyebrow">AI 概念预测</span><span className="forecast-model-badge"><i aria-hidden="true" />GLM 5.3 MAX</span></div><h1 id="concept-forecast-title">未来半个月强势概念预测</h1><p>把技术面、基本面与时事新闻放在一起，寻找值得跟踪的方向。</p></div><div className="forecast-hero-actions"><button className="concept-ai-generate" onClick={generate} disabled={busy || !current || current.status === 'not_configured'}><span aria-hidden="true">✦</span> {busy ? '正在预测…' : result ? '重新生成预测' : '生成半个月预测'}</button><a href="#forecast-history-title">查看历史复盘 <span aria-hidden="true">↘</span></a></div></header>
-      <div className="forecast-hero-meta"><span>技术面 × 基本面 × 时事新闻</span><span>未来 15 个自然日</span><span>{current?.status === 'succeeded' && current.finishedAt ? `分析完成 ${timestamp(current.finishedAt)}（北京时间）` : `研究日期 ${today}`}</span></div>
+      <header className="forecast-hero"><div><div className="forecast-hero-kicker"><span className="eyebrow">AI 概念预测</span><span className="forecast-model-badge"><i aria-hidden="true" />{modelLabel}</span></div><h1 id="concept-forecast-title">未来半个月强势概念预测</h1><p>把技术面、基本面与时事新闻放在一起，寻找值得跟踪的方向。</p></div><div className="forecast-hero-actions"><button className="concept-ai-generate" onClick={generate} disabled={busy || !current || current.status === 'not_configured'}><span aria-hidden="true">✦</span> {busy ? '正在预测…' : result ? '重新生成预测' : '生成半个月预测'}</button><a href="#forecast-history-title">查看历史复盘 <span aria-hidden="true">↘</span></a></div></header>
+      <div className="forecast-hero-meta"><span>技术面 × 基本面 × 时事新闻</span><span>未来 15 个自然日</span><span>{current?.status === 'succeeded' && current.finishedAt ? `分析完成 ${timestamp(current.finishedAt)}（北京时间）` : `研究日期 ${current?.runDate || today}`}</span></div>
       <ForecastTaskState current={current} busy={busy} submitting={submitting} requestError={requestError} refresh={refresh} />
+      {current?.status === 'failed' && current.result?.candidateSelection && <section aria-label="本次数据核验结果">
+        <p className="forecast-small-note">本次数据未就绪，未生成预测，也未计为观望或占用当日首次预测。</p>
+        <ForecastDiscoveryCoverage selection={current.result.candidateSelection} />
+      </section>}
       {current?.status !== 'succeeded' && result && <p className="forecast-retained-result"><span aria-hidden="true">↶</span> 以下保留上次成功结果 · {current?.previousFinishedAt ? timestamp(current.previousFinishedAt) : '完成时间待补'}，新结果生成前仍可查看。</p>}
       {result && <ForecastResearchCards research={result} today={today} />}
-      <p className="forecast-provider-note">GLM 5.3 MAX 深度分析 · 点击生成才会调用 AI 与联网检索 · 条件推演不代表收益承诺</p>
+      <p className="forecast-provider-note">{modelLabel} 深度分析 · 点击生成才会调用 AI 与联网检索 · 条件推演不代表收益承诺</p>
     </section>
     <ForecastHistory finishedAt={current?.finishedAt} renderResearch={research => <ForecastResearchCards research={research} today={today} />} />
   </div>;

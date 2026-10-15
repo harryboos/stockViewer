@@ -6,6 +6,7 @@ No browser challenge, login token, or generated cookie is used.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import re
 import threading
@@ -25,7 +26,32 @@ CHINA_TZ = ZoneInfo("Asia/Shanghai")
 SOURCE = "同花顺公开行情（独立口径·有限样本）"
 ROOT = "https://q.10jqka.com.cn"
 QUOTE_ROOT = "https://d.10jqka.com.cn/v4/realhead"
-BOARD_LIMITS = {"concept": 24, "industry": 12}
+BOARD_LIMITS = {"concept": 48, "industry": 12}
+BOARD_READ_SECONDS = 24
+DISCOVERY_METHOD = "dated-leaders-exploration-v1"
+
+
+def _board_candidates(directory: list[dict], kind: str, sample_date: str | None) -> list[dict]:
+    """Split quote reads between leaders and name-blind discovery.
+
+    The seed is an observed market date, never the fetch date. When the date
+    probes fail, a fixed undated seed keeps retries stable without fabricating
+    a trading session. Directory ranks only allocate reads, not dated evidence.
+    """
+    limit = BOARD_LIMITS[kind]
+    if kind != "concept" or len(directory) <= limit:
+        return [{**row, "_sampleChannel": "leaders"} for row in directory[:limit]]
+    leaders = directory[:limit // 2]
+    exploration = sorted(directory[len(leaders):], key=lambda row: (
+        hashlib.sha256(f"{sample_date or 'undated'}:{row['code']}".encode()).hexdigest(), row["code"]))[:limit - len(leaders)]
+    # Fairness matters when the upstream is slow: do not queue every leader
+    # ahead of the exploratory half, which would silently recreate top-only recall.
+    result = []
+    for index in range(max(len(leaders), len(exploration))):
+        for rows, channel in ((leaders, "leaders"), (exploration, "exploration")):
+            if index < len(rows):
+                result.append({**rows[index], "_sampleChannel": channel})
+    return result
 
 
 class _Page(HTMLParser):
@@ -156,7 +182,7 @@ class ThsClient:
                     continue
                 symbol, cid = str(item.get("platecode", "")), str(item.get("cid", ""))
                 name, change = str(item.get("platename", "")).strip(), _number(item.get("199112"))
-                if re.fullmatch(r"88\d{4}", symbol) and re.fullmatch(r"30\d{4}", cid) and name and change is not None:
+                if re.fullmatch(r"88\d{4}", symbol) and re.fullmatch(r"30\d{4}", cid) and name:
                     rows.append({"code": "THS:" + symbol, "name": name, "rankChange": change,
                                  "url": f"{ROOT}/gn/detail/code/{cid}/"})
             total = len({match.group(1) for url, _ in page.links
@@ -176,7 +202,8 @@ class ThsClient:
         unique = {row["code"]: row for row in rows}
         if not unique:
             raise RuntimeError("同花顺板块目录没有可用候选")
-        return sorted(unique.values(), key=lambda row: (-row["rankChange"], row["code"])), max(total, len(unique))
+        return sorted(unique.values(), key=lambda row: (row["rankChange"] is None,
+                      -(row["rankChange"] or 0), row["code"])), max(total, len(unique))
 
     def _directory(self, kind: str, deadline: float, force: bool = False) -> tuple[list[dict], int]:
         path = "gn" if kind == "concept" else "thshy"
@@ -221,6 +248,8 @@ class ThsClient:
                             lambda: self._parse_quote(self._get_text(f"{QUOTE_ROOT}/{symbol}/last.js", deadline), symbol), force)
 
     def _quotes(self, symbols: list[str], deadline: float, force: bool = False) -> dict[str, dict]:
+        if deadline <= time.monotonic():
+            return {}
         pending = {self._pool.submit(self._quote, symbol, deadline, force): symbol for symbol in dict.fromkeys(symbols)}
         done, remaining = wait(pending, timeout=max(0, deadline - time.monotonic()))
         for task in remaining:
@@ -236,7 +265,7 @@ class ThsClient:
     def board_frame(self, kind: str, force: bool = False) -> pd.DataFrame:
         if kind not in BOARD_LIMITS:
             raise ValueError("kind 必须是 industry 或 concept")
-        deadline = time.monotonic() + 24
+        deadline = time.monotonic() + BOARD_READ_SECONDS
         result = self._cached(f"board:{kind}", 60, deadline,
                               lambda: self._board_frame(kind, deadline, force), force)
         frame = result.copy(deep=True)
@@ -245,15 +274,25 @@ class ThsClient:
 
     def _board_frame(self, kind: str, deadline: float, force: bool) -> pd.DataFrame:
         directory, total = self._directory(kind, deadline, force)
-        candidates = directory[:BOARD_LIMITS[kind]]
-        quotes = self._quotes(["bk_" + row["code"][4:] for row in candidates], deadline, force)
-        rows = []
+        sample_date, quotes, probed = None, {}, set()
+        if kind == "concept" and len(directory) > BOARD_LIMITS[kind]:
+            # Four concurrent probes count toward the same request/time budget.
+            # This uses the actual session even during a long market holiday.
+            probed = {"bk_" + row["code"][4:] for row in directory[:4]}
+            quotes = self._quotes(sorted(probed), min(deadline, time.monotonic() + 5), force)
+            if quotes:
+                sample_date = max(quote["quotedAt"].date() for quote in quotes.values()).isoformat()
+        candidates = _board_candidates(directory, kind, sample_date)
+        quotes.update(self._quotes(["bk_" + row["code"][4:] for row in candidates
+                                   if "bk_" + row["code"][4:] not in probed], deadline, force))
+        rows, invalid_breadth = [], 0
         for candidate in candidates:
             quote = quotes.get("bk_" + candidate["code"][4:])
             if quote is None:
                 continue
             up, down = (_number(quote.get(key)) for key in ("38", "39"))
             if up is None or down is None or min(up, down) < 0 or not up.is_integer() or not down.is_integer():
+                invalid_breadth += 1
                 continue
             rows.append({"板块代码": candidate["code"], "板块名称": str(quote.get("name") or candidate["name"]),
                          "最新价": quote["price"], "涨跌幅": quote["pctChg"], "涨跌额": _number(quote.get("264648")),
@@ -266,15 +305,29 @@ class ThsClient:
         if not rows:
             raise RuntimeError("同花顺公开板块候选未返回带有效交易日期的报价")
         latest_date = max(datetime.fromtimestamp(row["行情时间"], CHINA_TZ).date() for row in rows)
+        stale_count = sum(datetime.fromtimestamp(row["行情时间"], CHINA_TZ).date() != latest_date for row in rows)
         rows = [row for row in rows if datetime.fromtimestamp(row["行情时间"], CHINA_TZ).date() == latest_date]
         frame = pd.DataFrame(rows)
-        scope = {"kind": "sample", "directoryTotal": total, "rankedCandidates": len(directory),
-                 "requestedCount": len(candidates), "validCount": len(rows), "isComplete": False}
+        valid_codes = {row["板块代码"] for row in rows}
+        channels = {channel: {"requestedCount": sum(row["_sampleChannel"] == channel for row in candidates),
+                              "validCount": sum(row["_sampleChannel"] == channel and row["code"] in valid_codes
+                                                for row in candidates)}
+                    for channel in ("leaders", "exploration")}
+        scope = {"kind": "sample", "directoryTotal": total,
+                 "rankedCandidates": sum(row.get("rankChange") is not None for row in directory),
+                 "mappedCandidates": len(directory), "unmappedDirectoryCount": max(0, total - len(directory)),
+                 "requestedCount": len(candidates), "quotedCount": len(quotes), "validCount": len(rows),
+                 "unavailableQuoteCount": len(candidates) - len(quotes), "invalidBreadthCount": invalid_breadth,
+                 "staleDateCount": stale_count, "isComplete": False,
+                 "samplingMethod": DISCOVERY_METHOD if channels["exploration"]["requestedCount"] else "directory-rank",
+                 "samplingDate": sample_date, "quoteDate": latest_date.isoformat(), "channels": channels,
+                 "requestLimit": BOARD_LIMITS[kind], "timeBudgetSeconds": BOARD_READ_SECONDS}
         frame.attrs = {"source": SOURCE, "sourceUrl": f"{ROOT}/{'gn' if kind == 'concept' else 'thshy'}/",
                        "quoteAsOf": datetime.fromtimestamp(min(row["行情时间"] for row in rows), CHINA_TZ).isoformat(),
                        "scope": scope, "coverage": scope,
                        "warnings": [f"同花顺公开{'概念' if kind == 'concept' else '行业'}样本：目录 {total} 个，"
-                                    f"按公开涨幅选取 {len(candidates)} 个候选，取得 {len(rows)} 个有效报价；不代表全市场。"]}
+                                    f"已核实映射 {len(directory)} 个；涨幅排序 {channels['leaders']['requestedCount']} 个、"
+                                    f"分散探索 {channels['exploration']['requestedCount']} 个，取得 {len(rows)} 个同日有效报价；不代表全市场。"]}
         return frame
 
     def _members(self, code: str, deadline: float) -> tuple[list[str], str]:

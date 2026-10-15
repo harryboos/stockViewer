@@ -6,7 +6,7 @@ export type ResearchJob = { key: string; name: string; status: 'idle' | 'running
 export type Operations = {
   sources: { key: string; name: string; state: string; updatedAt: string | null; tradeDate: string | null; error: string | null }[];
   jobs: ResearchJob[];
-  aiRuns: { provider: string; model: string; status: string; stage?: string; error?: string; finishedAt?: string }[];
+  aiRuns: { provider: string; model: string; promptVersion?: string | null; status: string; stage?: string; error?: string; finishedAt?: string }[];
   aiUsage: { runsToday: number; requestsToday: number; failedToday: number; note: string };
   nextRulesAt: string | null; researchSchedule: string; asOf: string;
 };

@@ -4,11 +4,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from contextvars import ContextVar
 from datetime import datetime, timedelta
 from uuid import uuid4
 
 from . import database
+from .diagnostic_logging import progress_count, research_failure_reason, safe_error_type
 from .research_store import cache_get
 
 logger = logging.getLogger(__name__)
@@ -45,7 +47,11 @@ def _claim(key: str) -> str | None:
 
 def _run(key: str, token: str) -> None:
     error = None
+    started = time.monotonic()
+    latest_progress = (0, 0)
     def progress(done: int, total: int, stage: str):
+        nonlocal latest_progress
+        latest_progress = (progress_count(done), progress_count(total))
         with database._write_lock, database.connection() as db:
             db.execute("UPDATE research_jobs SET progress_json=? WHERE job_key=? AND token=?",
                        (json.dumps({"done": done, "total": total, "stage": stage}, ensure_ascii=False), key, token))
@@ -71,7 +77,9 @@ def _run(key: str, token: str) -> None:
         else:
             {"selections": refresh_selections, "rotation": refresh_rotation, "comparison": refresh_comparisons}[key](progress)
     except Exception as exc:
-        logger.warning("research_job_failed key=%s error_type=%s", key, type(exc).__name__)
+        logger.warning("research_job_failed key=%s error_type=%s reason=%s done=%s total=%s elapsed_seconds=%.3f",
+                       key if key in LABELS else "unknown", safe_error_type(exc), research_failure_reason(exc),
+                       *latest_progress, max(0, time.monotonic() - started))
         error = str(exc) if isinstance(exc, RuntimeError) else "数据核对失败，已有结果已保留，可稍后重试"
     finally:
         with database._write_lock, database.connection() as db:
@@ -112,8 +120,8 @@ def record_ai_stage(token: str, stage: str, *, call: bool = False) -> None:
 
 def operations_payload() -> dict:
     from .ai import get_daily_ai_runs
-    from .concept_ai import get_concept_run
-    from .concept_forecast import get_forecast_run
+    from .concept_ai import PROVIDER as CONCEPT_PROVIDER, get_concept_run
+    from .concept_forecast import RUN_NAMESPACE as FORECAST_NAMESPACE, get_forecast_run
     from .data_sources import market_data
     from .config import SCHEDULER
     now = datetime.now(database.CHINA_TZ)
@@ -137,8 +145,8 @@ def operations_payload() -> dict:
         source(key, name, cached.get("updatedAt"), error or "；".join(cached.get("warnings", [])) or None,
                cached.get("tradeDate") or cached.get("asOf"))
     runs = get_daily_ai_runs(include_result=False)["runs"] + [
-        {**get_concept_run(include_result=False), "provider": "concept:glm"},
-        {**get_forecast_run(include_result=False), "provider": "forecast:glm"}]
+        {**get_concept_run(include_result=False), "provider": f"concept:{CONCEPT_PROVIDER}"},
+        {**get_forecast_run(include_result=False), "provider": FORECAST_NAMESPACE}]
     next_rules = now.replace(hour=SCHEDULER.hour, minute=SCHEDULER.minute, second=0, microsecond=0)
     while next_rules <= now or next_rules.weekday() >= 5:
         next_rules += timedelta(days=1)

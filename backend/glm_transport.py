@@ -1,4 +1,4 @@
-"""Bounded streaming and overload recovery for long GLM research requests."""
+"""Bounded GLM/DeepSeek research streaming; keep the legacy module import stable."""
 from __future__ import annotations
 
 import asyncio
@@ -18,6 +18,7 @@ from .forecast_limits import QUEUE_TIMEOUT_SECONDS, STREAM_IDLE_SECONDS
 logger = logging.getLogger(__name__)
 MAX_ATTEMPTS = 5
 MAX_CONTENT_CHARS = 256_000
+MAX_DEEPSEEK_CONTENT_CHARS = 1_048_576
 MAX_EVENT_CHARS = 64_000
 TRANSIENT_CODES = {"1200", "1230", "1234", "1302", "1305"}
 ERROR_MESSAGES = {
@@ -36,6 +37,16 @@ ERROR_MESSAGES = {
     "1315": "GLM 密钥不适用于当前接口，请检查密钥类型",
     **{str(code): "GLM 使用额度或消费额度已达上限，请检查账户额度" for code in range(1316, 1322)},
 }
+
+
+def provider_label(provider: str) -> str:
+    if provider not in ("glm", "deepseek"):
+        raise ValueError("不支持的研究模型来源")
+    return "DeepSeek" if provider == "deepseek" else "GLM"
+
+
+def content_limit(provider: str) -> int:
+    return MAX_DEEPSEEK_CONTENT_CHARS if provider == "deepseek" else MAX_CONTENT_CHARS
 
 
 class RequestFailure(RuntimeError):
@@ -59,12 +70,22 @@ def retry_after_seconds(value: str | None) -> float | None:
     return max(0.0, seconds) if math.isfinite(seconds) else None
 
 
-def response_failure(response: httpx.Response, body: Any) -> RequestFailure:
+def response_failure(response: httpx.Response, body: Any, provider: str = "glm") -> RequestFailure:
     detail = body.get("error") if isinstance(body, dict) else None
     raw_code = str(detail.get("code", "")) if isinstance(detail, dict) else ""
     # Never expose provider response text: it may echo prompts or credentials.
     code = raw_code if raw_code.isascii() and raw_code.isdigit() and len(raw_code) <= 6 else ""
     status = response.status_code
+    if provider == "deepseek":
+        message = {400: "DeepSeek 请求格式不正确，请检查接口配置", 401: "DeepSeek 密钥验证失败，请检查密钥",
+                   402: "DeepSeek 账户余额不足，请检查账户余额", 403: "DeepSeek 接口或模型无访问权限，请检查账户权限",
+                   422: "DeepSeek 请求参数不符合要求，请检查模型配置", 429: "DeepSeek 请求达到速率限制，请稍后重试",
+                   500: "DeepSeek 服务暂不可用，请稍后重试", 503: "DeepSeek 高峰期服务繁忙，请稍后重试"}.get(
+                       status, "DeepSeek 服务暂不可用，请稍后重试" if status >= 500 else "DeepSeek 请求被拒绝，请检查接口配置")
+        # DeepSeek uses symbolic error codes too; a nonempty code must not
+        # disable safe retries for an explicit HTTP overload rejection.
+        return RequestFailure(f"{message}（HTTP {status}）", retryable=status in (429, 500, 502, 503, 504),
+                              retry_after=retry_after_seconds(response.headers.get("retry-after")))
     message = ERROR_MESSAGES.get(code)
     if message is None:
         message = ("GLM 密钥验证失败，请检查密钥" if status == 401 else
@@ -77,31 +98,35 @@ def response_failure(response: httpx.Response, body: Any) -> RequestFailure:
                           retry_after=retry_after_seconds(response.headers.get("retry-after")))
 
 
-def check_finish(reason: Any) -> None:
+def check_finish(reason: Any, provider: str = "glm") -> None:
     if reason == "stop":
         return
+    label = provider_label(provider)
     message = {
-        "length": "GLM 输出达到长度上限，预测未完整生成",
-        "model_context_window_exceeded": "预测材料超过 GLM 上下文限制",
-        "sensitive": "GLM 未通过内容审核，本次未生成预测",
-        "network_error": "GLM 推理过程中断，请稍后重新生成",
-    }.get(reason if isinstance(reason, str) else "", "GLM 响应未完整结束，请稍后重新生成")
+        "length": f"{label} 输出达到长度上限，预测未完整生成",
+        "model_context_window_exceeded": f"预测材料超过 {label} 上下文限制",
+        "sensitive": f"{label} 未通过内容审核，本次未生成预测",
+        "content_filter": f"{label} 未通过内容审核，本次未生成预测",
+        "network_error": f"{label} 推理过程中断，请稍后重新生成",
+        "aborted": f"{label} 推理过程中断，请稍后重新生成",
+        "insufficient_system_resource": f"{label} 计算资源暂不可用，预测未完整生成",
+    }.get(reason if isinstance(reason, str) else "", f"{label} 响应未完整结束，请稍后重新生成")
     raise RequestFailure(message)
 
 
-async def read_json(response: httpx.Response) -> Any:
+async def read_json(response: httpx.Response, provider: str = "glm") -> Any:
     content = bytearray()
     async for chunk in response.aiter_bytes():
         content.extend(chunk)
-        if len(content) > MAX_CONTENT_CHARS * 4:
-            raise RequestFailure("GLM 响应超出安全长度，本次未生成预测")
+        if len(content) > content_limit(provider) * 4:
+            raise RequestFailure(f"{provider_label(provider)} 响应超出安全长度，本次未生成预测")
     try:
         return json.loads(content)
     except (ValueError, UnicodeDecodeError) as error:
-        raise RequestFailure("GLM 接口返回了无法解析的数据") from error
+        raise RequestFailure(f"{provider_label(provider)} 接口返回了无法解析的数据") from error
 
 
-async def bounded_lines(response: httpx.Response) -> AsyncIterator[str]:
+async def bounded_lines(response: httpx.Response, provider: str = "glm") -> AsyncIterator[str]:
     """Enforce the event limit before a malformed upstream can buffer a huge line."""
     pending = ""
     async for chunk in response.aiter_text():
@@ -111,28 +136,30 @@ async def bounded_lines(response: httpx.Response) -> AsyncIterator[str]:
         for ending in re.finditer(r"\r\n|\n|\r(?!$)", pending):
             line = pending[consumed:ending.start()]
             if len(line) > MAX_EVENT_CHARS + len("data: "):
-                raise RequestFailure("GLM 响应片段超出安全长度")
+                raise RequestFailure(f"{provider_label(provider)} 响应片段超出安全长度")
             yield line
             consumed = ending.end()
         pending = pending[consumed:]
         if len(pending) > MAX_EVENT_CHARS + len("data: "):
-            raise RequestFailure("GLM 响应片段超出安全长度")
+            raise RequestFailure(f"{provider_label(provider)} 响应片段超出安全长度")
     if pending:
         yield pending.removesuffix("\r")
 
 
-async def read_stream(response: httpx.Response, progress: Callable[[str], Awaitable[None]]) -> dict[str, Any]:
+async def read_stream(response: httpx.Response, progress: Callable[[str], Awaitable[None]],
+                      provider: str = "glm", begin_generation: Callable[[], None] | None = None) -> dict[str, Any]:
     parts: list[str] = []
     content_size = 0
     event: list[str] = []
     event_size = 0
-    async for line in bounded_lines(response):
+    label = provider_label(provider)
+    async for line in bounded_lines(response, provider):
         if line.startswith("data:"):
             text = line[5:].lstrip(" ")
             event.append(text)
             event_size += len(text)
             if event_size > MAX_EVENT_CHARS:
-                raise RequestFailure("GLM 响应片段超出安全长度")
+                raise RequestFailure(f"{label} 响应片段超出安全长度")
         elif line == "" and event:
             text = "\n".join(event)
             event, event_size = [], 0
@@ -143,7 +170,7 @@ async def read_stream(response: httpx.Response, progress: Callable[[str], Awaita
                 if not isinstance(chunk, dict):
                     raise ValueError("invalid chunk")
                 if "error" in chunk:
-                    failure = response_failure(response, chunk)
+                    failure = response_failure(response, chunk, provider)
                     failure.retryable = False  # A 200 stream has already been accepted.
                     raise failure
                 for choice in chunk.get("choices", []):
@@ -151,30 +178,33 @@ async def read_stream(response: httpx.Response, progress: Callable[[str], Awaita
                         continue
                     delta = choice.get("delta") or {}
                     content = delta.get("content")
+                    if begin_generation and (content or delta.get("reasoning_content") or choice.get("finish_reason") is not None):
+                        begin_generation()
+                        begin_generation = None
                     # Reasoning chunks keep the connection active; never retain or log them.
                     if content:
                         await progress("正在整理预测报告")
                     elif delta.get("reasoning_content") and not parts:
-                        await progress("GLM MAX 深度推理中")
+                        await progress(f"{label} MAX 深度推理中")
                     if content is not None:
                         if not isinstance(content, str):
                             raise ValueError("invalid content")
                         content_size += len(content)
-                        if content_size > MAX_CONTENT_CHARS:
-                            raise RequestFailure("GLM 响应超出安全长度，本次未生成预测")
+                        if content_size > content_limit(provider):
+                            raise RequestFailure(f"{label} 响应超出安全长度，本次未生成预测")
                         if content:
                             parts.append(content)
                     finish = choice.get("finish_reason")
                     if finish is not None:
-                        check_finish(finish)
+                        check_finish(finish, provider)
                         return {"choices": [{"message": {"content": "".join(parts)}, "finish_reason": finish}]}
             except (ValueError, TypeError, AttributeError) as error:
-                raise RequestFailure("GLM 流式响应格式异常，本次未生成预测") from error
-    raise RequestFailure("GLM 连接提前结束，预测未完整生成，请稍后重试")
+                raise RequestFailure(f"{label} 流式响应格式异常，本次未生成预测") from error
+    raise RequestFailure(f"{label} 连接提前结束，预测未完整生成，请稍后重试")
 
 
 async def post_research(url: str, headers: dict[str, str], payload: dict[str, Any], *,
-                        timeout_seconds: float) -> dict[str, Any]:
+                        timeout_seconds: float, provider: str = "glm") -> dict[str, Any]:
     """Give an accepted generation its full budget, independently of bounded queue retries."""
     from .research_jobs import ai_token, record_ai_stage
     loop = asyncio.get_running_loop()
@@ -182,56 +212,79 @@ async def post_research(url: str, headers: dict[str, str], payload: dict[str, An
     queue_deadline = started + QUEUE_TIMEOUT_SECONDS
     phase = "queue"
     previous_stage = None
+    label = provider_label(provider)
 
     async def progress(label: str, *, call: bool = False) -> None:
         nonlocal previous_stage
         if label == previous_stage and not call:
             return
         previous_stage = label
-        logger.info("forecast_glm_stage phase=%s elapsed=%.1fs", label, loop.time() - started)
+        logger.info("forecast_%s_stage phase=%s elapsed=%.1fs", provider, label, loop.time() - started)
         if ai_token.get():
             await asyncio.to_thread(record_ai_stage, ai_token.get(), label, call=call)
 
     try:
-        # Until headers arrive the request shares the queue budget. Only a successful
-        # response starts the full model budget. An idle socket still fails promptly.
+        # Queueing has a separate budget. DeepSeek starts its generation clock
+        # on the first model output; GLM starts on successful response headers.
         async with asyncio.timeout_at(queue_deadline) as deadline:
+            def begin_generation() -> None:
+                nonlocal phase
+                phase = "generation"
+                deadline.reschedule(loop.time() + timeout_seconds)
+
             async with httpx.AsyncClient(timeout=httpx.Timeout(STREAM_IDLE_SECONDS, connect=20.0, write=30.0, pool=20.0)) as client:
                 for attempt in range(1, MAX_ATTEMPTS + 1):
+                    accepted_response = False
                     try:
-                        await progress(f"等待 GLM 接入 · 第 {attempt} 次请求", call=True)
+                        await progress(f"等待 {label} 接入 · 第 {attempt} 次请求", call=True)
                         async with client.stream("POST", url, headers=headers, json={**payload, "stream": True}) as response:
                             if response.status_code >= 400:
                                 try:
-                                    body = await read_json(response)
+                                    body = await read_json(response, provider)
                                 except RequestFailure:
                                     body = None  # Gateways may send an HTML 502/503 response.
-                                raise response_failure(response, body)
-                            phase = "generation"
-                            deadline.reschedule(loop.time() + timeout_seconds)
-                            await progress("GLM 已接入，等待分析输出")
+                                raise response_failure(response, body, provider)
+                            accepted_response = True
                             if "text/event-stream" in response.headers.get("content-type", "").lower():
-                                return await read_stream(response, progress)
+                                if provider == "deepseek":
+                                    # DeepSeek can send HTTP 200 and keep-alives
+                                    # while queued. Only real model output starts
+                                    # generation's independent time budget.
+                                    await progress(f"{label} 已接入，等待推理开始")
+                                    return await read_stream(response, progress, provider, begin_generation)
+                                begin_generation()
+                                await progress(f"{label} 已接入，等待分析输出")
+                                return await read_stream(response, progress, provider)
                             # Some compatible gateways ignore stream=True and return normal JSON.
-                            body = await read_json(response)
+                            begin_generation()
+                            await progress(f"{label} 已接入，等待分析输出")
+                            body = await read_json(response, provider)
                             if isinstance(body, dict) and "error" in body:
-                                raise response_failure(response, body)
+                                raise response_failure(response, body, provider)
                             try:
-                                check_finish(body["choices"][0].get("finish_reason"))
+                                choice = body["choices"][0]
+                                check_finish(choice.get("finish_reason"), provider)
+                                content = choice["message"]["content"]
+                                if not isinstance(content, str):
+                                    raise TypeError("invalid content")
                             except (KeyError, IndexError, TypeError, AttributeError) as error:
-                                raise RequestFailure("GLM 未返回完整预测结果") from error
-                            return body
+                                raise RequestFailure(f"{label} 未返回完整预测结果") from error
+                            # Compatible non-stream gateways may return reasoning
+                            # alongside content. Drop it before leaving transport.
+                            return {"choices": [{"message": {"content": content}, "finish_reason": choice["finish_reason"]}]}
                     except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as error:
-                        failure = RequestFailure("GLM 连接建立失败，请稍后重试", retryable=True)
+                        failure = RequestFailure(
+                            f"{label} 连接中断，预测未完整生成，请稍后重新生成" if accepted_response else
+                            f"{label} 连接建立失败，请稍后重试", retryable=not accepted_response)
                         failure.__cause__ = error
                     except RequestFailure as error:
                         failure = error
                     except httpx.ReadTimeout as error:
-                        raise RequestFailure(f"GLM 连接等待超时（连续 {STREAM_IDLE_SECONDS // 60} 分钟未收到数据），本次未自动重复调用，请稍后重试") from error
+                        raise RequestFailure(f"{label} 连接等待超时（连续 {STREAM_IDLE_SECONDS // 60} 分钟未收到数据），本次未自动重复调用，请稍后重试") from error
                     except httpx.TimeoutException as error:
-                        raise RequestFailure("GLM 请求传输超时，本次未自动重复调用，请稍后重试") from error
+                        raise RequestFailure(f"{label} 请求传输超时，本次未自动重复调用，请稍后重试") from error
                     except httpx.HTTPError as error:
-                        raise RequestFailure("GLM 连接中断，预测未完整生成，请稍后重新生成") from error
+                        raise RequestFailure(f"{label} 连接中断，预测未完整生成，请稍后重新生成") from error
                     if not failure.retryable or attempt == MAX_ATTEMPTS:
                         raise failure
                     # A compatible JSON endpoint can also explicitly reject with a
@@ -242,12 +295,12 @@ async def post_research(url: str, headers: dict[str, str], payload: dict[str, An
                     remaining = queue_deadline - loop.time()
                     if delay + 20 >= remaining:
                         raise failure  # Honor Retry-After; never retry earlier to fit our budget.
-                    logger.warning("forecast_glm_retry attempt=%s/%s delay=%.1fs reason=%s",
-                                   attempt, MAX_ATTEMPTS, delay, failure)
+                    logger.warning("forecast_%s_retry attempt=%s/%s delay=%.1fs reason=%s",
+                                   provider, attempt, MAX_ATTEMPTS, delay, failure)
                     await progress(f"高峰排队 · {delay:.0f} 秒后重试（第 {attempt + 1} 次）")
                     await asyncio.sleep(delay)
     except TimeoutError as error:
-        message = (f"GLM 高峰接入等待超时（超过 {QUEUE_TIMEOUT_SECONDS / 60:g} 分钟），请稍后重试" if phase == "queue" else
-                   f"GLM MAX 分析超时（超过 {timeout_seconds / 60:g} 分钟），尚未返回完整报告，请稍后重试")
+        message = (f"{label} 高峰接入等待超时（超过 {QUEUE_TIMEOUT_SECONDS / 60:g} 分钟），请稍后重试" if phase == "queue" else
+                   f"{label} MAX 分析超时（超过 {timeout_seconds / 60:g} 分钟），尚未返回完整报告，请稍后重试")
         raise RequestFailure(message) from error
     raise AssertionError("unreachable")

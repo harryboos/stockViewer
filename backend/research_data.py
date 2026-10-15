@@ -15,6 +15,7 @@ from .concept_identity import CONCEPT_PROVIDERS, single_provider
 from .data_sources import market_data
 from .forecast_prices import FeedbackPriceClient
 from .history_sources import history_covers_window
+from .history_cache import ARCHIVE_ROWS, archive_key, cached_history, clean_history, join_histories, missing_window
 from .research_store import cache_get, cache_put
 from .research_pool import HISTORY_WAITING_KINDS, fetch_batch, history_result
 
@@ -23,18 +24,20 @@ _locks: WeakValueDictionary = WeakValueDictionary()
 _recent_failures: OrderedDict = OrderedDict()
 
 
-def shared_read(key: str, fetch, seconds: int = 900, *, empty_seconds: float = 0, complete=None):
+def shared_read(key: str, fetch, seconds: int = 900, *, empty_seconds: float = 0, complete=None, cache_if=None, reuse=None):
     def read_cached():
         value = cache_get(key, seconds)
         # Incomplete windows need an early retry when a provider catches up;
         # complete closed-price windows can retain the usual one-hour cache.
         if value is not None and complete is not None and not complete(value):
             value = cache_get(key, min(seconds, 60))
+        if value is not None and reuse is not None and not reuse(value):
+            value = None
         if value is not None:
             return value
         with _locks_guard:
             failure = _recent_failures.get((str(database.DATABASE_PATH), key))
-            if failure and failure[0] > clock.monotonic():
+            if failure and failure[0] > clock.monotonic() and (reuse is None or reuse(failure[1])):
                 return deepcopy(failure[1])
         return None
 
@@ -49,7 +52,8 @@ def shared_read(key: str, fetch, seconds: int = 900, *, empty_seconds: float = 0
             return cached
         value = fetch()
         if value and (not isinstance(value, dict) or "rows" not in value or value["rows"]):
-            cache_put(key, value)
+            if cache_if is None or cache_if(value):
+                cache_put(key, value)
         elif empty_seconds and isinstance(value, dict) and "rows" in value:
             # Share one outage response with waiting readers without saving an
             # empty daily series to durable storage or creating a retry stampede.
@@ -77,11 +81,85 @@ def history_request(code: str, start: str, end: str, *, closed: str | None = Non
 
 
 def index_history(code: str, start: str, end: str) -> dict:
+    required_start, required_end = start, end
     code, start, end = history_request(code, start, end)
-    return shared_read(f"evaluation:{code}:{start}:{end}",
-                       lambda: FeedbackPriceClient().history(code, start, end), 3600,
-                       empty_seconds=30, complete=lambda value: history_covers_window(
-                           value.get("rows", []), start, end, FeedbackPriceClient.known_calendar()))
+    # A completed month's window must not depend on prices after its exit date.
+    required_end = min(required_end, end)
+    calendar = FeedbackPriceClient.known_calendar()
+    newly_read = True
+
+    def complete(value):
+        return history_covers_window(value.get("rows", []), required_start, required_end, calendar)
+
+    def reusable(value):
+        window = value.get("_checkedWindow")
+        # Legacy daily keys represent full-window requests. A new partial read
+        # may be briefly cached only for the dates that were actually attempted.
+        return (complete(value) or window is None or
+                isinstance(window, list) and len(window) == 2 and all(isinstance(day, str) for day in window)
+                and window[0] <= required_start and window[1] >= required_end)
+
+    def save_archive(value):
+        archive = {**value, "code": code}
+        previous = cache_get(archive_key(code))
+        if isinstance(previous, dict):
+            previous = clean_history(previous, "0001-01-01", "9999-12-31")
+            combined = join_histories(previous, archive)
+            if combined is not None:
+                archive = combined
+            elif not {row["date"] for row in previous["rows"]}.issubset({row["date"] for row in archive["rows"]}):
+                # A narrow independent source/revised basis cannot erase a
+                # larger verified archive. Its own dated window is still saved.
+                return
+        archive["rows"] = archive["rows"][-ARCHIVE_ROWS:]
+        for key in ("error", "errorKind", "refreshError", "_checkedWindow"):
+            archive.pop(key, None)
+        cache_put(archive_key(code), archive)
+
+    def repair():
+        nonlocal newly_read
+        saved = cached_history(code, start, end, calendar)
+        if saved and cache_get(archive_key(code)) is None:
+            # Promote an existing verified window before the seven-day generic
+            # cache expires, even if today's attempt to extend it is unavailable.
+            save_archive(saved)
+        if saved and complete(saved):
+            newly_read = False
+            return saved
+        first, last = missing_window(saved, required_start, required_end, calendar) if saved else (start, end)
+        checked = [required_start, required_end] if saved else [start, end]
+        fresh = FeedbackPriceClient().history(code, first, last)
+        if not fresh.get("rows"):
+            return {**({**saved, "error": fresh.get("error") or "缺口行情尚未返回",
+                        "errorKind": fresh.get("errorKind") or "unavailable"} if saved else fresh),
+                    "_checkedWindow": checked}
+        fresh = clean_history(fresh, start, end)
+        combined = join_histories(saved, fresh) if saved else None
+        # A fallback source or a revised index base needs its own full series.
+        # Never join disjoint/contradictory segments merely because the code matches.
+        if saved and combined is None and (first, last) != (start, end) and not complete(fresh):
+            fresh = clean_history(FeedbackPriceClient().history(code, start, end), start, end)
+            checked = [start, end]
+        result = combined or fresh
+        if saved and not complete(result) and len(result["rows"]) < len(saved["rows"]):
+            return {**saved, "error": fresh.get("error") or "新增日线无法与已保存价格核对，等待同口径完整行情",
+                    "errorKind": fresh.get("errorKind") or "unavailable", "_checkedWindow": checked}
+        if result.get("rows"):
+            # One bounded archive survives the moving daily request key. Preserve
+            # original collection time on reused bars; only new prices advance it.
+            archive = {**result, "cacheAsOf": database.now_iso()}
+            if combined is not None:
+                result["cacheAsOf"] = archive["cacheAsOf"]
+            save_archive(archive)
+        return {**result, "_checkedWindow": checked}
+
+    result = shared_read(f"evaluation:{code}:{start}:{end}", repair, 3600,
+                         empty_seconds=30, complete=complete, cache_if=lambda _: newly_read, reuse=reusable)
+    result = {key: value for key, value in result.items() if key != "_checkedWindow"}
+    if complete(result):
+        # A shorter closed window can be ready although a later window's refresh failed.
+        return {key: value for key, value in result.items() if key not in ("error", "errorKind", "refreshError")}
+    return result
 
 
 def stock_basic(symbol: str) -> dict:

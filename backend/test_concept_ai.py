@@ -165,7 +165,7 @@ class ConceptEvidenceTests(unittest.TestCase):
             lambda c: c["stocks"].append(copy.deepcopy(c["stocks"][0])),
             lambda c: c["drivers"][0].update(evidenceIds=["BK9999:market"]),
             lambda c: c["drivers"].append({**c["drivers"][0], "kind": "news"}),
-            lambda c: c["drivers"][1].update(evidenceIds=["BK1001:market"]),
+            lambda c: c["drivers"][1].update(evidenceIds=["BK9999:market"]),
         ]
         for mutation in mutations:
             raw = result_fixture()
@@ -186,13 +186,14 @@ class ConceptRunTests(unittest.IsolatedAsyncioTestCase):
                        patch.dict(os.environ, {
                            "GLM_API_KEY": "glm-test-key", "DEEPSEEK_API_KEY": "deepseek-test-key",
                            "QWEN_API_KEY": "qwen-test-key", "GLM_MODEL": "another-model",
+                           "DEEPSEEK_MODEL": "another-model",
                            "CONCEPT_AI_PROVIDER": "deepseek",
                        }, clear=True)]:
             target.start()
             self.addCleanup(target.stop)
         database.initialize()
         news = patch.object(concept_ai, "enrich_world_news", new_callable=AsyncMock, side_effect=lambda evidence, key: evidence)
-        news.start()
+        self.news = news.start()
         self.addCleanup(news.stop)
 
     async def test_read_only_and_missing_configuration_never_generate(self) -> None:
@@ -200,7 +201,7 @@ class ConceptRunTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(concept_ai.get_concept_run()["status"], "idle")
             with patch.dict(os.environ, {}, clear=True):
                 self.assertEqual((await concept_ai.start_concept_run())["status"], "not_configured")
-            with patch.dict(os.environ, {"GLM_API_KEY": ""}):
+            with patch.dict(os.environ, {"DEEPSEEK_API_KEY": ""}):
                 self.assertEqual(concept_ai.get_concept_run()["status"], "not_configured")
                 self.assertEqual((await concept_ai.start_concept_run())["status"], "not_configured")
             call.assert_not_awaited()
@@ -228,15 +229,27 @@ class ConceptRunTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(concept_ai.get_concept_run()["status"], "succeeded")
             await concept_ai.start_concept_run()
             self.assertEqual(call.await_count, 1)
-            self.assertEqual(call.await_args.args[0], "glm")
-            self.assertEqual(call.await_args.args[2:4], ("glm-5.3", "glm-test-key"))
+            self.assertEqual(call.await_args.args[0], "deepseek")
+            self.assertEqual(call.await_args.args[2:4], ("deepseek-flash", "deepseek-test-key"))
             self.assertEqual(call.await_args.kwargs["reasoning_effort"], "max")
             self.assertEqual(call.await_args.kwargs["timeout_seconds"], concept_ai.MODEL_TIMEOUT_SECONDS)
-            self.assertEqual(concept_ai.get_concept_run()["model"], "glm-5.3")
+            self.assertEqual(concept_ai.get_concept_run()["model"], "deepseek-flash")
+            self.assertTrue(call.await_args.kwargs["resilient_stream"])
+            self.assertEqual(self.news.await_args.args[1], "glm-test-key")
             await concept_ai.start_concept_run(True)
             await asyncio.gather(*list(concept_ai._tasks))
             self.assertEqual(call.await_count, 2)
         self.assertEqual(database.read_ai_run("deepseek", date)["result"], {"title": "选股缓存"})
+
+    async def test_deepseek_generation_does_not_require_search_credentials(self) -> None:
+        with (patch.dict(os.environ, {"GLM_API_KEY": ""}),
+              patch.object(concept_ai, "collect_concept_evidence", return_value=evidence_fixture()),
+              patch.object(ai, "_call_compatible", new_callable=AsyncMock, return_value=result_fixture()) as model):
+            await concept_ai.start_concept_run()
+            await asyncio.gather(*list(concept_ai._tasks))
+        self.assertEqual(concept_ai.get_concept_run()["status"], "succeeded")
+        self.assertEqual(model.await_args.args[3], "deepseek-test-key")
+        self.assertEqual(self.news.await_args.args[1], "")
 
     def test_cached_results_from_other_models_are_not_reused(self) -> None:
         date = database.china_date()
@@ -244,30 +257,30 @@ class ConceptRunTests(unittest.IsolatedAsyncioTestCase):
             token = database.start_ai_run(provider, model, date, concept_ai.PROMPT_VERSION)
             database.finish_ai_run(provider, date, {"summary": "旧模型结果"}, None, token)
         run = concept_ai.get_concept_run()
-        self.assertEqual(run["provider"], "glm")
-        self.assertEqual(run["model"], "glm-5.3")
+        self.assertEqual(run["provider"], "deepseek")
+        self.assertEqual(run["model"], "deepseek-flash")
         self.assertEqual(run["status"], "idle")
         self.assertIsNone(run["result"])
 
     def test_previous_reasoning_cache_is_invalidated_and_max_run_keeps_its_lease(self) -> None:
         date = database.china_date()
-        token = database.start_ai_run("concept:glm", "glm-5.3", date, "concept-v2-real-world")
-        database.finish_ai_run("concept:glm", date, {"summary": "之前的低推理档位结果"}, None, token)
+        token = database.start_ai_run(concept_ai.RUN_NAMESPACE, concept_ai.MODEL, date, "concept-v2-real-world")
+        database.finish_ai_run(concept_ai.RUN_NAMESPACE, date, {"summary": "之前的低推理档位结果"}, None, token)
         self.assertEqual(concept_ai.get_concept_run()["status"], "idle")
-        token = database.start_ai_run("concept:glm", "glm-5.3", date, concept_ai.PROMPT_VERSION)
+        token = database.start_ai_run(concept_ai.RUN_NAMESPACE, concept_ai.MODEL, date, concept_ai.PROMPT_VERSION)
         self.assertIsNotNone(token)
         started = (datetime.now(database.CHINA_TZ) - timedelta(minutes=5)).isoformat(timespec="seconds")
         with database.connection() as db:
-            db.execute("UPDATE ai_runs SET started_at = ? WHERE provider = 'concept:glm'", (started,))
+            db.execute("UPDATE ai_runs SET started_at = ? WHERE provider = ?", (started, concept_ai.RUN_NAMESPACE))
         self.assertEqual(concept_ai.get_concept_run()["status"], "running")
-        self.assertIsNone(database.start_ai_run("concept:glm", "glm-5.3", date, concept_ai.PROMPT_VERSION, True))
+        self.assertIsNone(database.start_ai_run(concept_ai.RUN_NAMESPACE, concept_ai.MODEL, date, concept_ai.PROMPT_VERSION, True))
         self.assertLess(concept_ai.MODEL_TIMEOUT_SECONDS, concept_ai.RUN_TIMEOUT_SECONDS)
         self.assertLess(concept_ai.RUN_TIMEOUT_SECONDS, database.CONCEPT_AI_RUN_LEASE_SECONDS)
-        expired = (datetime.now(database.CHINA_TZ) - timedelta(minutes=12)).isoformat(timespec="seconds")
+        expired = (datetime.now(database.CHINA_TZ) - timedelta(seconds=database.CONCEPT_AI_RUN_LEASE_SECONDS + 1)).isoformat(timespec="seconds")
         with database.connection() as db:
-            db.execute("UPDATE ai_runs SET started_at = ? WHERE provider = 'concept:glm'", (expired,))
+            db.execute("UPDATE ai_runs SET started_at = ? WHERE provider = ?", (expired, concept_ai.RUN_NAMESPACE))
         self.assertEqual(concept_ai.get_concept_run()["status"], "failed")
-        self.assertIsNotNone(database.start_ai_run("concept:glm", "glm-5.3", date, concept_ai.PROMPT_VERSION))
+        self.assertIsNotNone(database.start_ai_run(concept_ai.RUN_NAMESPACE, concept_ai.MODEL, date, concept_ai.PROMPT_VERSION))
 
     async def test_weak_market_produces_empty_recommendations_without_a_paid_call(self) -> None:
         evidence = {**evidence_fixture(), "candidates": []}
@@ -321,6 +334,24 @@ class ConceptRunTests(unittest.IsolatedAsyncioTestCase):
 
 
 class WorldNewsTests(unittest.IsolatedAsyncioTestCase):
+    def test_search_key_is_independent_of_generation_credentials(self) -> None:
+        with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "generation-only"}, clear=True):
+            self.assertEqual(concept_news.news_search_key(), "")
+            with patch.dict(os.environ, {"GLM_API_KEY": "search-only"}):
+                self.assertEqual(concept_news.news_search_key(), "search-only")
+
+    async def test_missing_search_key_skips_paid_search_and_uses_financial_news(self) -> None:
+        source = {"id": "BK1001:news:123", "kind": "news", "title": "真实资讯"}
+        with (patch.object(concept_news.httpx, "AsyncClient") as client,
+              patch.object(concept_news.ConceptResearchClient, "news", return_value=[source])):
+            result = await concept_news.enrich_world_news(evidence_fixture(), "")
+            discovered, coverage = await concept_news.discover_world_news([], "")
+        client.assert_not_called()
+        self.assertEqual(discovered, {})
+        self.assertEqual(coverage["status"], "unavailable")
+        self.assertIn(source, result["candidates"][0]["evidence"])
+        self.assertTrue(any("未配置" in note for note in result["candidates"][0]["warnings"]))
+
     def test_sugar_query_expands_to_weather_supply_and_commodity_vocabulary(self) -> None:
         query = concept_news.search_query("制糖概念")
         for term in ("白糖", "天气", "厄尔尼诺", "产量", "供需"):

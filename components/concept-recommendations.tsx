@@ -5,6 +5,7 @@ import { SourceLinks } from './source-links';
 import { useDailyConceptRun } from '@/lib/use-daily-concept-run';
 import type { ConceptResearch } from '@/lib/concept-types';
 import { shortTradeDate, percent, amount, tone, timestamp, decimal, rate } from '@/lib/format';
+import { activeConceptModelLabel, CONCEPT_MODEL_LABEL } from '@/lib/concept-model';
 
 const endpoint = '/api/market/concepts/ai';
 const driverLabels = { data: '行情依据', news: '资讯线索', hypothesis: '待验证推测' };
@@ -87,6 +88,7 @@ export function ConceptResearchCards({ research, today }: { research: ConceptRes
 
 export function ConceptRecommendations() {
   const { current, result, busy, submitting, requestError, today, generate, refresh } = useDailyConceptRun<ConceptResearch>(endpoint, '推荐');
+  const modelLabel = activeConceptModelLabel(current);
 
   return (
     <section className="concept-ai-section" aria-labelledby="concept-ai-title" aria-busy={busy}>
@@ -98,15 +100,15 @@ export function ConceptRecommendations() {
       </div>
       <div aria-live="polite">
         {!current && !requestError && <p className="concept-ai-state">正在读取当天推荐…</p>}
-        {current?.status === 'idle' && !submitting && <div className="concept-ai-state"><strong>发现近期走强的方向与现实原因</strong><p>点击生成，GLM 5.3 MAX 将比较可用的近 5/10 日趋势与当日行情，检索近 30 天产业、政策、天气和供需事件，选出最多 3 个概念。当天结果会保存供再次查看。</p></div>}
-        {current?.status === 'not_configured' && <div className="concept-ai-state"><strong>尚未配置 GLM 5.3 MAX</strong><p>请在服务配置中填写 GLM 的密钥，重启服务后即可生成推荐。</p><button className="refresh-button" onClick={refresh}>重新检查</button></div>}
-        {busy && <div className="concept-ai-state concept-ai-progress"><span className="loading-ring" /><div><strong>正在进行 MAX 深度分析</strong><p>正在检索相关新闻并分析影响传导，可能需要数分钟，最多等待 10 分钟。可以先查看下方板块榜单，返回此页会继续读取结果。</p></div></div>}
+        {current?.status === 'idle' && !submitting && <div className="concept-ai-state"><strong>发现近期走强的方向与现实原因</strong><p>点击生成，{modelLabel} 将比较可用的近 5/10 日趋势与当日行情，检索近 30 天产业、政策、天气和供需事件，选出最多 3 个概念。当天结果会保存供再次查看。</p></div>}
+        {current?.status === 'not_configured' && <div className="concept-ai-state"><strong>尚未配置 {CONCEPT_MODEL_LABEL}</strong><p>请在服务配置中填写 DeepSeek 的密钥，重启服务后即可生成推荐。</p><button className="refresh-button" onClick={refresh}>重新检查</button></div>}
+        {busy && <div className="concept-ai-state concept-ai-progress"><span className="loading-ring" /><div><strong>正在进行 {modelLabel} 深度分析</strong><p>正在检索相关新闻并分析影响传导。{current?.maxRunSeconds ? `整个任务最长约 ${Math.ceil(current.maxRunSeconds / 60)} 分钟。` : ''}可以先查看下方板块榜单，返回此页会继续读取结果。</p></div></div>}
         {current?.status === 'failed' && <p className="concept-ai-error" role="alert">{current.error || '分析未完成，请重新生成。'}</p>}
         {requestError && <p className="concept-ai-error" role="alert">{requestError} <button onClick={refresh}>重新读取</button></p>}
       </div>
       {current?.status !== 'succeeded' && result && <p className="data-note">以下保留上次成功结果 · {current?.previousFinishedAt ? timestamp(current.previousFinishedAt) : '完成时间待补'}</p>}
       {result && <ConceptResearchCards research={result} today={today} />}
-      <p className="concept-ai-provider">使用 GLM 5.3 MAX 深度分析{current?.finishedAt ? ` · 完成于 ${timestamp(current.finishedAt)}` : ''} · 点击生成才会调用 AI 与联网检索</p>
+      <p className="concept-ai-provider">使用 {modelLabel} 深度分析{current?.finishedAt ? ` · 完成于 ${timestamp(current.finishedAt)}` : ''} · 点击生成才会调用 AI 与联网检索</p>
     </section>
   );
 }

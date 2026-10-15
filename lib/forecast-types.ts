@@ -2,11 +2,26 @@ import type { ConceptSource, ConceptRun, RecommendedConcept } from '@/lib/concep
 
 type Assessment = { summary: string; status: 'supported' | 'hypothesis'; sources: ConceptSource[] };
 
+export type ForecastExcludedHistory = {
+  code: string; name: string; status: string; reason?: string;
+  missingDates?: string[]; validSessions?: number; historyAsOf?: string | null;
+};
+
 export type ForecastCandidateSelection = {
   method?: string; snapshotCount?: number; availableCount?: number; selectedCount?: number; limit?: number;
   historyCheckedCount?: number; historyAlignedCount?: number; historyFeatureReadyCount?: number;
   historyUnseenCount?: number; historyMissingOrStaleCount?: number; historyInsufficientCount?: number;
   channels?: Record<string, { availableCount: number; selectedCount: number }>;
+  historyQuality?: {
+    requiredSessions?: number; calendarAvailable?: boolean; eligibleCount?: number; excludedCount?: number;
+    excluded?: ForecastExcludedHistory[]; note?: string;
+  };
+  snapshotCoverage?: {
+    concept?: {
+      directoryTotal?: number; mappedCandidates?: number; requestedCount?: number;
+      quotedCount?: number; validCount?: number; eligibleCount?: number;
+    };
+  } | null;
   note?: string;
 };
 

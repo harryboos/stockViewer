@@ -106,10 +106,18 @@ def refresh_comparisons(progress) -> dict:
     def priority(item):
         checked, report, board, days, _, position, deferred = item
         selected, evaluation_codes = priorities[report['id']]
+        # Within each priority group, retry the least recently attempted first.
+        # Putting deferred reads before their timestamp repeatedly hit the same
+        # failed symbols and could starve all untouched monthly comparisons.
         return (board['code'] not in selected, board['code'] not in evaluation_codes,
-                not deferred, checked, position, -report['id'], days)
+                checked, not deferred, position, -report['id'], days)
     batch = sorted(pending, key=priority)
     requests = list(dict.fromkeys(history_request(board["code"], *span, closed=closed) for _, _, board, _, span, _, _ in batch))
+    required = {}
+    for _, _, board, _, span, _, _ in batch:
+        request = history_request(board["code"], *span, closed=closed)
+        previous = required.get(request, span)
+        required[request] = min(previous[0], span[0]), max(previous[1], span[1])
     progress(0, len(requests), "读取同期概念日线（相同概念共用一次查询）")
     prices = BatchResult()
     finished_requests = 0
@@ -119,7 +127,7 @@ def refresh_comparisons(progress) -> dict:
         group = [item for item in requests if concept_provider(item[0]) == provider]
         if not group:
             continue
-        values = fetch_batch(group, lambda item: index_history(*item), background=True,
+        values = fetch_batch(group, lambda item: index_history(item[0], *required[item]), background=True,
                              progress=lambda done, total: progress(finished_requests + done, len(requests), "读取同期概念日线"),
                              stop_when=source_unavailable_batch)
         prices.update(values)
@@ -137,7 +145,7 @@ def refresh_comparisons(progress) -> dict:
             continue  # No source read occurred; never fabricate a missing-price record.
         history = history_result(prices, request)
         value = evaluate(report, days, history, {}, calendar, now)
-        if history.get("errorKind"):
+        if history.get("errorKind") and value.get("returnPct") is None:
             value["errorKind"] = history["errorKind"]
         if waiting_for_query(value):
             waiting += 1

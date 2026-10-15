@@ -7,9 +7,21 @@ import { startPolling } from './polling';
 import { submissionMessage, type SubmissionFailure } from './task-submission';
 import { chinaDay } from './format';
 
+type DailyConceptRun<Result> = Omit<ConceptRun, 'result' | 'previousResult'> & { result: Result | null; previousResult?: Result | null };
+
+export function dailyConceptRunState<Result>(run: DailyConceptRun<Result> | null, today: string) {
+  // A paid task can cross midnight or survive a provider migration. Keep it
+  // visible and locked, while yesterday's results remain in their own archive.
+  const current = run?.runDate === today || run?.status === 'running' ? run : null;
+  const result = current?.runDate === today
+    ? current.status === 'succeeded' ? current.result : current.previousResult ?? null
+    : null;
+  return { current, result, running: current?.status === 'running' };
+}
+
 // Reading a tab never starts paid work. Both modules keep their own daily server cache.
 export function useDailyConceptRun<Result>(endpoint: string, label: string) {
-  type Run = Omit<ConceptRun, 'result' | 'previousResult'> & { result: Result | null; previousResult?: Result | null };
+  type Run = DailyConceptRun<Result>;
   const [run, setRun] = useState<Run | null>(null);
   const [readError, setReadError] = useState<string | null>(null);
   const [submissionFailure, setSubmissionFailure] = useState<(SubmissionFailure & { runDate: string }) | null>(null);
@@ -39,10 +51,9 @@ export function useDailyConceptRun<Result>(endpoint: string, label: string) {
     return () => { stop(); if (stopPollingRef.current === stop) stopPollingRef.current = null; };
   }, [endpoint, label, revision, today]);
 
-  const current = run?.runDate === today ? run : null;
+  const { current, result, running } = dailyConceptRunState(run, today);
   const requestError = submissionMessage(submissionFailure?.runDate === today ? submissionFailure : null, current?.startedAt) || readError;
-  const result = current?.status === 'succeeded' ? current.result : current?.previousResult ?? null;
-  const busy = submitting || current?.status === 'running';
+  const busy = submitting || running;
 
   async function generate() {
     if (submittingRef.current || busy || !current || current.status === 'not_configured') return;

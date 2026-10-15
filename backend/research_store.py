@@ -119,12 +119,15 @@ def cache_get(key: str, max_age: float | None = None):
 
 def cache_put(key: str, value) -> None:
     from . import database
+    from .history_cache import ARCHIVE_DAYS
     with database._write_lock, database.connection() as db:
         db.execute("INSERT OR REPLACE INTO research_cache VALUES (?,?,?)",
                    (key, json.dumps(value, ensure_ascii=False, separators=(",", ":")), database.now_iso()))
         cutoff = (datetime.now(database.CHINA_TZ) - timedelta(days=7)).isoformat()
         db.execute("""DELETE FROM research_cache WHERE updated_at < ?
-            AND cache_key NOT IN ('latest-market','latest-sectors','rotation','rotation-snapshot')""", (cutoff,))
+            AND NOT (cache_key LIKE 'evaluation:%:archive' AND updated_at >= ?)
+            AND cache_key NOT IN ('latest-market','latest-sectors','rotation','rotation-snapshot')""",
+                   (cutoff, (datetime.now(database.CHINA_TZ) - timedelta(days=ARCHIVE_DAYS)).isoformat()))
 
 
 def save_universe(boards: list[dict], as_of: str, scope: str | None = None) -> dict:

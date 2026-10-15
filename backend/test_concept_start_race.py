@@ -17,7 +17,7 @@ class ConcurrentStartTests(unittest.IsolatedAsyncioTestCase):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         for target in (patch.object(database, "DATABASE_PATH", Path(directory.name) / "test.sqlite3"),
-                       patch.dict(os.environ, {"GLM_API_KEY": "test-only"})):
+                       patch.dict(os.environ, {"DEEPSEEK_API_KEY": "test-only"})):
             target.start()
             self.addCleanup(target.stop)
         database.initialize()
@@ -62,9 +62,9 @@ class ConcurrentStartTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(worker.call_count, 2)
 
     async def test_overlapping_forecast_refreshes_do_not_launch_again_after_fast_completion(self):
-        await self.check_shared_start(concept_forecast, "forecast:glm", concept_forecast.get_forecast_run,
+        await self.check_shared_start(concept_forecast, concept_forecast.RUN_NAMESPACE, concept_forecast.get_forecast_run,
                                       concept_forecast.start_forecast_run)
 
     async def test_overlapping_concept_refreshes_do_not_launch_again_after_fast_completion(self):
-        await self.check_shared_start(concept_ai, "concept:glm", concept_ai.get_concept_run,
+        await self.check_shared_start(concept_ai, concept_ai.RUN_NAMESPACE, concept_ai.get_concept_run,
                                       concept_ai.start_concept_run)

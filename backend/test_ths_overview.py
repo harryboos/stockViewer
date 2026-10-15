@@ -79,6 +79,25 @@ class THSOverviewTests(unittest.TestCase):
         self.assertEqual(result["refreshStatus"], "partial")
         self.assertEqual(result["industryBoards"], [])
         self.assertEqual(result["summary"]["industryCount"], 0)
+        self.assertEqual(result["coverage"]["industry"]["eligibleCount"], 0)
+
+    def test_full_verified_sample_reaches_discovery_beyond_display_limit(self):
+        concept = frame("concept")
+        template = concept.iloc[0].to_dict()
+        concept = pd.DataFrame([{**template, "板块代码": f"THS:{885001 + i}", "板块名称": f"测试概念{i}",
+                                 "涨跌幅": 4 - i / 10} for i in range(48)])
+        concept.attrs = {"coverage": {"kind": "sample", "directoryTotal": 361,
+                                     "mappedCandidates": 293, "requestedCount": 48, "validCount": 48,
+                                     "isComplete": False}, "warnings": []}
+        with (patch.object(ths_client, "board_frame", side_effect=lambda kind, **_: concept if kind == "concept" else frame(kind)),
+              patch.object(ths_client, "strong_stocks", return_value=[])):
+            result = self.service.sector_overview(True)
+        self.assertEqual(len(result["conceptBoards"]), 6)
+        self.assertEqual(len(result["forecastDiscoveryBoards"]), 48)
+        self.assertEqual(len(result["conceptUniverse"]), 48)
+        self.assertEqual(result["coverage"]["concept"]["eligibleCount"], 48)
+        self.assertEqual(result["coverage"]["concept"]["directoryTotal"], 361)
+        self.assertFalse(result["coverage"]["concept"]["isComplete"])
 
     def test_ths_history_and_members_do_not_request_eastmoney(self):
         client = concept_data.ConceptResearchClient()

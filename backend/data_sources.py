@@ -471,8 +471,10 @@ class MarketDataService:
         try:
             with self._baostock_session() as bs:
                 return self._query_baostock_history(bs, symbol, start, end)
-        except RuntimeError:
-            return []
+        except Exception as error:
+            # Research workers distinguish failed reads from successful empty
+            # histories. Never turn a login/transport failure into missing bars.
+            raise RuntimeError("个股日线来源暂不可用，尚未取得完整查询结果，请稍后重试") from error
 
     @staticmethod
     def _query_baostock_history(bs: Any, symbol: str, start: date, end: date) -> list[dict[str, Any]]:
@@ -503,6 +505,14 @@ class MarketDataService:
                     "pb": number_or_none(raw.get("pbMRQ")),
                 }
             )
+        if result.error_code != "0":
+            raise RuntimeError("BaoStock 日线查询失败，未取得完整行情")
+        # BaoStock's next() can return False on a disconnected page fetch
+        # without changing error_code or clearing the previous full page. A
+        # normal end has a short/empty page (or a non-paged oversized response).
+        page = getattr(result, "data", None)
+        if isinstance(page, list) and page and len(page) == number_or_none(getattr(result, "per_page_count", None)):
+            raise RuntimeError("BaoStock 日线分页中断，未取得完整行情")
         return rows
 
     def history_batch(self, symbols: list[str], days: int = 420) -> dict[str, list[dict[str, Any]]]:

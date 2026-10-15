@@ -66,6 +66,10 @@ def sector_overview(service, force: bool = False) -> dict:
         for kind in ("concept", "industry"):
             value = frames.get(kind)
             rows[kind] = service._board_rows(kind, value[0], None, []) if value and target and value[1].date() == target[1].date() else []
+            if kind in coverage:
+                # Quotes excluded by date/style checks must not count as
+                # available inputs to downstream candidate discovery.
+                coverage[kind] = {**coverage[kind], "eligibleCount": len(rows[kind])}
         if not rows["concept"]:
             message = "同花顺概念样本暂未取得有效行情" + ("；" + "；".join(errors) if errors else "")
             if isinstance(cached, dict) and cached.get("conceptBoards"):
@@ -92,8 +96,8 @@ def sector_overview(service, force: bool = False) -> dict:
         turnover = sorted((row for row in boards if row.get("amount") is not None),
                           key=lambda row: row["amount"], reverse=True)[:SECTOR_TURNOVER_LIMIT]
         warnings.extend(errors)
-        warnings.append("同花顺公开榜单活跃样本，非全市场；未取得的资金流和昨日成交额显示为空")
-        scope = f"同花顺公开榜单活跃概念样本（本次核验 {len(rows['concept'])} 个，非全市场）"
+        warnings.append("同花顺公开概念多路抽样，非全市场；未取得的资金流和昨日成交额显示为空")
+        scope = f"同花顺公开概念多路样本（本次可用 {len(rows['concept'])} 个，非全市场）"
         now = database.now_iso()
         forecast_concepts = select_forecast_boards(rows["concept"])
         result = {
@@ -101,7 +105,7 @@ def sector_overview(service, force: bool = False) -> dict:
             "updatedAt": now, "refreshAttemptedAt": now,
             "refreshStatus": "succeeded" if rows["industry"] else "partial",
             "refreshError": None if rows["industry"] else "同花顺行业样本暂不可用；概念行情已更新",
-            "source": "同花顺公开板块行情（活跃样本）", "sourceProvider": "ths", "scope": scope,
+            "source": "同花顺公开板块行情（多路样本）", "sourceProvider": "ths", "scope": scope,
             "coverage": coverage,
             "summary": {"industryCount": len(rows["industry"]), "conceptCount": len(rows["concept"]),
                         "risingIndustryCount": sum(row["pctChg"] > 0 for row in rows["industry"]),

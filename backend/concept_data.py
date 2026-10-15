@@ -359,9 +359,13 @@ def candidate_view(board: dict, history: list[dict], stocks: list[dict], warning
 
 def collect_concept_evidence(*, forecast: bool = False, discovery_key: str | None = None) -> dict:
     overview, freshness_note = _concept_overview(forecast)
-    if forecast and overview.get("forecastDiscoveryBoards"):
+    if forecast:
         from .forecast_pipeline import collect_forecast_evidence
-        return collect_forecast_evidence(overview, freshness_note, discovery_key)
+        discovery = overview.get("forecastDiscoveryBoards") or overview.get("forecastConcepts") or [
+            *overview.get("researchConcepts", overview.get("conceptBoards", [])),
+            *(row for row in overview.get("turnoverBoards", []) if row.get("kind") == "concept")]
+        snapshot = {**overview, "forecastDiscoveryBoards": list({row["code"]: row for row in discovery}.values())}
+        return collect_forecast_evidence(snapshot, freshness_note, discovery_key)
     trade_date = overview["tradeDate"]
     diversified = forecast and "forecastConcepts" in overview
     board_candidates = overview["forecastConcepts"] if diversified else [

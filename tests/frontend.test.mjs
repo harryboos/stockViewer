@@ -684,7 +684,7 @@ test('forecast overview keeps three directions discoverable while focusing one d
 
 test('forecast task states show actionable recovery and real progress without claiming a result', async () => {
   const { ForecastTaskState } = await server.ssrLoadModule('/components/concept-forecast.tsx');
-  const base = { provider: 'glm', model: 'GLM 5.3 MAX', runDate: '2026-09-30', error: null, finishedAt: null };
+  const base = { provider: 'deepseek', model: 'deepseek-flash', runDate: '2026-09-30', error: null, finishedAt: null };
   const render = (props) => renderToStaticMarkup(createElement(ForecastTaskState, {
     busy: false, submitting: false, requestError: null, refresh() {}, ...props,
   }));
@@ -697,6 +697,13 @@ test('forecast task states show actionable recovery and real progress without cl
   const disconnected = render({ current: null, requestError: '暂时无法连接服务' });
   assert.ok(disconnected.includes('不会再次提交预测'));
   assert.ok(!disconnected.includes('正在读取当天预测'));
+  const unconfigured = render({ current: { ...base, status: 'not_configured' } });
+  assert.ok(unconfigured.includes('尚未配置 DeepSeek Flash · MAX'));
+  assert.ok(unconfigured.includes('填写 DeepSeek 的密钥'));
+  assert.ok(!unconfigured.includes('GLM 的密钥'));
+  const legacyRunning = render({ busy: true, current: { ...base, provider: 'glm', model: 'glm-5.3', status: 'running' } });
+  assert.ok(legacyRunning.includes('GLM 5.3 · MAX'));
+  assert.ok(!legacyRunning.includes('DeepSeek'));
 });
 
 test('forecast navigation contains prediction and historical feedback modules', async () => {
@@ -711,8 +718,100 @@ test('forecast navigation contains prediction and historical feedback modules', 
   assert.equal((html.match(/<h2 /g) || []).length, 1);
   assert.ok(html.includes('历史预测与准确率'));
   assert.ok(html.includes('未来半个月强势概念预测'));
-  assert.ok(html.includes('GLM 5.3 MAX'));
+  assert.ok(html.includes('DeepSeek Flash · MAX'));
+  assert.ok(!html.includes('GLM 5.3'));
   assert.ok(!html.includes('近期强势概念推荐'));
+});
+
+test('concept recommendations use the fixed DeepSeek Flash MAX label without changing daily GLM selections', async () => {
+  const html = renderToStaticMarkup(createElement(concepts.ConceptRecommendations));
+  assert.ok(html.includes('使用 DeepSeek Flash · MAX 深度分析'));
+  assert.ok(!html.includes('使用 GLM'));
+});
+
+test('historical prediction headings preserve the recorded model and do not relabel GLM results', async () => {
+  const { ForecastHistoryHeading } = await server.ssrLoadModule('/components/forecast-history.tsx');
+  const { researchModelLabel, activeConceptModelLabel } = await server.ssrLoadModule('/lib/concept-model.ts');
+  const base = { id: 9, runDate: '2026-09-17', publishedAt: '2026-09-17T00:38:00+08:00',
+    includedInStats: true, conceptProvider: 'eastmoney' };
+  const render = (model, promptVersion) => renderToStaticMarkup(createElement(ForecastHistoryHeading, {
+    entry: { ...base, model, promptVersion },
+  }));
+  const legacy = render('glm-5.3', 'forecast-v7-discovery-risk-evaluation-glm53-max');
+  assert.ok(legacy.includes('GLM 5.3 · MAX'));
+  assert.ok(!legacy.includes('DeepSeek'));
+  assert.ok(legacy.includes('当日首次 · 计入统计'));
+  const latest = render('deepseek-flash', 'forecast-v10-complete-history-deepseek-flash-max');
+  assert.ok(latest.includes('DeepSeek Flash · MAX'));
+  assert.equal(researchModelLabel('glm-5.3', null), 'GLM 5.3');
+  assert.equal(researchModelLabel('earlier-custom-model', null), 'earlier-custom-model');
+  assert.equal(researchModelLabel(null, null), '模型未记录');
+  assert.equal(activeConceptModelLabel({ provider: 'glm', model: 'glm-5.3' }), 'GLM 5.3 · MAX');
+  assert.equal(activeConceptModelLabel({ provider: 'deepseek', model: 'deepseek-flash' }), 'DeepSeek Flash · MAX');
+  assert.equal(activeConceptModelLabel({ provider: 'forecast:glm', model: null }), 'GLM 5.3 · MAX');
+  assert.equal(activeConceptModelLabel({ provider: 'concept:deepseek', model: null }), 'DeepSeek Flash · MAX');
+});
+
+test('operations route research namespaces to their own endpoints and retain each recorded model', async () => {
+  const { aiTaskEndpoint, AiAnalysisTask } = await server.ssrLoadModule('/components/research-panels.tsx');
+  for (const provider of ['deepseek', 'glm']) {
+    assert.equal(aiTaskEndpoint(`forecast:${provider}`), '/api/forecast/concepts');
+    assert.equal(aiTaskEndpoint(`concept:${provider}`), '/api/market/concepts/ai');
+    assert.equal(aiTaskEndpoint(provider), `/api/strategies/ai?provider=${provider}`);
+  }
+  assert.equal(aiTaskEndpoint('qwen'), '/api/strategies/ai?provider=qwen');
+  const render = (run) => renderToStaticMarkup(createElement(AiAnalysisTask, { run, busy: null, onRun: () => {} }));
+  const forecast = render({ provider: 'forecast:deepseek', model: 'deepseek-flash',
+    promptVersion: 'forecast-v10-complete-history-deepseek-flash-max', status: 'failed' });
+  assert.ok(forecast.includes('半个月预测'));
+  assert.ok(forecast.includes('DeepSeek Flash · MAX'));
+  assert.ok(forecast.includes('仅重试此 AI 任务'));
+  assert.ok(!forecast.includes('forecast:deepseek 选股'));
+  const concept = render({ provider: 'concept:deepseek', model: 'deepseek-flash',
+    promptVersion: 'concept-v6-deepseek-flash-max', status: 'succeeded' });
+  assert.ok(concept.includes('近期概念推荐'));
+  assert.ok(concept.includes('DeepSeek Flash · MAX'));
+  const legacy = render({ provider: 'forecast:glm', model: 'glm-5.3',
+    promptVersion: 'forecast-v9-complete-history-coverage-glm53-max', status: 'running', stage: '分析中' });
+  assert.ok(legacy.includes('GLM 5.3 · MAX'));
+  assert.ok(legacy.includes('运行中 · 分析中'));
+  assert.match(legacy, /<button[^>]*disabled=""/);
+  assert.ok(!legacy.includes('DeepSeek'));
+  const original = render({ provider: 'glm', model: 'glm-5.3', status: 'idle' });
+  assert.ok(original.includes('<small>glm-5.3</small>'));
+  assert.ok(!original.includes('MAX'));
+  const migratedRunning = render({ provider: 'forecast:deepseek', model: 'glm-5.3', status: 'running' });
+  assert.ok(migratedRunning.includes('GLM 5.3 · MAX'), 'actual running model takes precedence over namespace');
+  assert.ok(!migratedRunning.includes('DeepSeek'));
+});
+
+test('daily research keeps overnight running tasks visible without borrowing yesterday\'s result', async () => {
+  const { dailyConceptRunState } = await server.ssrLoadModule('/lib/use-daily-concept-run.ts');
+  const { ForecastTaskState } = await server.ssrLoadModule('/components/concept-forecast.tsx');
+  const yesterday = { provider: 'glm', model: 'glm-5.3', runDate: '2026-10-15', status: 'running',
+    result: { summary: '旧结果' }, previousResult: { summary: '昨天上次结果' },
+    stage: '正在分析', startedAt: '2026-10-15T23:58:00+08:00' };
+  const overnight = dailyConceptRunState(yesterday, '2026-10-16');
+  assert.equal(overnight.current, yesterday);
+  assert.equal(overnight.current.runDate, '2026-10-15');
+  assert.equal(overnight.running, true);
+  assert.equal(overnight.result, null);
+  const html = renderToStaticMarkup(createElement(ForecastTaskState, {
+    current: overnight.current, busy: overnight.running, submitting: false, requestError: null, refresh() {},
+  }));
+  assert.ok(html.includes('GLM 5.3 · MAX · 预测任务进行中'));
+  assert.ok(!html.includes('正在读取当天预测'));
+  for (const status of ['succeeded', 'failed', 'idle']) {
+    assert.deepEqual(dailyConceptRunState({ ...yesterday, status }, '2026-10-16'),
+      { current: null, result: null, running: false });
+  }
+  const today = { ...yesterday, provider: 'deepseek', model: 'deepseek-flash', runDate: '2026-10-16' };
+  assert.equal(dailyConceptRunState(today, '2026-10-16').result, today.previousResult);
+  assert.equal(dailyConceptRunState({ ...today, status: 'succeeded' }, '2026-10-16').result, today.result);
+  const idle = dailyConceptRunState({ ...today, status: 'idle', result: null, previousResult: null }, '2026-10-16');
+  assert.equal(idle.running, false);
+  assert.equal(idle.current.status, 'idle');
+  assert.equal(idle.result, null);
 });
 
 test('forecast proxy blocks cross-site paid calls and forwards its own route', async (t) => {

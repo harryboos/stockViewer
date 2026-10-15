@@ -4,9 +4,10 @@ import copy
 import unittest
 from unittest.mock import patch
 
-from backend import concept_forecast, concept_news, database
+from backend import concept_ai, concept_forecast, concept_news, database
 from backend.research_prompt import prepare_research_evidence
 from backend.test_concept_forecast import forecast_evidence, forecast_result
+from backend.test_concept_ai import evidence_fixture, result_fixture
 
 
 def evidence_at_decision():
@@ -83,6 +84,43 @@ class ResearchEvidenceTests(unittest.TestCase):
 
 
 class ForecastPromptIterationTests(unittest.TestCase):
+    def test_hypothesis_background_citations_are_removed_without_upgrading_or_mutating_inputs(self):
+        evidence = evidence_at_decision()
+        raw = forecast_result()
+        for field in ("technical", "fundamental", "news"):
+            raw["concepts"][0][field]["status"] = "hypothesis"
+        raw["concepts"][0]["catalysts"][0]["status"] = "hypothesis"
+        original = copy.deepcopy((raw, evidence))
+        report = concept_forecast.assemble_result(raw, evidence)
+        result = report["concepts"][0]
+        for field in ("technical", "fundamental", "news"):
+            self.assertEqual(result[field]["status"], "hypothesis")
+            self.assertEqual(result[field]["sources"], [])
+        self.assertEqual(result["catalysts"][0]["sources"], [])
+        self.assertEqual(result["catalysts"][0]["status"], "hypothesis")
+        self.assertEqual(result["conviction"], "low")
+        corrections = [warning for warning in result["warnings"] if "背景引用已移除" in warning]
+        self.assertEqual(len(corrections), 2)  # One notice per kind of correction.
+        self.assertEqual((raw, evidence), original)
+        self.assertFalse(any("背景引用已移除" in warning
+                             for warning in report["candidateAudit"]["candidates"][0]["warnings"]))
+
+    def test_hypotheses_cannot_hide_fabricated_cross_concept_or_wrong_kind_sources(self):
+        for invalid_id in ("BK9999:news:1", "BK1001:news:invented", "BK1001:market", "BK1001:fundamentals"):
+            with self.subTest(invalid_id=invalid_id):
+                raw = forecast_result()
+                raw["concepts"][0]["news"].update(status="hypothesis", evidenceIds=["BK1001:news:1", invalid_id])
+                with self.assertRaises(ValueError):
+                    concept_forecast.assemble_result(raw, evidence_at_decision())
+
+    def test_recommendation_hypotheses_also_keep_their_uncertainty_without_citations(self):
+        raw = result_fixture()
+        raw["concepts"][0]["drivers"][1]["evidenceIds"] = ["BK1001:market"]
+        result = concept_ai.assemble_result(raw, evidence_fixture())["concepts"][0]
+        self.assertEqual(result["drivers"][1]["kind"], "hypothesis")
+        self.assertEqual(result["drivers"][1]["sources"], [])
+        self.assertTrue(any("背景引用已移除" in warning for warning in result["warnings"]))
+
     def test_valuation_alone_cannot_certify_operating_fundamentals(self):
         raw = forecast_result()
         raw["concepts"][0]["fundamental"]["evidenceIds"] = ["BK1001:fundamentals"]

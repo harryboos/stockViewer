@@ -16,7 +16,7 @@ from .concept_ai import Catalyst, ResearchModel, StockChoice, MODEL, PROVIDER
 from .forecast_limits import DATA_TIMEOUT_SECONDS, FEEDBACK_TIMEOUT_SECONDS, MODEL_TIMEOUT_SECONDS, RUN_TIMEOUT_SECONDS
 from .concept_data import collect_concept_evidence, concept_snapshot_warning
 from .concept_identity import CONCEPT_CODE_PATTERN
-from .concept_news import enrich_world_news
+from .concept_news import enrich_world_news, news_search_key
 from .forecast_data import forecast_window
 from .forecast_history import feedback_context
 from .forecast_review import REVIEW_INSTRUCTION, candidate_audit
@@ -26,8 +26,8 @@ from .research_prompt import (
 )
 from .run_dispatch import current_run, launch_claimed_run, shared_start
 
-PROMPT_VERSION = "forecast-v7-discovery-risk-evaluation-glm53-max"
-RUN_NAMESPACE = "forecast:glm"
+PROMPT_VERSION = "forecast-v10-complete-history-deepseek-flash-max"
+RUN_NAMESPACE = f"forecast:{PROVIDER}"
 logger = logging.getLogger(__name__)
 _tasks: set[asyncio.Task] = set()
 _evidence_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="forecast-evidence")
@@ -63,6 +63,7 @@ def prompt_evidence(evidence: dict) -> dict:
     compact = copy.deepcopy({key: value for key, value in evidence.items()
                              if not key.startswith("_") and key not in {"comparisonUniverse", "evaluationPlan"}})
     compact.get("candidateSelection", {}).pop("baseline", None)
+    compact.get("candidateSelection", {}).get("historyQuality", {}).pop("excluded", None)
     for pair in compact.get("riskContext", {}).get("pairs", []):
         # Keep actual dates/counts and unavailable reasons; repeated source prose
         # for every one of the 66 possible pairs needlessly inflates MAX input.
@@ -189,6 +190,9 @@ def assemble_result(raw: dict, evidence: dict) -> dict:
             raise ValueError("预测返回了候选池外或重复的概念")
         seen.add(choice.code)
         candidate = pool[choice.code]
+        if candidate.get("historyQuality", {}).get("status") != "ready":
+            raise ValueError("预测概念尚未通过最近21个交易日技术历史核验，不能仅凭当日表现生成预测")
+        warnings = list(candidate.get("warnings", []))
         references = {ref["id"]: ref for ref in candidate["evidence"]}
 
         news_ids = {ref for ref, source in references.items() if source["kind"] == "news"}
@@ -199,10 +203,10 @@ def assemble_result(raw: dict, evidence: dict) -> dict:
                        else news_ids)
             assessments[field] = {**view.model_dump(exclude={"evidenceIds"}),
                                   "sources": cited_sources(view.evidenceIds, references, allowed,
-                                                           supported=view.status == "supported", context="预测判断")}
+                                                           supported=view.status == "supported", context="预测判断", warnings=warnings)}
         catalysts = [{**item.model_dump(exclude={"evidenceIds"}),
                       "sources": cited_sources(item.evidenceIds, references, news_ids,
-                                               supported=item.status == "reported", context="预测判断")}
+                                               supported=item.status == "reported", context="现实催化", warnings=warnings)}
                      for item in choice.catalysts]
         stocks = selected_stocks(candidate, choice.stocks)
         incomplete = (not stocks or candidate["technicalData"]["ma20"] is None
@@ -213,7 +217,7 @@ def assemble_result(raw: dict, evidence: dict) -> dict:
             "thesis": choice.thesis, "conviction": "low" if incomplete else choice.conviction,
             "confirmation": choice.confirmation, "invalidation": choice.invalidation,
             **assessments, "catalysts": catalysts,
-            "stocks": stocks,
+            "stocks": stocks, "warnings": warnings,
         })
     return {"summary": parsed.summary, "concepts": concepts, "conceptProvider": provider, "decisionAt": evidence["decisionAt"],
             "candidateAudit": candidate_audit(evidence, seen),
@@ -235,7 +239,7 @@ def get_forecast_run(*, include_result: bool = True) -> dict:
     if base["status"] == "not_configured":
         return base
     current = current_run(RUN_NAMESPACE, base["runDate"], MODEL, PROMPT_VERSION, include_result=include_result)
-    return {**base, **current, "provider": PROVIDER} if current else base
+    return {**base, **current, "provider": current["provider"].split(":")[-1]} if current else base
 
 
 async def _execute(run_date: str, key: str, token: str) -> None:
@@ -245,7 +249,7 @@ async def _execute(run_date: str, key: str, token: str) -> None:
     stage = "market_data"
     started = asyncio.get_running_loop().time()
     stage_labels = {"market_data": "概念行情收集", "feedback": "历史反馈读取", "news": "时事新闻检索",
-                    "model": "GLM 深度分析及高峰重试等待", "validation": "预测结果核对"}
+                    "model": "DeepSeek 深度分析及高峰重试等待", "validation": "预测结果核对"}
 
     async def set_stage(value: str) -> None:
         nonlocal stage
@@ -256,7 +260,8 @@ async def _execute(run_date: str, key: str, token: str) -> None:
 
     async def generate() -> dict:
         await set_stage("market_data")
-        evidence = await asyncio.wait_for(collect_evidence(key), timeout=DATA_TIMEOUT_SECONDS)
+        search_key = news_search_key()
+        evidence = await asyncio.wait_for(collect_evidence(search_key), timeout=DATA_TIMEOUT_SECONDS)
         _candidate_provider(evidence)
         evidence["window"] = forecast_window(run_date)
         await set_stage("feedback")
@@ -268,10 +273,10 @@ async def _execute(run_date: str, key: str, token: str) -> None:
             evidence.setdefault("warnings", []).append("历史反馈暂不可用，本次预测未参考历史复盘")
             logger.warning("forecast_feedback_unavailable run_date=%s error_type=%s", run_date, type(exc).__name__)
         if not evidence["candidates"]:
-            return {**{key: evidence[key] for key in ("window", "tradeDate", "dataAsOf", "scope", "warnings")},
-                    "summary": "暂未取得足够的概念行情，当前无法形成有依据的半个月预测。", "concepts": []}
+            return {**assemble_result({"summary": "候选概念尚未具备最近21个交易日完整且与快照日期一致的技术历史，本次暂不生成预测。请待行情补齐后重新分析。",
+                                       "concepts": []}, evidence), "dataStatus": "unavailable"}
         await set_stage("news")
-        evidence = await enrich_world_news(evidence, key, forecast=True)
+        evidence = await enrich_world_news(evidence, search_key, forecast=True)
         evidence["decisionAt"] = database.now_iso()
         evidence = prepare_research_evidence(evidence)
         if "_histories" in evidence:
@@ -286,6 +291,10 @@ async def _execute(run_date: str, key: str, token: str) -> None:
 
     try:
         result = await asyncio.wait_for(generate(), timeout=RUN_TIMEOUT_SECONDS)
+        if result.get("dataStatus") == "unavailable":
+            # Keep diagnostic coverage, but do not archive a data outage as an
+            # AI abstention or consume the day's first statistical forecast.
+            error = result["summary"]
     except TimeoutError:
         error = ("预测任务总等待超时，尚未完成结果核对，请稍后重试" if stage == "model" else
                  f"{stage_labels[stage]}超时，请稍后重试")

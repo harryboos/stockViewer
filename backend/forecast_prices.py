@@ -14,6 +14,7 @@ from .concept_data import ConceptResearchClient
 from .history_sources import (
     TushareHistoryClient, history_covers_window, normalize_bars, sina_index_history, ths_concept_history, validate_window,
 )
+from .market_numbers import number_or_none
 
 CALENDAR_KEY = "forecast_trade_calendar:v1"
 logger = logging.getLogger(__name__)
@@ -102,13 +103,21 @@ class FeedbackPriceClient(ConceptResearchClient):
         payload = self._json([
             "https://91.push2his.eastmoney.com/api/qt/stock/kline/get",
             "https://push2his.eastmoney.com/api/qt/stock/kline/get",
+            "https://7.push2his.eastmoney.com/api/qt/stock/kline/get",
         ], {"secid": secid, "klt": "101", "fqt": "0", "lmt": "1000",
-            "fields1": "f1,f2,f3,f4,f5,f6", "fields2": "f51,f52,f53,f54,f55,f56,f57",
+            "fields1": "f1,f2,f3,f4,f5,f6", "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59",
             "beg": start.replace("-", ""), "end": end.replace("-", "")})
         data = payload.get("data") or {}
         if not isinstance(data, dict) or str(data.get("code")) != code.removeprefix("sh"):
             raise ValueError("历史行情返回的标的代码不匹配")
-        bars = normalize_bars([str(row).split(",") for row in data.get("klines", [])], start, end)
+        raw = [str(row).split(",") for row in data.get("klines", [])]
+        bars = normalize_bars(raw, start, end)
+        extra = {row[0]: row for row in raw}
+        for row in bars:
+            fields = extra[row["date"]]
+            amount = number_or_none(fields[6]) if len(fields) > 6 else None
+            row["amount"] = amount if amount is not None and amount >= 0 else None
+            row["pctChg"] = number_or_none(fields[8]) if len(fields) > 8 else None
         return {"rows": bars, "source": "东方财富日线（不复权）",
                 "url": f"https://quote.eastmoney.com/{'bk/90.' + code if code.startswith('BK') else 'zs' + code[2:]}.html"}
 

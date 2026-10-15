@@ -32,6 +32,7 @@ def forecast_evidence():
     candidate = evidence["candidates"][0]
     candidate["stocks"][0].update(peDynamic=23.5, pb=2.1, marketCap=2_000_000_000)
     add_forecast_metrics(candidate, history_fixture(), evidence["dataAsOf"])
+    candidate["historyQuality"] = {"status": "ready", "requiredSessions": 21, "validSessions": 21}
     candidate["evidence"].append({"id": "BK1001:news:1", "kind": "news", "title": "行业订单公告",
                                   "source": "测试公告源", "publishedAt": evidence["dataAsOf"],
                                   "url": "https://example.org/order", "excerpt": "测试订单资料"})
@@ -85,11 +86,15 @@ class ForecastEvidenceTests(unittest.TestCase):
         with (patch.object(database, "now_iso", return_value=overview["updatedAt"]),
               patch.object(concept_data.market_data, "sector_overview", return_value=overview),
               patch.object(concept_data.ConceptResearchClient, "daily_history", return_value=[]),
+              patch("backend.forecast_pipeline.cached_histories", return_value={"BK1001": history_fixture()}),
+              patch("backend.forecast_prices.FeedbackPriceClient.calendar", return_value=[row["date"] for row in history_fixture()]),
+              patch("backend.research_data.index_history", return_value={"rows": []}),
               patch.object(concept_data.ConceptResearchClient, "strong_stocks", return_value=[])):
             self.assertEqual(concept_data.collect_concept_evidence()["candidates"], [])
             candidate = concept_data.collect_concept_evidence(forecast=True)["candidates"][0]
             self.assertEqual(candidate["code"], "BK1001")
-            self.assertIsNone(candidate["technicalData"]["ma20"])
+            self.assertIsNotNone(candidate["technicalData"]["ma20"])
+            self.assertEqual(candidate["historyQuality"]["status"], "ready")
             self.assertEqual(candidate["fundamentalData"]["coverage"], "missing")
 
     def test_forecast_search_looks_for_forward_industry_factors(self):
@@ -100,6 +105,12 @@ class ForecastEvidenceTests(unittest.TestCase):
 
 
 class ForecastValidationTests(unittest.TestCase):
+    def test_model_cannot_promote_a_candidate_without_verified_history(self):
+        evidence = forecast_evidence()
+        for quality in ({}, {"status": "incomplete"}, {"status": "calendar_unavailable"}):
+            evidence["candidates"][0]["historyQuality"] = quality
+            with self.subTest(quality=quality), self.assertRaisesRegex(ValueError, "21个交易日"):
+                forecast.assemble_result(forecast_result(), evidence)
     def test_prompt_compacts_duplicate_metrics_without_losing_news_or_mutating_evidence(self):
         evidence = forecast_evidence()
         original = copy.deepcopy(evidence)
@@ -147,8 +158,11 @@ class ForecastValidationTests(unittest.TestCase):
         raw["concepts"][0]["news"].update(status="hypothesis", evidenceIds=[])
         self.assertEqual(forecast.assemble_result(raw, forecast_evidence())["concepts"][0]["conviction"], "low")
         raw["concepts"][0]["news"]["evidenceIds"] = ["BK1001:news:1"]
-        with self.assertRaises(ValueError):
-            forecast.assemble_result(raw, forecast_evidence())
+        normalized = forecast.assemble_result(raw, forecast_evidence())["concepts"][0]
+        self.assertEqual(normalized["news"]["sources"], [])
+        self.assertEqual(normalized["news"]["status"], "hypothesis")
+        self.assertEqual(normalized["conviction"], "low")
+        self.assertTrue(any("背景引用已移除" in note for note in normalized["warnings"]))
         self.assertEqual(forecast.assemble_result({"summary": "资料不足，暂时没有足够有依据的预测方向。", "concepts": []}, evidence)["concepts"], [])
 
 
@@ -161,11 +175,58 @@ class ForecastRunTests(unittest.IsolatedAsyncioTestCase):
                        patch.object(forecast, "concept_snapshot_warning", side_effect=lambda *args, **kwargs:
                                     concept_data.concept_snapshot_warning(*args, **kwargs,
                                         now=datetime(2026, 9, 11, 14, tzinfo=database.CHINA_TZ))),
-                       patch.dict(os.environ, {"GLM_API_KEY": "test-key", "GLM_MODEL": "wrong-model"}, clear=True),
+                       patch.dict(os.environ, {"GLM_API_KEY": "search-test-key", "GLM_MODEL": "wrong-model",
+                                               "DEEPSEEK_API_KEY": "deepseek-test-key", "DEEPSEEK_MODEL": "wrong-model"}, clear=True),
                        patch.object(forecast, "enrich_world_news", new_callable=AsyncMock, side_effect=lambda evidence, key, **kw: evidence)):
             target.start()
             self.addCleanup(target.stop)
         database.initialize()
+
+    async def test_no_eligible_history_saves_coverage_and_does_not_call_model_or_targeted_search(self):
+        evidence = forecast_evidence()
+        evidence["candidates"] = []
+        evidence["candidateSelection"] = {"historyQuality": {"eligibleCount": 0, "excludedCount": 8}}
+        with (patch.object(forecast, "collect_concept_evidence", return_value=evidence),
+              patch.object(forecast, "feedback_context", return_value={}),
+              patch.object(ai, "_call_compatible", new_callable=AsyncMock) as model):
+            await forecast.start_forecast_run()
+            await asyncio.gather(*list(forecast._tasks))
+        run = forecast.get_forecast_run()
+        self.assertEqual(run["status"], "failed")
+        self.assertEqual(run["result"]["dataStatus"], "unavailable")
+        self.assertEqual(run["result"]["candidateSelection"]["historyQuality"]["excludedCount"], 8)
+        self.assertEqual(run["result"]["concepts"], [])
+        model.assert_not_awaited()
+        forecast.enrich_world_news.assert_not_awaited()
+        from backend.forecast_history import history_payload
+        self.assertEqual(history_payload()["totalReports"], 0)
+        # Recovery is the first real forecast; no force flag is needed and the
+        # earlier source failure cannot turn it into a non-statistical rerun.
+        with (patch.object(forecast, "collect_concept_evidence", return_value=forecast_evidence()),
+              patch.object(ai, "_call_compatible", new_callable=AsyncMock, return_value=forecast_result())):
+            await forecast.start_forecast_run()
+            await asyncio.gather(*list(forecast._tasks))
+        self.assertEqual(forecast.get_forecast_run()["status"], "succeeded")
+        payload = history_payload()
+        self.assertEqual(payload["totalReports"], 1)
+        self.assertTrue(payload["reports"][0]["includedInStats"])
+
+    async def test_valid_background_citation_on_hypothesis_does_not_discard_run_or_recall_model(self):
+        raw = forecast_result()
+        raw["concepts"][0]["news"]["status"] = "hypothesis"
+        with (patch.object(forecast, "collect_concept_evidence", return_value=forecast_evidence()),
+              patch.object(forecast, "feedback_context", return_value={}),
+              patch.object(ai, "_call_compatible", new_callable=AsyncMock, return_value=raw) as model):
+            await forecast.start_forecast_run()
+            await asyncio.gather(*list(forecast._tasks))
+        run = forecast.get_forecast_run()
+        self.assertEqual(run["status"], "succeeded")
+        self.assertIsNone(run["error"])
+        concept = run["result"]["concepts"][0]
+        self.assertEqual(concept["news"]["sources"], [])
+        self.assertEqual(concept["conviction"], "low")
+        self.assertTrue(concept["warnings"])
+        model.assert_awaited_once()
 
     def test_deadlines_cover_all_stages_and_status_tracks_current_attempt(self):
         from backend import forecast_limits as limits, research_jobs
@@ -175,18 +236,18 @@ class ForecastRunTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(database.FORECAST_RUN_LEASE_SECONDS, limits.RUN_TIMEOUT_SECONDS)
         day = database.china_date()
         old = database.start_ai_run(forecast.RUN_NAMESPACE, forecast.MODEL, day, forecast.PROMPT_VERSION)
-        research_jobs.record_ai_stage(old, "GLM MAX 深度推理中")
-        self.assertEqual(forecast.get_forecast_run()["stage"], "GLM MAX 深度推理中")
+        research_jobs.record_ai_stage(old, "DeepSeek MAX 深度推理中")
+        self.assertEqual(forecast.get_forecast_run()["stage"], "DeepSeek MAX 深度推理中")
         self.assertEqual(forecast.get_forecast_run()["maxRunSeconds"], limits.RUN_TIMEOUT_SECONDS)
         database.finish_ai_run(forecast.RUN_NAMESPACE, day, None, "超时", old)
         current = database.start_ai_run(forecast.RUN_NAMESPACE, forecast.MODEL, day, forecast.PROMPT_VERSION)
         self.assertNotEqual(old, current)
         self.assertEqual(forecast.get_forecast_run()["stage"], "准备数据")
 
-    async def test_concurrent_generate_uses_glm_max_once_and_separate_daily_cache(self):
+    async def test_concurrent_generate_uses_deepseek_max_once_and_separate_daily_cache(self):
         day = database.china_date()
-        token = database.start_ai_run("concept:glm", "glm-5.3", day, concept_ai.PROMPT_VERSION)
-        database.finish_ai_run("concept:glm", day, {"summary": "原推荐缓存"}, None, token)
+        token = database.start_ai_run(concept_ai.RUN_NAMESPACE, concept_ai.MODEL, day, concept_ai.PROMPT_VERSION)
+        database.finish_ai_run(concept_ai.RUN_NAMESPACE, day, {"summary": "原推荐缓存"}, None, token)
         with (patch.object(forecast, "collect_concept_evidence", return_value=forecast_evidence()) as collect,
               patch.object(ai, "_call_compatible", new_callable=AsyncMock, return_value=forecast_result()) as model):
             await asyncio.gather(*(forecast.start_forecast_run(True) for _ in range(4)))
@@ -194,13 +255,14 @@ class ForecastRunTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(forecast.get_forecast_run()["status"], "succeeded")
             await forecast.start_forecast_run()
             self.assertEqual(model.await_count, 1)
-            self.assertEqual(model.await_args.args[0], "glm")
-            self.assertEqual(model.await_args.args[2], "glm-5.3")
+            self.assertEqual(model.await_args.args[0], "deepseek")
+            self.assertEqual(model.await_args.args[2:4], ("deepseek-flash", "deepseek-test-key"))
             self.assertEqual(model.await_args.kwargs["reasoning_effort"], "max")
             self.assertTrue(model.await_args.kwargs["resilient_stream"])
-            collect.assert_called_once_with(forecast=True, discovery_key="test-key")
+            collect.assert_called_once_with(forecast=True, discovery_key="search-test-key")
             forecast.enrich_world_news.assert_awaited_once()
             self.assertTrue(forecast.enrich_world_news.await_args.kwargs["forecast"])
+            self.assertEqual(forecast.enrich_world_news.await_args.args[1], "search-test-key")
             await forecast.start_forecast_run(True)
             await asyncio.gather(*list(forecast._tasks))
             self.assertEqual(model.await_count, 2)
@@ -229,6 +291,17 @@ class ForecastRunTests(unittest.IsolatedAsyncioTestCase):
                 release.set()
                 await asyncio.wrap_future(forecast._evidence_future)
 
+    async def test_forecast_without_search_key_keeps_deepseek_credentials_private(self):
+        with (patch.dict(os.environ, {"GLM_API_KEY": ""}),
+              patch.object(forecast, "collect_concept_evidence", return_value=forecast_evidence()) as collect,
+              patch.object(ai, "_call_compatible", new_callable=AsyncMock, return_value=forecast_result()) as model):
+            await forecast.start_forecast_run()
+            await asyncio.gather(*list(forecast._tasks))
+        self.assertEqual(forecast.get_forecast_run()["status"], "succeeded")
+        collect.assert_called_once_with(forecast=True)
+        self.assertEqual(forecast.enrich_world_news.await_args.args[1], "")
+        self.assertEqual(model.await_args.args[3], "deepseek-test-key")
+
     async def test_feedback_outage_preserves_prediction_but_reports_missing_feedback(self):
         with (patch.object(forecast, "collect_concept_evidence", return_value=forecast_evidence()),
               patch.object(forecast, "feedback_context", side_effect=RuntimeError("locked")),
@@ -243,11 +316,21 @@ class ForecastRunTests(unittest.IsolatedAsyncioTestCase):
     async def test_overload_recovers_through_real_transport_and_archives_once(self):
         from backend import glm_transport
 
-        responses = [httpx.Response(429, json={"error": {"code": "1305"}}),
+        responses = [httpx.Response(429, json={"error": {"type": "rate_limit_error"}}),
                      httpx.Response(200, headers={"content-type": "text/event-stream"},
                                     content=delta(json.dumps(forecast_result(), ensure_ascii=False), "stop"))]
+        def respond(request):
+            self.assertEqual(str(request.url), "https://api.deepseek.com/chat/completions")
+            self.assertEqual(request.headers["Authorization"], "Bearer deepseek-test-key")
+            body = json.loads(request.content)
+            self.assertEqual(body["model"], "deepseek-flash")
+            self.assertEqual(body["thinking"], {"type": "enabled"})
+            self.assertEqual(body["reasoning_effort"], "max")
+            self.assertTrue(body["stream"])
+            return responses.pop(0)
+
         with (patch.object(forecast, "collect_concept_evidence", return_value=forecast_evidence()),
-              mock_http(lambda request: responses.pop(0)),
+              mock_http(respond),
               patch.object(glm_transport.asyncio, "sleep", new_callable=AsyncMock) as sleep):
             await forecast.start_forecast_run()
             await asyncio.gather(*list(forecast._tasks))
@@ -318,16 +401,16 @@ class ForecastRunTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(forecast.get_forecast_run()["status"], "failed")
         self.assertIn("超时", forecast.get_forecast_run()["error"])
         day = database.china_date()
-        token = database.start_ai_run(forecast.RUN_NAMESPACE, "glm-5.3", day, forecast.PROMPT_VERSION)
+        token = database.start_ai_run(forecast.RUN_NAMESPACE, forecast.MODEL, day, forecast.PROMPT_VERSION)
         fifteen_minutes_ago = (datetime.now(database.CHINA_TZ) - timedelta(minutes=15)).isoformat(timespec="seconds")
         with database.connection() as db:
             db.execute("UPDATE ai_runs SET started_at = ? WHERE provider = ?", (fifteen_minutes_ago, forecast.RUN_NAMESPACE))
         self.assertEqual(forecast.get_forecast_run()["status"], "running")
-        self.assertIsNone(database.start_ai_run(forecast.RUN_NAMESPACE, "glm-5.3", day, forecast.PROMPT_VERSION, True))
+        self.assertIsNone(database.start_ai_run(forecast.RUN_NAMESPACE, forecast.MODEL, day, forecast.PROMPT_VERSION, True))
         expired = (datetime.now(database.CHINA_TZ) - timedelta(seconds=database.FORECAST_RUN_LEASE_SECONDS + 1)).isoformat(timespec="seconds")
         with database.connection() as db:
             db.execute("UPDATE ai_runs SET started_at = ? WHERE provider = ?", (expired, forecast.RUN_NAMESPACE))
-        new_token = database.start_ai_run(forecast.RUN_NAMESPACE, "glm-5.3", day, forecast.PROMPT_VERSION)
+        new_token = database.start_ai_run(forecast.RUN_NAMESPACE, forecast.MODEL, day, forecast.PROMPT_VERSION)
         database.finish_ai_run(forecast.RUN_NAMESPACE, day, {"summary": "新结果"}, None, new_token)
         database.finish_ai_run(forecast.RUN_NAMESPACE, day, {"summary": "已过期结果"}, None, token)
         self.assertEqual(forecast.get_forecast_run()["result"]["summary"], "新结果")

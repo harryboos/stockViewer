@@ -10,8 +10,13 @@ import { JobButton } from './research-common';
 import { startPolling } from '@/lib/polling';
 import { submissionMessage, type SubmissionFailure } from '@/lib/task-submission';
 import { ForecastEvaluation } from './forecast-evaluation';
+import { CONCEPT_MODEL_LABEL, researchModelLabel } from '@/lib/concept-model';
 
 const benchmarks = [['sh000001', '上证指数'], ['sh000688', '科创50']] as const;
+
+export function ForecastHistoryHeading({ entry }: { entry: HistoryEntry }) {
+  return <header><div><h4>{entry.runDate} 预测</h4><small>发布于 {timestamp(entry.publishedAt)} · 北京时间 · 版本 #{entry.id} · {researchModelLabel(entry.model, entry.promptVersion)}{entry.conceptProvider && ` · ${entry.conceptProvider === 'ths' ? '同花顺概念' : '东方财富概念'}`}</small></div><span className={`feedback-cohort ${entry.includedInStats ? 'primary' : ''}`}>{entry.includedInStats ? '当日首次 · 计入统计' : '重生成版本 · 不计统计'}</span></header>;
+}
 
 export function FeedbackSummaryCard({ days, summary }: { days: Horizon; summary: FeedbackSummary }) {
   return <article className="feedback-summary-card">
@@ -128,13 +133,13 @@ export function ForecastHistory({ finishedAt, renderResearch }: { finishedAt?: s
         <p>每个概念等权计算算术平均，例如 +8% 与 +10% 的平均涨幅为 +9%。上涨命中率是已到期有效样本中收益大于 0 的比例；跑赢率是超额收益大于 0 的比例。超额收益 = 概念涨幅 − 同一实际区间基准涨幅，单位为百分点。</p>
         <p>每个生成日只采用首次成功预测，重生成版本保留但不计入汇总；未选方向记为观望。缺行情不按 0 处理，基准缺失时只排除该项配对统计。重叠区间和重复概念不是独立样本，这些数字也不是资金组合收益。</p>
         <p>期间最高／最低涨幅相对首日开盘计算；最大回撤按每日收盘价和起始开盘价计算。上证指数代表大盘对照，科创50作为科创板对照。历史收益不代表真实交易收益，未计成本。</p>
-        <p>已到期的统计与近期案例会提供给下一次 GLM 5.3 MAX，帮助审视追涨、证据不足和催化失效风险；价格结果本身不能证明新闻因果或某项失效条件已经发生。更新反馈只读取行情，不额外调用 AI。</p>
+        <p>已到期的统计与近期案例会提供给下一次 {CONCEPT_MODEL_LABEL}，帮助审视追涨、证据不足和催化失效风险；价格结果本身不能证明新闻因果或某项失效条件已经发生。更新反馈只读取行情，不额外调用 AI，历史档案保留当时实际使用的模型。</p>
       </details>
       <div className="feedback-list-heading"><div><h3>预测档案</h3><p>{data.forecastDays} 个预测日 · {data.totalReports} 个版本 · {data.abstentionDays} 天观望</p></div><div className="feedback-periods" role="group" aria-label="历史表现观察周期">{(['15', '30'] as const).map(horizon => <button key={horizon} aria-pressed={days === horizon} onClick={() => setDays(horizon)}>{horizon === '15' ? '半个月' : '一个月'}</button>)}</div></div>
       <ForecastEvaluation data={data.evaluation} days={days} />
       {data.totalReports === 0 && <div className="concept-ai-state"><strong>还没有历史预测</strong><p>首次生成预测后会自动留档，随后跟踪实际行情。满 15 天、30 天且行情完整时，分别计入反馈统计；不会补造过去的预测。</p></div>}
       {data.page === page && data.reports.map(entry => <article className="feedback-report" key={entry.id}>
-        <header><div><h4>{entry.runDate} 预测</h4><small>发布于 {timestamp(entry.publishedAt)} · 北京时间 · 版本 #{entry.id}{entry.conceptProvider && ` · ${entry.conceptProvider === 'ths' ? '同花顺概念' : '东方财富概念'}`}</small></div><span className={`feedback-cohort ${entry.includedInStats ? 'primary' : ''}`}>{entry.includedInStats ? '当日首次 · 计入统计' : '重生成版本 · 不计统计'}</span></header>
+        <ForecastHistoryHeading entry={entry} />
         <HistoryReportTable entry={entry} days={days} />
         <ComparisonPanel reportId={entry.id} days={days} />
         <button className="feedback-original-button" aria-expanded={selected === entry.id} onClick={() => { setDetailError(null); setReport(null); setSelected(value => value === entry.id ? null : entry.id); }}>{selected === entry.id ? '收起当时预测' : '查看当时概念数据、强势股与预测依据'}</button>

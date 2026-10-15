@@ -26,7 +26,7 @@ KEY_NAMES: dict[Provider, tuple[str, ...]] = {
     "qwen": ("QWEN_API_KEY", "DASHSCOPE_API_KEY"),
 }
 DEFAULT_MODELS: dict[Provider, str] = {
-    "deepseek": "deepseek-chat",
+    "deepseek": "deepseek-flash",
     "glm": "glm-5.3",
     "qwen": "qwen3.8-max",
 }
@@ -303,21 +303,26 @@ async def _call_compatible(
     }
     if provider == "qwen":
         request["enable_thinking"] = False
-    if provider == "glm" and reasoning_effort:
+    if provider in ("glm", "deepseek") and reasoning_effort:
         request.update(thinking={"type": "enabled"}, reasoning_effort=reasoning_effort)
+        if provider == "deepseek":
+            request.pop("temperature", None)  # Sampling controls do not apply in thinking mode.
+    elif provider == "deepseek":
+        request["thinking"] = {"type": "disabled"}  # Preserve the daily snapshot's non-thinking strategy.
     transport = _post_json
     from .research_jobs import ai_token, record_ai_stage
     if not resilient_stream and ai_token.get():
         await asyncio.to_thread(record_ai_stage, ai_token.get(), "模型分析中", call=True)
     if resilient_stream:
-        if provider != "glm":
-            raise ValueError("长时研究流式请求仅用于 GLM")
+        if provider not in ("glm", "deepseek"):
+            raise ValueError("长时研究流式请求仅用于 GLM 或 DeepSeek")
         from .glm_transport import post_research
         transport = post_research
     payload = await transport(
         f"{base_url_for(provider)}/chat/completions",
         {"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
         request,
+        **({"provider": provider} if resilient_stream else {}),
         **({"timeout_seconds": timeout_seconds or 90.0} if resilient_stream or timeout_seconds is not None else {}),
     )
     try:

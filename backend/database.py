@@ -14,9 +14,12 @@ from .config import CHINA_TZ, DATABASE_PATH
 from .report_storage import decode_result, encode_result
 from . import storage_policy
 from .forecast_limits import RUN_LEASE_SECONDS as FORECAST_RUN_LEASE_SECONDS
+from .forecast_limits import CONCEPT_RUN_LEASE_SECONDS as CONCEPT_AI_RUN_LEASE_SECONDS
 
 logger = logging.getLogger(__name__)
 STORAGE_SCHEMA_VERSION = "1"
+CONCEPT_RUN_NAMESPACES = ("concept:glm", "concept:deepseek")
+FORECAST_RUN_NAMESPACES = ("forecast:glm", "forecast:deepseek")
 
 
 DEFAULT_WATCHLIST = [
@@ -113,7 +116,6 @@ SCHEMA = [
 
 _write_lock = threading.RLock()
 AI_RUN_LEASE_SECONDS = 180
-CONCEPT_AI_RUN_LEASE_SECONDS = 660
 
 
 def now_iso() -> str:
@@ -478,8 +480,13 @@ def read_ai_run(provider: str, run_date: str, *, include_result: bool = True) ->
     payload = "result_json" if include_result else "NULL"
     previous_payload = "previous_result_json" if include_result else "NULL"
     with connection() as db:
+        active = _active_research_run(db, provider)
+        if active is not None:
+            # A deployment may change models while the previous worker still
+            # owns its lease. Show that real task until it finishes or expires.
+            provider, run_date = active["provider"], active["run_date"]
         row = db.execute(
-            f"""SELECT provider, model, status, prompt_version AS promptVersion, started_at AS startedAt,
+            f"""SELECT provider, model, run_date AS runDate, status, prompt_version AS promptVersion, started_at AS startedAt,
             {payload} AS resultJson, error,
             {previous_payload} AS previousResultJson, previous_finished_at AS previousFinishedAt,
             finished_at AS finishedAt,
@@ -500,9 +507,23 @@ def read_ai_run(provider: str, run_date: str, *, include_result: bool = True) ->
 
 
 def _ai_lease_cutoff(provider: str | None = None) -> str:
-    seconds = (FORECAST_RUN_LEASE_SECONDS if provider == "forecast:glm" else
-               CONCEPT_AI_RUN_LEASE_SECONDS if provider == "concept:glm" else AI_RUN_LEASE_SECONDS)
+    seconds = (FORECAST_RUN_LEASE_SECONDS if provider in FORECAST_RUN_NAMESPACES else
+               CONCEPT_AI_RUN_LEASE_SECONDS if provider in CONCEPT_RUN_NAMESPACES else AI_RUN_LEASE_SECONDS)
     return (datetime.now(CHINA_TZ) - timedelta(seconds=seconds)).isoformat(timespec="seconds")
+
+
+def _research_namespaces(provider: str) -> tuple[str, ...]:
+    return (FORECAST_RUN_NAMESPACES if provider in FORECAST_RUN_NAMESPACES else
+            CONCEPT_RUN_NAMESPACES if provider in CONCEPT_RUN_NAMESPACES else ())
+
+
+def _active_research_run(db, provider: str):
+    namespaces = _research_namespaces(provider)
+    if not namespaces:
+        return None
+    return db.execute("""SELECT provider,run_date FROM ai_runs
+        WHERE provider IN (?,?) AND status='running' AND started_at>?
+        ORDER BY started_at DESC,id DESC LIMIT 1""", (*namespaces, _ai_lease_cutoff(provider))).fetchone()
 
 
 def start_ai_run(provider: str, model: str, run_date: str, prompt_version: str, force: bool = False) -> str | None:
@@ -510,6 +531,20 @@ def start_ai_run(provider: str, model: str, run_date: str, prompt_version: str, 
     token = uuid4().hex
     with _write_lock, connection() as db:
         db.execute("BEGIN IMMEDIATE")
+        if _active_research_run(db, provider) is not None:
+            return None
+        namespaces = _research_namespaces(provider)
+        if namespaces:
+            expired = db.execute("""SELECT id,run_token FROM ai_runs
+                WHERE provider IN (?,?) AND status='running' AND started_at<=?""",
+                                 (*namespaces, _ai_lease_cutoff(provider))).fetchall()
+            # Retire expired workers across model namespaces as well. Their late
+            # results must not create a competing successful forecast archive.
+            for row in expired:
+                db.execute("""UPDATE ai_attempts SET status='failed',finished_at=?,stage='已中断或超时'
+                    WHERE token=? AND status='running'""", (now_iso(), row["run_token"]))
+                db.execute("""UPDATE ai_runs SET status='failed',finished_at=?,error='上次模型运行已中断或超时，请重试'
+                    WHERE id=? AND status='running'""", (now_iso(), row["id"]))
         existing = db.execute(
             "SELECT * FROM ai_runs WHERE run_date = ? AND provider = ?", (run_date, provider)
         ).fetchone()
@@ -538,12 +573,13 @@ def start_ai_run(provider: str, model: str, run_date: str, prompt_version: str, 
 
 
 def finish_ai_run(provider: str, run_date: str, result: dict[str, Any] | None, error: str | None, token: str) -> None:
+    succeeded = bool(result) and not error
     with _write_lock, connection() as db:
         updated = db.execute(
             """UPDATE ai_runs SET status = ?, result_json = ?, error = ?, finished_at = ?
             WHERE run_date = ? AND provider = ? AND run_token = ? AND status = 'running'""",
             (
-                "succeeded" if result else "failed",
+                "succeeded" if succeeded else "failed",
                 encode_result(result) if result else None,
                 error,
                 now_iso(),
@@ -552,14 +588,14 @@ def finish_ai_run(provider: str, run_date: str, result: dict[str, Any] | None, e
                 token,
             ),
         )
-        if updated.rowcount and provider == "forecast:glm" and result:
+        if updated.rowcount and provider in FORECAST_RUN_NAMESPACES and succeeded:
             from .forecast_history import archive_run
             archive_run(db, db.execute("SELECT * FROM ai_runs WHERE provider = ? AND run_date = ?",
                                       (provider, run_date)).fetchone())
         if updated.rowcount:
             db.execute("UPDATE ai_attempts SET status=?,finished_at=?,stage=? WHERE token=?",
-                       ("succeeded" if result else "failed", now_iso(), "已完成" if result else "失败", token))
-            if provider in {"glm", "deepseek", "qwen"} and result and isinstance(result.get("picks"), list):
+                       ("succeeded" if succeeded else "failed", now_iso(), "已完成" if succeeded else "失败", token))
+            if provider in {"glm", "deepseek", "qwen"} and succeeded and isinstance(result.get("picks"), list):
                 from .research_store import archive_selection
                 row = db.execute("SELECT model,finished_at FROM ai_runs WHERE run_token=?", (token,)).fetchone()
                 archive_selection(db, run_date, f"ai:{provider}", row["model"], row["finished_at"], result["picks"])

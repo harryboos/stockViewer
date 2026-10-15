@@ -10,7 +10,9 @@ from datetime import date, datetime, time, timedelta
 from uuid import uuid4
 
 from . import database
-from .forecast_history import BENCHMARKS, HORIZONS, REFRESH_KEY, audited_timestamp, reports_to_refresh, refresh_status
+from .forecast_history import (
+    BENCHMARKS, HORIZONS, REFRESH_KEY, audited_timestamp, outcome_needs_update, reports_to_refresh, refresh_status,
+)
 from .forecast_prices import CalendarUnavailableError, FeedbackPriceClient
 from .research_pool import HISTORY_WAITING_KINDS, fetch_batch, history_result
 
@@ -164,15 +166,37 @@ def refresh_feedback(token: str) -> None:
         now = datetime.now(database.CHINA_TZ)
         from .research_data import history_request, index_history, last_closed_day
         closed = last_closed_day(now)
-        requests = set()
+        report_ids = [report["id"] for report in reports]
+        with database.connection() as db:
+            saved = {(row["report_id"], row["concept_code"], row["horizon_days"]): json.loads(row["result_json"])
+                     for row in db.execute(f"""SELECT report_id, concept_code, horizon_days,
+                         json_remove(result_json, '$.path') AS result_json FROM forecast_feedback
+                         WHERE report_id IN ({','.join('?' for _ in report_ids)})""", report_ids)}
+        # A report may need only its 30-day extension. Do not count its frozen
+        # 15-day results as failed reads or refetch other fully audited concepts.
+        pending = {(report["id"], concept["code"]): tuple(
+            days for days in HORIZONS
+            if outcome_needs_update(saved.get((report["id"], concept["code"], days)), calendar, now))
+            for report in reports for concept in report["result"]["concepts"]}
+        required = {}
         for report in reports:
             start, end = bounds(report, 30)
-            for code in [*BENCHMARKS, *(c["code"] for c in report["result"]["concepts"])]:
-                requests.add(history_request(code, start.isoformat(), min(end, now.date()).isoformat(), closed=closed))
+            span = (start.isoformat(), min(end, now.date()).isoformat())
+            for concept in report["result"]["concepts"]:
+                sessions = sorted({day for days in pending[report["id"], concept["code"]]
+                                   for day in observation_window(report, days, calendar, now)[1]})
+                if not sessions:
+                    continue
+                for code in [*BENCHMARKS, concept["code"]]:
+                    request = history_request(code, *span, closed=closed)
+                    previous = required.get(request, (sessions[0], sessions[-1]))
+                    required[request] = (min(previous[0], sessions[0]), max(previous[1], sessions[-1]))
         # Share successful same-symbol reads with comparison/rotation workers.
-        prices = fetch_batch(sorted(requests), lambda item: index_history(*item))
+        # The shared cache key is broad, but only the still-pending observation
+        # windows need prices. A completed short window never requires later bars.
+        prices = fetch_batch(sorted(required), lambda item: index_history(item[0], *required[item]))
         attempted = getattr(prices, "attempted", set(prices))
-        if len(prices) < len(requests):
+        if len(prices) < len(required):
             error = "部分行情请求失败或等待超时，已核对可用数据并保留此前结果，可稍后重试"
         for report in reports:
             start, end = bounds(report, 30)
@@ -180,16 +204,19 @@ def refresh_feedback(token: str) -> None:
             indexes = {code: history_result(prices, history_request(code, *span, closed=closed)) for code in BENCHMARKS}
             results = []
             for concept in report["result"]["concepts"]:
+                days_to_update = pending[report["id"], concept["code"]]
+                if not days_to_update:
+                    continue
                 request = history_request(concept["code"], *span, closed=closed)
                 if request not in attempted:
-                    waiting += len(HORIZONS)
+                    waiting += len(days_to_update)
                     continue
-                for days in HORIZONS:
+                for days in days_to_update:
                     history = history_result(prices, request)
                     value = evaluate(report, days, history, indexes, calendar, now)
-                    if history.get("errorKind"):
+                    if history.get("errorKind") and value.get("returnPct") is None:
                         value["errorKind"] = history["errorKind"]
-                    if history.get("errorKind") in HISTORY_WAITING_KINDS:
+                    if value.get("errorKind") in HISTORY_WAITING_KINDS:
                         waiting += 1
                         value["note"] = history.get("error") or "尚未取得行情查询结果"
                         value.pop("missingDates", None)

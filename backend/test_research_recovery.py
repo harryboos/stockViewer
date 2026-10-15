@@ -209,6 +209,43 @@ class RecoveryDatabaseTests(unittest.TestCase):
         self.assertEqual(payload["missingCount"], 0)
         self.assertEqual(payload["waitingCount"], 79)
 
+    def test_outage_retry_advances_to_untouched_monthly_concepts(self):
+        self.archive(count=40)
+        outage = {"rows": [], "error": "行情连接中断", "errorKind": "unavailable"}
+        with (patch.object(FeedbackPriceClient, "calendar", return_value=calendar_fixture()),
+              patch.object(comparison, "datetime") as clock,
+              patch.object(comparison, "index_history", return_value=outage) as fetch):
+            self.comparison_clock(clock)
+            with self.assertRaisesRegex(RuntimeError, "已暂停本批"):
+                comparison.refresh_comparisons(Mock())
+            previous = {call.args[0] for call in fetch.call_args_list}
+            fetch.reset_mock()
+            with self.assertRaisesRegex(RuntimeError, "已暂停本批"):
+                comparison.refresh_comparisons(Mock())
+            following = {call.args[0] for call in fetch.call_args_list}
+        # The selected prediction still gets first priority, but failed broad-pool
+        # symbols no longer jump ahead of never-attempted monthly comparisons.
+        self.assertTrue((previous & following).issubset({"BK1039", "BK1001"}))
+        self.assertGreaterEqual(len(following - previous), 6)
+
+    def test_newer_gap_outage_does_not_block_a_complete_older_window(self):
+        report = self.archive(count=3)
+        saved = prices()
+        saved["rows"] = [row for row in saved["rows"] if row["date"] <= "2026-09-24"]
+        saved.update(error="较新行情连接中断", errorKind="unavailable")
+        with (patch.object(FeedbackPriceClient, "calendar", return_value=calendar_fixture()),
+              patch.object(comparison, "datetime") as clock,
+              patch.object(comparison, "index_history", return_value=saved)):
+            self.comparison_clock(clock)
+            with self.assertRaisesRegex(RuntimeError, "已核对 3 项"):
+                comparison.refresh_comparisons(Mock())
+        with database.connection() as db:
+            outcomes = {row["horizon_days"]: json.loads(row["result_json"]) for row in db.execute(
+                "SELECT * FROM comparison_outcomes WHERE report_id=? AND code='BK1000'", (report,))}
+        self.assertEqual(outcomes[15]["status"], "completed")
+        self.assertNotIn("errorKind", outcomes[15])
+        self.assertEqual(outcomes[30]["errorKind"], "unavailable")
+
     def test_comparison_request_keys_stay_stable_across_close_boundary(self):
         self.archive(count=3)
         now = instant("2026-09-29T15:09:59")

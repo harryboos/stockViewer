@@ -1,4 +1,4 @@
-"""Retrieve real-world catalysts before asking GLM to interpret their impact."""
+"""Retrieve dated catalysts with search credentials independent of the model."""
 from __future__ import annotations
 
 import asyncio
@@ -15,6 +15,12 @@ from .research_prompt import publication_time
 
 SEARCH_TIMEOUT_SECONDS = 10
 NEWS_BUDGET_SECONDS = 25
+
+
+def news_search_key() -> str:
+    # The search service remains BigModel even when DeepSeek writes the report.
+    # Never send a generation provider's key to another provider's endpoint.
+    return ai.provider_key("glm") or ""
 
 
 async def discover_world_news(boards: list[dict], key: str) -> tuple[dict, dict]:
@@ -86,7 +92,9 @@ def normalize_search_results(payload: dict, code: str) -> list[dict]:
 
 
 async def search_world_news(name: str, code: str, key: str, *, forecast: bool = False) -> list[dict]:
-    # Official Web Search API; the reasoning model remains glm-5.3.
+    if not key:
+        return []
+    # Official BigModel Web Search API, separately authenticated from generation.
     async with httpx.AsyncClient(timeout=httpx.Timeout(SEARCH_TIMEOUT_SECONDS, connect=4)) as client:
         response = await client.post(
             f"{ai.base_url_for('glm')}/web_search",
@@ -110,6 +118,8 @@ async def enrich_world_news(evidence: dict, key: str, *, forecast: bool = False)
         async with semaphore:
             try:
                 options = {"forecast": True} if forecast else {}
+                if not key:
+                    candidate["warnings"].append("未配置智谱联网检索密钥，已尝试财经资讯备用来源")
                 sources = await search_world_news(candidate["name"], candidate["code"], key, **options)
             except (httpx.HTTPError, ValueError, TypeError):
                 candidate["warnings"].append("现实事件联网检索暂不可用，已尝试财经资讯备用来源")

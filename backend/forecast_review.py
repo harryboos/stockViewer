@@ -5,6 +5,8 @@ from copy import deepcopy
 
 
 REVIEW_INSTRUCTION = (
+    "技术历史准入：候选已按交易日历核对最近21个交易日且截至行情快照日期；historyQuality仅证明价格覆盖，"
+    "不证明未来胜率或现实催化。盘中末日仍未收盘，不能称全部日线已收盘；缺历史方向不会进入本次AI比较。"
     "决策复盘规则：先比较全部候选的趋势阶段、催化增量与共同风险，再选0至3个方向；不按输入顺序或当日涨幅直接抄榜。"
     "candidateSignals只表示行情召回通道，不是买入评分或未来胜率；未覆盖方向不能被宣称已研究或不存在机会。"
     "candidateSelection说明实际发现范围：快照数量、历史已读取/对齐数量与入池数量不同，不能将有限读取说成全市场扫描。"
@@ -49,7 +51,7 @@ def candidate_audit(evidence: dict, selected: set[str]) -> dict:
         candidates.append({
             **{key: deepcopy(item.get(key)) for key in (
                 "code", "name", "tradeDate", "pctChg", "change5d", "change10d", "amount", "breadth",
-                "mainNetInflow", "technicalData", "candidateSignals", "discoveryFeatures", "eventClues", "relativeStrength", "warnings")},
+                "mainNetInflow", "technicalData", "historyQuality", "candidateSignals", "discoveryFeatures", "eventClues", "relativeStrength", "warnings")},
             "selected": item["code"] in selected,
             "stocks": [{key: stock.get(key) for key in ("code", "name", "pctChg", "tradeDate")} for stock in item.get("stocks", [])],
             "news": [{key: source.get(key) for key in ("id", "title", "publishedAt", "publishedAtPrecision", "temporalRelation", "source", "url")}

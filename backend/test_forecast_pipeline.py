@@ -71,16 +71,17 @@ def execute_batch(items, fetch, **kwargs):
 
 
 class ForecastPipelineTests(unittest.TestCase):
-    def collect(self, *, snapshot=None, events=None, cached=None, batch=execute_batch):
+    def collect(self, *, snapshot=None, events=None, cached=None, batch=execute_batch, fresh_history=None):
         snapshot = snapshot or overview()
         client = Mock()
-        client.daily_history.return_value = []
+        client.daily_history.return_value = history() if fresh_history is None else fresh_history
         client.strong_stocks.return_value = []
         news = AsyncMock(return_value=(events or {}, {"status": "available", "matchedCount": len(events or {})}))
         with (patch.object(pipeline, "ConceptResearchClient", return_value=client),
               patch.object(pipeline, "discover_world_news", news),
               patch.object(pipeline, "cached_histories", return_value=copy.deepcopy(cached or {})),
               patch.object(pipeline, "fetch_batch", side_effect=batch),
+              patch("backend.forecast_prices.FeedbackPriceClient.calendar", return_value=[row["date"] for row in history()]),
               patch("backend.research_data.index_history", return_value={"rows": []}),
               patch.object(pipeline.database, "now_iso", return_value=DECISION)):
             result = pipeline.collect_forecast_evidence(snapshot, None, "test-only-mocked")
@@ -112,6 +113,76 @@ class ForecastPipelineTests(unittest.TestCase):
             rows = pipeline.cached_histories({"BK0001"}, TRADE_DATE, DECISION)["BK0001"]
         self.assertEqual(len(rows), 40)
         self.assertTrue(all(row.get("amount", 0) > 0 for row in rows[-11:]))
+
+    def test_complete_cache_outranks_longer_recently_gapped_cache(self):
+        complete = history(40, amount=False)
+        gapped = history(45)
+        gapped.pop(-5)
+        calendar = [row["date"] for row in history(60)]
+        # Test both storage orders: neither table nor extra turnover data can
+        # make a longer, incomplete series replace a verified cached window.
+        for first, second in ((complete, gapped), (gapped, complete)):
+            meta = [cache_row("BK0001", first)]
+            research = [{"cache_key": "evaluation:BK0001:2026-07-01:2026-09-11", "updated_at": QUOTE,
+                         "payload_json": json.dumps({"rows": second})}]
+            with (self.subTest(complete_in_meta=first is complete),
+                  patch.object(pipeline.database, "connection", side_effect=lambda: fake_connection(meta, research))):
+                rows = pipeline.cached_histories({"BK0001"}, TRADE_DATE, DECISION, calendar=calendar)["BK0001"]
+            self.assertEqual(len(rows), 40)
+            self.assertEqual(pipeline.verified_history(rows, TRADE_DATE, calendar)[1]["status"], "ready")
+
+    def test_verified_cache_tie_preserves_usable_turnover_coverage(self):
+        meta = [cache_row("BK0001", history(40))]
+        research = [{"cache_key": "evaluation:BK0001:2026-07-01:2026-09-11", "updated_at": QUOTE,
+                     "payload_json": json.dumps({"rows": history(45, amount=False)})}]
+        with patch.object(pipeline.database, "connection", side_effect=lambda: fake_connection(meta, research)):
+            rows = pipeline.cached_histories({"BK0001"}, TRADE_DATE, DECISION,
+                                              calendar=[row["date"] for row in history(60)])["BK0001"]
+        self.assertEqual(len(rows), 40)
+        self.assertTrue(all(row.get("amount", 0) > 0 for row in rows[-11:]))
+
+    def test_short_aligned_cache_triggers_recovery_before_candidate_selection(self):
+        cached = {"BK0001": pipeline.normalized_history(history(8), TRADE_DATE)}
+        result, _, client = self.collect(snapshot=overview(1), cached=cached)
+        client.daily_history.assert_called_once_with("BK0001", TRADE_DATE)
+        self.assertEqual(result["candidateSelection"]["historyQuality"]["eligibleCount"], 1)
+        self.assertEqual(result["candidates"][0]["historyQuality"]["status"], "ready")
+        self.assertEqual(result["candidates"][0]["historySessions"], 40)
+
+    def test_interior_gap_is_excluded_when_recovery_does_not_fill_it(self):
+        rows = history()
+        missing = rows.pop(-5)["date"].replace("-", "")
+        cached = {"BK0001": pipeline.normalized_history(rows, TRADE_DATE)}
+        result, _, client = self.collect(snapshot=overview(1), cached=cached, fresh_history=rows)
+        client.daily_history.assert_called_once_with("BK0001", TRADE_DATE)
+        self.assertEqual(result["candidates"], [])
+        excluded = result["candidateSelection"]["historyQuality"]["excluded"][0]
+        self.assertEqual(excluded["status"], "incomplete")
+        self.assertEqual(excluded["missingDates"], [missing])
+
+    def test_empty_recovery_does_not_present_cached_gaps_as_confirmed_source_gaps(self):
+        rows = history()[-8:]
+        result, _, _ = self.collect(snapshot=overview(1),
+            cached={"BK0001": pipeline.normalized_history(rows, TRADE_DATE)}, fresh_history=[])
+        excluded = result["candidateSelection"]["historyQuality"]["excluded"][0]
+        self.assertEqual(excluded["status"], "unavailable")
+        self.assertEqual(excluded["missingDates"], [])
+
+    def test_shared_history_recovery_can_skip_duplicate_concept_source_request(self):
+        with patch("backend.research_data.index_history", return_value={"rows": history()}) as source:
+            client = Mock()
+            with (patch.object(pipeline, "ConceptResearchClient", return_value=client),
+                  patch.object(pipeline, "discover_world_news", AsyncMock(return_value=({}, {"status": "available"}))),
+                  patch.object(pipeline, "cached_histories", return_value={}),
+                  patch.object(pipeline, "fetch_batch", side_effect=execute_batch),
+                  patch("backend.forecast_prices.FeedbackPriceClient.calendar", return_value=[row["date"] for row in history()]),
+                  patch.object(pipeline.database, "now_iso", return_value=DECISION)):
+                client.strong_stocks.return_value = []
+                result = pipeline.collect_forecast_evidence(overview(1), None, "test-key")
+        self.assertEqual(result["candidates"][0]["historyQuality"]["status"], "ready")
+        client.daily_history.assert_not_called()
+        self.assertEqual(source.call_count, 3)
+        self.assertEqual({call.args[1:] for call in source.call_args_list}, {("2026-08-22", "2026-09-11")})
 
     def test_future_observed_stale_and_intraday_caches_are_not_reused(self):
         meta = [cache_row("BK0001", history(), fetched="2026-09-14T09:00:00+08:00"),
@@ -156,6 +227,8 @@ class ForecastPipelineTests(unittest.TestCase):
 
     def test_read_budget_failure_records_unread_scope_not_nonexistent_history(self):
         def unavailable(items, fetch, **kwargs):
+            if items == ["calendar"]:
+                return execute_batch(items, fetch)
             result = BatchResult()
             if items:
                 result.attempted.add(items[0])
@@ -168,8 +241,9 @@ class ForecastPipelineTests(unittest.TestCase):
         self.assertEqual(selection["historyMissingOrStaleCount"], 0)
         self.assertGreater(selection["historyRequests"]["deferred"], 0)
         self.assertIn("不等于不存在历史行情", selection["historyRequests"]["note"])
-        self.assertTrue(result["candidates"])
-        self.assertTrue(all(row["technicalData"]["ma20"] is None for row in result["candidates"]))
+        self.assertEqual(result["candidates"], [])
+        self.assertEqual(selection["historyQuality"]["eligibleCount"], 0)
+        self.assertTrue(all(not item["missingDates"] for item in selection["historyQuality"]["excluded"]))
         client.daily_history.assert_not_called()
 
     def test_prompt_omits_raw_history_benchmarks_and_frozen_baselines(self):
@@ -213,7 +287,7 @@ class ForecastPipelineTests(unittest.TestCase):
                  "publishedAt": "2026-09-12T09:00:00+08:00"}
         # Multiple real discovery channels consume the twelve slots; the third
         # daily leader legitimately remains only in the frozen baseline universe.
-        evidence, _, _ = self.collect(cached=cached, events={"BK0031": [event]})
+        evidence, _, _ = self.collect(cached=cached, events={"BK0031": [event]}, fresh_history=[])
         result = forecast.assemble_result({"summary": "缺少足够的独立证据，本次保持观察并记录基线。", "concepts": []}, evidence)
         audit = {row["code"] for row in result["candidateAudit"]["candidates"]}
         self.assertNotIn("BK0003", audit)

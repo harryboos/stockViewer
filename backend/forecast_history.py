@@ -31,7 +31,7 @@ def initialize_archive(db) -> None:
     )""")
     # Import only real, successful cached forecasts. A missing publication time
     # cannot safely establish a historical observation window.
-    for row in db.execute("""SELECT * FROM ai_runs WHERE provider = 'forecast:glm'
+    for row in db.execute("""SELECT * FROM ai_runs WHERE provider IN ('forecast:glm','forecast:deepseek')
                             AND status = 'succeeded' AND finished_at IS NOT NULL
                             ORDER BY finished_at, id""").fetchall():
         archive_run(db, row)
@@ -230,6 +230,18 @@ def tracking_is_current(item: dict, calendar: list[str], now: datetime) -> bool:
     return item.get("exitDate") == calendar[bisect_right(calendar, closed) - 1]
 
 
+def outcome_needs_update(item: dict | None, calendar: list[str], now: datetime) -> bool:
+    """Use the same per-window eligibility for report selection and refresh work."""
+    if item is None or item.get("returnPct") is None or item.get("dataStatus") == "unavailable":
+        return True
+    if any(item.get("benchmarks", {}).get(code, {}).get("returnPct") is None for code in BENCHMARKS):
+        return True
+    if item["status"] == "completed":
+        return False
+    # A request may finish after the close while still containing yesterday's prices.
+    return not tracking_is_current(item, calendar, now)
+
+
 def reports_to_refresh(limit: int = 12) -> list[dict]:
     from .forecast_prices import CALENDAR_KEY
     now = datetime.now(database.CHINA_TZ)
@@ -249,19 +261,8 @@ def reports_to_refresh(limit: int = 12) -> list[dict]:
         report = _report(row)
         if report["result"]["window"]["startDate"] > today:
             continue
-        def needs_update(concept: dict, days: int) -> bool:
-            item = saved.get((row["id"], concept["code"], days))
-            if item is None or item.get("returnPct") is None or item.get("dataStatus") == "unavailable":
-                return True
-            if any(item.get("benchmarks", {}).get(code, {}).get("returnPct") is None for code in BENCHMARKS):
-                return True
-            if item["status"] == "completed":
-                return False
-            # Compare the actual observed session; a request starting before
-            # 15:10 may finish later while still containing yesterday's prices.
-            return not tracking_is_current(item, calendar, now)
-
-        if any(needs_update(concept, days) for concept in report["result"]["concepts"] for days in HORIZONS):
+        if any(outcome_needs_update(saved.get((row["id"], concept["code"], days)), calendar, now)
+               for concept in report["result"]["concepts"] for days in HORIZONS):
             result.append(report)
         if len(result) >= limit:
             break

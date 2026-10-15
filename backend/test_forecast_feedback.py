@@ -290,6 +290,106 @@ class ArchiveTests(unittest.TestCase):
         self.assertEqual(item["benchmarks"]["sh000688"]["excessPct"], -4)
         self.assertEqual(data["refresh"]["status"], "succeeded")
 
+    def test_outage_counts_only_pending_windows_and_skips_fully_audited_concepts(self):
+        self.save()
+        self.put(1, 15, outcome())
+        report = history.get_report(1)
+        report["result"]["concepts"].append({"code": "BK1002", "name": "已核对概念"})
+        with database.connection() as db:
+            for days in history.HORIZONS:
+                value = feedback.evaluate(report, days, prices(),
+                    {code: prices() for code in history.BENCHMARKS}, calendar_fixture(),
+                    instant("2026-10-20T18:00:00"))
+                db.execute("INSERT INTO forecast_feedback VALUES (?, ?, ?, ?, ?)",
+                           (1, "BK1002", days, json.dumps(value), "2026-10-13T18:00:00+08:00"))
+            original = {tuple(row) for row in db.execute("SELECT * FROM forecast_feedback")}
+        token = feedback.claim_refresh()
+        def unavailable(requests, fetch):
+            self.assertEqual({request[0] for request in requests}, {"BK1001", *history.BENCHMARKS})
+            return {request: {"rows": [], "errorKind": "unavailable", "error": "来源不可用"}
+                    for request in requests}
+        with (patch.object(feedback, "reports_to_refresh", return_value=[report]),
+              patch.object(FeedbackPriceClient, "calendar", return_value=calendar_fixture()),
+              patch.object(feedback, "fetch_batch", side_effect=unavailable)):
+            feedback.refresh_feedback(token)
+        status = history.refresh_status()
+        self.assertEqual(status["outcomesWaiting"], 1)
+        self.assertEqual(status["outcomesMissing"], 0)
+        self.assertEqual(status["outcomesReady"], 0)
+        with database.connection() as db:
+            saved = {tuple(row) for row in db.execute("SELECT * FROM forecast_feedback")}
+        self.assertTrue(original.issubset(saved))  # Final prices and audit timestamps remain untouched.
+        self.assertEqual(len(saved), 4)
+
+    def test_unstarted_refresh_counts_only_the_pending_horizon(self):
+        from backend.research_pool import BatchResult
+        self.save()
+        self.put(1, 15, outcome())
+        token = feedback.claim_refresh()
+        with (patch.object(FeedbackPriceClient, "calendar", return_value=calendar_fixture()),
+              patch.object(feedback, "fetch_batch", return_value=BatchResult())):
+            feedback.refresh_feedback(token)
+        self.assertEqual(history.refresh_status()["outcomesWaiting"], 1)
+        with database.connection() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM forecast_feedback").fetchone()[0], 1)
+
+    def test_successful_extension_does_not_recount_completed_short_horizon(self):
+        self.save()
+        original = outcome()
+        self.put(1, 15, original)
+        token = feedback.claim_refresh()
+        with (patch.object(FeedbackPriceClient, "calendar", return_value=calendar_fixture()),
+              patch.object(feedback, "fetch_batch", side_effect=lambda requests, fetch: {
+                  request: prices(120) for request in requests}),
+              patch.object(feedback, "datetime") as clock):
+            clock.now.return_value = instant("2026-10-20T18:00:00")
+            clock.combine = datetime.combine
+            feedback.refresh_feedback(token)
+        self.assertEqual(history.refresh_status()["outcomesReady"], 1)
+        self.assertEqual(history.refresh_status()["status"], "succeeded")
+        with database.connection() as db:
+            saved = json.loads(db.execute("SELECT result_json FROM forecast_feedback WHERE horizon_days=15").fetchone()[0])
+        self.assertEqual(saved, original)
+
+    def test_refresh_fetches_only_pending_observation_span(self):
+        self.save()
+        report = history.get_report(1)
+        # Only the 15-day benchmark needs repair; the 30-day record is final.
+        self.put(1, 15, outcome(benchmark_missing=True))
+        self.put(1, 30, feedback.evaluate(report, 30, prices(),
+            {code: prices() for code in history.BENCHMARKS}, calendar_fixture(),
+            instant("2026-10-20T18:00:00")))
+        token = feedback.claim_refresh()
+        with (patch.object(FeedbackPriceClient, "calendar", return_value=calendar_fixture()),
+              patch.object(feedback, "fetch_batch", side_effect=lambda requests, fetch: {
+                  request: fetch(request) for request in requests}),
+              patch("backend.research_data.index_history", return_value=prices()) as read,
+              patch.object(feedback, "datetime") as clock):
+            clock.now.return_value = instant("2026-10-20T18:00:00")
+            clock.combine = datetime.combine
+            feedback.refresh_feedback(token)
+        self.assertEqual(read.call_count, 3)
+        self.assertEqual({call.args[1:] for call in read.call_args_list}, {("2026-09-14", "2026-09-24")})
+        self.assertEqual(history.refresh_status()["status"], "succeeded")
+
+    def test_later_refresh_failure_does_not_mark_complete_window_waiting(self):
+        self.save()
+        token = feedback.claim_refresh()
+        with (patch.object(FeedbackPriceClient, "calendar", return_value=calendar_fixture()),
+              patch.object(feedback, "fetch_batch", side_effect=lambda requests, fetch: {
+                  request: {**prices(), "errorKind": "unavailable", "error": "后续日期暂不可读"}
+                  for request in requests}),
+              patch.object(feedback, "datetime") as clock):
+            clock.now.return_value = instant("2026-10-20T18:00:00")
+            clock.combine = datetime.combine
+            feedback.refresh_feedback(token)
+        status = history.refresh_status()
+        self.assertEqual((status["outcomesReady"], status["outcomesWaiting"], status["outcomesMissing"]), (2, 0, 0))
+        self.assertEqual(status["status"], "succeeded")
+        with database.connection() as db:
+            saved = [json.loads(row[0]) for row in db.execute("SELECT result_json FROM forecast_feedback")]
+        self.assertTrue(all("errorKind" not in value and value["dataStatus"] == "ready" for value in saved))
+
     def test_read_endpoints_work_without_model_key_and_post_requires_secret(self):
         self.save()
         with (patch.dict(os.environ, {"DAILY_RUN_SECRET": "secret"}, clear=True),

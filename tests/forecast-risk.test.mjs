@@ -55,6 +55,86 @@ test('discovery coverage distinguishes snapshot, available histories and final r
   assert.ok(!legacy.includes('0 个已取得历史'));
 });
 
+function qualityFixture() {
+  return {
+    snapshotCount: 48, selectedCount: 12, historyCheckedCount: 41, historyAlignedCount: 37,
+    historyQuality: { requiredSessions: 21, calendarAvailable: true, eligibleCount: 30, excludedCount: 3,
+      excluded: [
+        { code: 'THS:885001', name: '尚未读取概念', status: 'not_read', historyAsOf: null, missingDates: [] },
+        { code: 'THS:885002', name: '请求失败概念', status: 'unavailable', historyAsOf: null, missingDates: [] },
+        { code: 'THS:885003', name: '已知缺日概念', status: 'incomplete', historyAsOf: '20261015', validSessions: 6,
+          missingDates: ['20261009', '20261012'], reason: '已有历史数据缺少两个交易日收盘价。' },
+      ] },
+    snapshotCoverage: { concept: { directoryTotal: 361, mappedCandidates: 293, requestedCount: 48,
+      quotedCount: 46, validCount: 45, eligibleCount: 43 } },
+  };
+}
+
+test('quality coverage separates quoted snapshots, continuous history eligibility and AI candidates', () => {
+  const html = render('ForecastDiscoveryCoverage', { selection: qualityFixture() });
+  for (const text of ['48 个实际快照', '30 个通过21 交易日核验', '12 个进入 AI',
+    '目录 361 个', '已核实映射 293 个', '本批请求 48 个', '同日有效 45 个', '可用快照 43 个',
+    '暂未通过核验 3 个概念', '已知缺日概念', '历史待补齐', '历史截至 2026-10-15',
+    '已核验连续 6 个交易日', '缺少有效收盘价：2026-10-09、2026-10-12', '不能判断是否缺少交易日日线']) {
+    assert.ok(html.includes(text), text);
+  }
+  assert.equal(html.match(/等待历史行情/g)?.length, 2);
+  assert.equal(html.match(/缺少有效收盘价：/g)?.length, 1);
+  assert.ok(!html.includes('交易日历暂不可用'));
+});
+
+test('empty or unread histories never present all calendar sessions as confirmed missing bars', () => {
+  const selection = qualityFixture();
+  selection.historyQuality.excluded = [
+    { code: 'THS:885001', name: '未取得历史', status: 'incomplete', historyAsOf: null, validSessions: 0,
+      missingDates: ['20260921', '20260922'], reason: '缺少全部交易日' },
+    { code: 'THS:885002', name: '未完成补读', status: 'unavailable', historyAsOf: '20261009', validSessions: 3,
+      missingDates: ['20261012'], reason: '缺少最后三个交易日' },
+  ];
+  const html = render('ForecastDiscoveryCoverage', { selection });
+  assert.equal(html.match(/等待历史行情/g)?.length, 2);
+  for (const text of ['缺少有效收盘价', '2026-09-21', '2026-09-22', '2026-10-12', '缺少全部交易日', '缺少最后三个交易日']) {
+    assert.ok(!html.includes(text), text);
+  }
+});
+
+test('unavailable calendar explains the blocked check without asserting missing-price dates', () => {
+  const selection = qualityFixture();
+  selection.historyQuality.calendarAvailable = false;
+  selection.historyQuality.eligibleCount = 0;
+  selection.selectedCount = 0;
+  const html = render('ForecastDiscoveryCoverage', { selection });
+  for (const text of ['交易日历暂不可用', '完整性尚无法确认', '等待日历核验', '0 个进入 AI']) assert.ok(html.includes(text), text);
+  assert.ok(!html.includes('缺少有效收盘价'));
+  assert.ok(!html.includes('历史待补齐'));
+});
+
+test('coverage details bound excluded concepts and missing dates without concealing the remaining count', () => {
+  const selection = qualityFixture();
+  selection.historyQuality.excluded = Array.from({ length: 12 }, (_, index) => ({
+    code: `THS:${885001 + index}`, name: `历史待核验编号${index}`, status: 'incomplete', historyAsOf: '20261015',
+    validSessions: 1, missingDates: ['20260921', '20260922', '20260923', '20260924', '20260928', '20260929', '20260930'],
+  }));
+  selection.historyQuality.excludedCount = 12;
+  const html = render('ForecastDiscoveryCoverage', { selection });
+  assert.ok(html.includes('下列展示 8 个，另有 4 个未展开'));
+  assert.ok(html.includes('历史待核验编号7'));
+  assert.ok(!html.includes('历史待核验编号8'));
+  assert.ok(html.includes('等 7 个交易日'));
+  assert.ok(!html.includes('2026-09-30'));
+});
+
+test('partial coverage metadata preserves unknown counts rather than inventing complete coverage', () => {
+  const selection = { snapshotCount: 20, selectedCount: 4,
+    historyQuality: { requiredSessions: 21, eligibleCount: NaN },
+    snapshotCoverage: { concept: { requestedCount: 24, validCount: 20 } } };
+  const html = render('ForecastDiscoveryCoverage', { selection });
+  assert.ok(html.includes('未知 个通过21 交易日核验'));
+  assert.ok(html.includes('可用快照 未知 个'));
+  assert.ok(!html.includes('NaN'));
+  assert.ok(!html.includes('暂未通过核验 0 个概念'));
+});
+
 test('relative returns show percentage points and the actual historical window', () => {
   const html = render('ForecastRelativeStrength', { data: relativeFixture(), name: '测试方向甲' });
   for (const text of ['相对上证指数', '相对科创50', '+3.14 个百分点', '-2.35 个百分点', '0.00 个百分点',

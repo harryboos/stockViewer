@@ -21,6 +21,7 @@ EVIDENCE_RULES = (
     "同一事件的多篇转载不算多项独立证据。搜索匹配与来源ID有效不证明文章结论正确或与该概念相关，逐项核对主体与受益链条。"
     "有利与不利证据都要考虑；未搜到反证不等于不存在风险；区分已发生事实、影响传导推断与未来确认条件。"
     "没有可核对的现实事件允许catalysts=[]，不得为填字段捏造原因。缺失数据不作0，不用记忆补造财报、客户关系、新闻或收益。"
+    "输出前逐项检查引用：hypothesis必须evidenceIds=[]，即使推断参考了真实资料，也不能把资料列为该推断已证实的依据。"
 )
 
 
@@ -48,12 +49,18 @@ def selected_stocks(candidate: dict, choices: list) -> list[dict]:
 
 
 def cited_sources(ids: list[str], references: dict, allowed: set[str], *, supported: bool,
-                  context: str) -> list[dict]:
+                  context: str, warnings: list[str]) -> list[dict]:
     """Facts require eligible references; hypotheses cannot borrow factual authority."""
-    if supported and (not ids or any(ref not in allowed or ref not in references for ref in ids)):
+    if (supported and not ids) or any(ref not in allowed or ref not in references for ref in ids):
         raise ValueError(f"{context}缺少该概念的匹配来源")
     if not supported and ids:
-        raise ValueError(f"待验证{context}不能冒用事实来源")
+        # A valid background reference does not turn a hypothesis into a fact.
+        # Remove it visibly instead of discarding the entire lengthy model run.
+        # Unknown, cross-concept and wrong-kind references still fail above.
+        note = f"待验证{context}附带的背景引用已移除，仍作为假设，不视为已证实事实"
+        if note not in warnings:
+            warnings.append(note)
+        return []
     return [references[ref] for ref in dict.fromkeys(ids)]
 
 

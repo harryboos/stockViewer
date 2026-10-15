@@ -10,19 +10,21 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from . import ai, database
 from .concept_data import collect_concept_evidence
 from .concept_identity import CONCEPT_CODE_PATTERN
-from .concept_news import enrich_world_news
+from .concept_news import enrich_world_news, news_search_key
+from .forecast_limits import CONCEPT_MODEL_TIMEOUT_SECONDS, CONCEPT_RUN_TIMEOUT_SECONDS
 from .research_prompt import (
     EVIDENCE_RULES, candidate_provider as _candidate_provider, cited_sources,
     prepare_research_evidence, selected_stocks,
 )
 from .run_dispatch import current_run, launch_claimed_run, shared_start
 
-PROMPT_VERSION = "concept-v4-evidence-review-glm53-max"
-PROVIDER: ai.Provider = "glm"
-MODEL = "glm-5.3"
+PROMPT_VERSION = "concept-v6-deepseek-flash-max"
+PROVIDER: ai.Provider = "deepseek"
+MODEL = "deepseek-flash"
+RUN_NAMESPACE = f"concept:{PROVIDER}"
 # MAX reasoning runs in the background; finish before the concept lease expires.
-MODEL_TIMEOUT_SECONDS = 480
-RUN_TIMEOUT_SECONDS = 600
+MODEL_TIMEOUT_SECONDS = CONCEPT_MODEL_TIMEOUT_SECONDS
+RUN_TIMEOUT_SECONDS = CONCEPT_RUN_TIMEOUT_SECONDS
 _tasks: set[asyncio.Task] = set()
 
 
@@ -123,25 +125,26 @@ def assemble_result(raw: dict, evidence: dict) -> dict:
             raise ValueError("模型返回了候选池外或重复的概念")
         seen.add(choice.code)
         candidate = pool[choice.code]
+        warnings = list(candidate.get("warnings", []))
         stocks = selected_stocks(candidate, choice.stocks)
         references = {ref["id"]: ref for ref in candidate["evidence"]}
         source_ids = {kind: {ref for ref, source in references.items() if source["kind"] == kind}
                       for kind in ("data", "news")}
         catalysts = [{**item.model_dump(exclude={"evidenceIds"}),
                       "sources": cited_sources(item.evidenceIds, references, source_ids["news"],
-                                               supported=item.status == "reported", context="现实催化")}
+                                               supported=item.status == "reported", context="现实催化", warnings=warnings)}
                      for item in choice.catalysts]
         drivers = []
         if not any(driver.kind == "data" for driver in choice.drivers):
             raise ValueError("概念分析缺少行情依据")
         for driver in choice.drivers:
             drivers.append({"kind": driver.kind, "title": driver.title, "explanation": driver.explanation,
-                            "sources": cited_sources(driver.evidenceIds, references, source_ids.get(driver.kind, set()),
-                                                     supported=driver.kind != "hypothesis", context="影响因素")})
+                            "sources": cited_sources(driver.evidenceIds, references, source_ids.get(driver.kind, set(references)),
+                                                     supported=driver.kind != "hypothesis", context="影响因素", warnings=warnings)})
         concepts.append({
             **{key: value for key, value in candidate.items() if key not in ("stocks", "evidence")},
             "reason": choice.reason, "risk": choice.risk, "drivers": drivers, "catalysts": catalysts,
-            "stocks": stocks,
+            "stocks": stocks, "warnings": warnings,
         })
     return {"summary": parsed.summary, "concepts": concepts, "conceptProvider": provider,
             "decisionAt": evidence["decisionAt"], "quoteAsOf": evidence.get("quoteAsOf"),
@@ -153,11 +156,12 @@ def get_concept_run(*, include_result: bool = True) -> dict:
     run_date = database.china_date()
     base = {"provider": PROVIDER, "model": MODEL,
             "runDate": run_date, "status": "idle" if configured else "not_configured",
-            "result": None, "error": None, "finishedAt": None}
+            "result": None, "error": None, "finishedAt": None,
+            "maxRunSeconds": RUN_TIMEOUT_SECONDS}
     if not configured:
         return base
-    current = current_run(f"concept:{PROVIDER}", run_date, MODEL, PROMPT_VERSION, include_result=include_result)
-    return {**base, **current, "provider": PROVIDER} if current else base
+    current = current_run(RUN_NAMESPACE, run_date, MODEL, PROMPT_VERSION, include_result=include_result)
+    return {**base, **current, "provider": current["provider"].split(":")[-1]} if current else base
 
 
 async def _execute(run_date: str, key: str, token: str) -> None:
@@ -172,11 +176,11 @@ async def _execute(run_date: str, key: str, token: str) -> None:
             return {**{key: evidence[key] for key in ("tradeDate", "dataAsOf", "scope", "warnings")},
                     "summary": "当前候选中暂无已验证的近期强势或当日上涨方向，暂不强行推荐。", "concepts": []}
         await asyncio.to_thread(record_ai_stage, token, "检索现实事件")
-        evidence = await enrich_world_news(evidence, key)
+        evidence = await enrich_world_news(evidence, news_search_key())
         evidence.setdefault("decisionAt", database.now_iso())
         raw = await ai._call_compatible(PROVIDER, build_prompt(evidence), MODEL, key,
                                         system_instruction=SYSTEM_INSTRUCTION, reasoning_effort="max",
-                                        timeout_seconds=MODEL_TIMEOUT_SECONDS)
+                                        timeout_seconds=MODEL_TIMEOUT_SECONDS, resilient_stream=True)
         return assemble_result(raw, evidence)
 
     try:
@@ -195,7 +199,7 @@ async def _execute(run_date: str, key: str, token: str) -> None:
         error = "概念分析暂时不可用，请稍后重试"
     finally:
         try:
-            await asyncio.to_thread(database.finish_ai_run, f"concept:{PROVIDER}", run_date, result, error, token)
+            await asyncio.to_thread(database.finish_ai_run, RUN_NAMESPACE, run_date, result, error, token)
         finally:
             ai_token.reset(context_token)
 
@@ -214,6 +218,6 @@ async def _start_concept_run(force: bool) -> dict:
     if not key:
         return await asyncio.to_thread(get_concept_run)
 
-    await launch_claimed_run(f"concept:{PROVIDER}", MODEL, run_date, PROMPT_VERSION, force,
+    await launch_claimed_run(RUN_NAMESPACE, MODEL, run_date, PROMPT_VERSION, force,
                              lambda token: _execute(run_date, key, token), _tasks)
     return await asyncio.to_thread(get_concept_run)

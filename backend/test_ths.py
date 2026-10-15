@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 
 import requests
 
-from backend.ths import CHINA_TZ, ThsClient
+from backend.ths import CHINA_TZ, ThsClient, _board_candidates
 
 
 def directory(count=1):
@@ -74,22 +74,81 @@ class ThsClientTests(unittest.TestCase):
     def test_board_reads_bounded_sample_with_verified_dates_and_reusable_cache(self):
         def load(url, _deadline):
             if url.endswith("/gn/"):
-                return directory(40)
+                return directory(100)
             return quote(url.split("/")[-2])
         with patch.object(self.client, "_get_text", side_effect=load) as get:
             frame = self.client.board_frame("concept")
-            self.assertEqual(len(frame), 24)
-            self.assertEqual(get.call_count, 25)
-            self.assertEqual(frame.attrs["scope"]["directoryTotal"], 40)
+            self.assertEqual(len(frame), 48)
+            self.assertEqual(get.call_count, 49)
+            self.assertEqual(frame.attrs["scope"]["directoryTotal"], 100)
             self.assertFalse(frame.attrs["scope"]["isComplete"])
-            self.assertEqual(frame.iloc[0]["板块代码"], "THS:885040")
+            self.assertEqual(frame.iloc[0]["板块代码"], "THS:885100")
             self.assertEqual(datetime.fromtimestamp(frame.iloc[0]["行情时间"], CHINA_TZ).strftime("%Y%m%d"), "20260930")
             frame.loc[0, "板块名称"] = "changed"
             frame.attrs["scope"]["validCount"] = 0
             again = self.client.board_frame("concept")
             self.assertNotEqual(again.iloc[0]["板块名称"], "changed")
-            self.assertEqual(again.attrs["scope"]["validCount"], 24)
-            self.assertEqual(get.call_count, 25)
+            self.assertEqual(again.attrs["scope"]["validCount"], 48)
+            self.assertEqual(get.call_count, 49)
+
+    def test_exploration_reaches_beyond_daily_leaders_without_name_preferences(self):
+        candidates, _ = self.client._parse_directory(directory(293), "concept")
+        first = _board_candidates(candidates, "concept", "2026-09-30")
+        self.assertEqual(first, _board_candidates(list(candidates), "concept", "2026-09-30"))
+        self.assertNotEqual(first, _board_candidates(candidates, "concept", "2026-10-08"))
+        self.assertEqual(len({row["code"] for row in first}), 48)
+        self.assertEqual([row["_sampleChannel"] for row in first[:6]], ["leaders", "exploration"] * 3)
+        leaders = {row["code"] for row in candidates[:24]}
+        exploration = [row for row in first if row["_sampleChannel"] == "exploration"]
+        self.assertEqual(len(exploration), 24)
+        self.assertTrue(all(row["code"] not in leaders for row in exploration))
+        renamed = [{**row, "name": "不同概念名"} for row in candidates]
+        self.assertEqual([row["code"] for row in first],
+                         [row["code"] for row in _board_candidates(renamed, "concept", "2026-09-30")])
+        self.assertTrue(all("_sampleChannel" not in row for row in candidates))
+
+    def test_sampling_uses_market_session_and_remains_stable_on_holiday_refresh(self):
+        def load(url, _deadline):
+            return directory(100) if url.endswith("/gn/") else quote(url.split("/")[-2])
+        with patch.object(self.client, "_get_text", side_effect=load):
+            first = self.client.board_frame("concept", force=True)
+            second = self.client.board_frame("concept", force=True)
+        self.assertEqual(first["板块代码"].tolist(), second["板块代码"].tolist())
+        self.assertEqual(first.attrs["coverage"]["samplingDate"], "2026-09-30")
+        self.assertEqual(first.attrs["coverage"]["channels"], {
+            "leaders": {"requestedCount": 24, "validCount": 24},
+            "exploration": {"requestedCount": 24, "validCount": 24}})
+
+    def test_failed_date_probes_leave_budget_for_other_concepts(self):
+        candidates, _ = self.client._parse_directory(directory(100), "concept")
+        calls = []
+        def quotes(symbols, deadline, _force):
+            calls.append((symbols, deadline))
+            if len(calls) == 1:
+                return {}
+            return {symbol: self.client._parse_quote(quote(symbol), symbol) for symbol in symbols}
+        deadline = time.monotonic() + 24
+        with (patch.object(self.client, "_directory", return_value=(candidates, 100)),
+              patch.object(self.client, "_quotes", side_effect=quotes)):
+            frame = self.client._board_frame("concept", deadline, True)
+        requested = [symbol for symbols, _ in calls for symbol in symbols]
+        self.assertEqual(len(requested), 48)
+        self.assertEqual(len(set(requested)), 48)
+        self.assertLessEqual(calls[0][1], deadline)
+        self.assertEqual(calls[1][1], deadline)
+        self.assertEqual(len(frame), 44)
+        self.assertIsNone(frame.attrs["coverage"]["samplingDate"])
+        self.assertEqual(frame.attrs["coverage"]["unavailableQuoteCount"], 4)
+        self.assertEqual(frame.attrs["coverage"]["channels"]["exploration"]["validCount"], 24)
+
+    def test_missing_undated_rank_does_not_discard_verified_index_mapping(self):
+        page = '<input id="gnSection" value=\'{"x":{"platecode":"885611","cid":"301558","platename":"互联网医疗"}}\'>'
+        with patch.object(self.client, "_get_text", side_effect=[page, quote("bk_885611")]):
+            frame = self.client.board_frame("concept")
+        self.assertEqual(frame["板块代码"].tolist(), ["THS:885611"])
+        self.assertEqual(frame.attrs["coverage"]["rankedCandidates"], 0)
+        self.assertEqual(frame.attrs["coverage"]["mappedCandidates"], 1)
+        self.assertEqual(frame.iloc[0]["涨跌幅"], 2.3)
 
     def test_partial_quotes_are_reported_without_zero_filling_or_stale_dates(self):
         def load(url, _deadline):
@@ -104,6 +163,9 @@ class ThsClientTests(unittest.TestCase):
         self.assertEqual(list(frame["板块代码"]), ["THS:885003"])
         self.assertEqual(frame.attrs["scope"]["requestedCount"], 3)
         self.assertEqual(frame.attrs["scope"]["validCount"], 1)
+        self.assertEqual(frame.attrs["scope"]["quotedCount"], 2)
+        self.assertEqual(frame.attrs["scope"]["unavailableQuoteCount"], 1)
+        self.assertEqual(frame.attrs["scope"]["staleDateCount"], 1)
 
     def test_forced_refresh_reloads_quotes_and_failures_do_not_replace_good_cache(self):
         def load(url, _deadline):
@@ -160,6 +222,9 @@ class ThsClientTests(unittest.TestCase):
         with patch("backend.ths.requests.Session") as session, self.assertRaises(RuntimeError):
             self.client._get_text("https://q.10jqka.com.cn/gn/", time.monotonic() - 1)
         session.assert_not_called()
+        with patch.object(self.client._pool, "submit") as submit:
+            self.assertEqual(self.client._quotes(["bk_885001"], time.monotonic() - 1), {})
+        submit.assert_not_called()
 
     def test_network_failure_retries_once_but_access_restriction_does_not(self):
         session = Mock()

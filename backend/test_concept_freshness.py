@@ -79,6 +79,7 @@ class ConceptFreshnessTests(unittest.TestCase):
         original = copy.deepcopy(overview)
         with (patch.object(database, "now_iso", return_value="2026-09-13T16:00:00+08:00"),
               patch.object(FeedbackPriceClient, "calendar", return_value=CALENDAR),
+              patch("backend.forecast_pipeline.cached_histories", return_value={}),
               patch.object(concept_data.market_data, "sector_overview", return_value=overview),
               patch.object(concept_data.ConceptResearchClient, "daily_history", return_value=[]),
               patch.object(concept_data.ConceptResearchClient, "strong_stocks", return_value=board["stocks"])):
@@ -87,7 +88,14 @@ class ConceptFreshnessTests(unittest.TestCase):
                     evidence = concept_data.collect_concept_evidence(forecast=forecast)
                     self.assertEqual(evidence["tradeDate"], "20260911")
                     self.assertEqual(evidence["dataAsOf"], CLOSE)
-                    self.assertEqual(evidence["candidates"][0]["stocks"], board["stocks"])
+                    if forecast:
+                        # A recent closed snapshot passes the weekend check,
+                        # but this deliberately short calendar/history cannot
+                        # substantiate the separate 21-session forecast gate.
+                        self.assertEqual(evidence["candidates"], [])
+                        self.assertFalse(evidence["candidateSelection"]["historyQuality"]["calendarAvailable"])
+                    else:
+                        self.assertEqual(evidence["candidates"][0]["stocks"], board["stocks"])
                     self.assertIn("今日休市", "；".join(evidence["warnings"]))
                     self.assertIn(overview["warnings"][0], evidence["warnings"])
         self.assertEqual(overview, original)

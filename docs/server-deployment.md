@@ -68,7 +68,7 @@ git pull --ff-only
 
 ```dotenv
 STOCK_DEEPSEEK_API_KEY=
-STOCK_DEEPSEEK_MODEL=deepseek-chat
+STOCK_DEEPSEEK_MODEL=deepseek-flash
 
 GLM_API_KEY=
 GLM_MODEL=glm-5.3
@@ -78,6 +78,10 @@ QWEN_API_KEY=
 QWEN_MODEL=qwen3.8-max
 QWEN_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 ```
+
+概念推荐与半个月预测固定使用 **DeepSeek Flash · MAX**（`deepseek-flash`，开启思考，`reasoning_effort=max`）。gateway 必须把 `STOCK_DEEPSEEK_API_KEY` 映射为股票容器中的 `DEEPSEEK_API_KEY`；容器内 `DEEPSEEK_BASE_URL` 默认为 `https://api.deepseek.com`，如需自定义地址，应在 gateway 的环境变量映射中明确传入。`STOCK_DEEPSEEK_MODEL` 映射后的 `DEEPSEEK_MODEL` 只影响普通每日 DeepSeek 选股，不覆盖这两个研究模块的固定模型。
+
+`GLM_API_KEY` 与 `GLM_BASE_URL` 继续供独立新闻搜索和普通每日 GLM 选股使用，不作为 DeepSeek 分析的密钥；未配置 GLM 搜索时，概念研究使用已有的东方财富新闻降级来源。旧 GLM 预测保留原模型、版本与复盘结果，新任务分别使用 `concept:deepseek` 和 `forecast:deepseek`，不会把旧 GLM 成功缓存当作新 DeepSeek 结果。修改以上配置后，重新部署股票容器使其生效。
 
 不要再创建 `stockViewer/deploy/.env.server`。如果当天 AI 运行失败，修复配置或部署新版后，在策略页再次点击“今日策略状态”即可重试；当天已成功的模型不会重复计费调用。
 

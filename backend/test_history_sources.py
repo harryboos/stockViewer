@@ -39,6 +39,18 @@ class AlternativeHistoryTests(unittest.TestCase):
         TushareHistoryClient._credential = ""
         TushareHistoryClient._retry_at = TushareHistoryClient._next_at = 0
 
+    def test_eastmoney_feedback_history_keeps_amount_and_pct_for_shared_technical_cache(self):
+        payload = {"data": {"code": "BK1152", "klines": [
+            "2026-09-18,100,102,103,99,12345,9876543,4,2.0",
+            "2026-09-21,102,108,109,101,12345,-,8,5.88"]}}
+        with patch.object(FeedbackPriceClient, "_json", return_value=payload) as fetch:
+            result = FeedbackPriceClient().eastmoney_history("BK1152", "2026-09-18", "2026-09-21")
+        self.assertEqual(result["rows"][0]["amount"], 9876543)
+        self.assertEqual(result["rows"][0]["pctChg"], 2)
+        self.assertIsNone(result["rows"][1]["amount"])
+        self.assertIn("https://7.push2his.eastmoney.com/api/qt/stock/kline/get", fetch.call_args.args[0])
+        self.assertIn("f59", fetch.call_args.args[1]["fields2"])
+
     def test_tushare_preserves_index_identity_dates_ohlc_and_yuan_units(self):
         session = response_session(tushare_payload())
         with patch("backend.history_sources.EastmoneyClient._session", return_value=session):

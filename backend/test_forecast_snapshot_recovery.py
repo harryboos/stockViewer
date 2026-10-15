@@ -75,13 +75,15 @@ class ForecastSnapshotRecoveryTests(unittest.TestCase):
 
     def test_stale_memory_snapshot_automatically_refreshes_once_before_prediction(self):
         with (patch.object(concept_data.market_data, "sector_overview", side_effect=[self.old, self.fresh]) as refresh,
+              patch("backend.forecast_pipeline.cached_histories", return_value={}),
               patch.object(concept_data.ConceptResearchClient, "daily_history", return_value=[]),
               patch.object(concept_data.ConceptResearchClient, "strong_stocks", return_value=[])):
             result = concept_data.collect_concept_evidence(forecast=True)
         self.assertEqual(refresh.call_args_list, [call(False), call(True)])
         self.assertEqual(result["tradeDate"], "20260930")
         self.assertEqual(result["quoteAsOf"], self.fresh["quoteAsOf"])
-        self.assertEqual(result["candidates"][0]["evidence"][0]["publishedAt"], self.fresh["quoteAsOf"])
+        self.assertEqual(result["candidates"], [])  # A fresh quote alone is not technical history.
+        self.assertEqual(result["candidateSelection"]["historyQuality"]["eligibleCount"], 0)
 
     def test_already_failed_refresh_is_not_repeated_or_relabeled_as_current(self):
         stale = {**self.old, "refreshStatus": "failed", "refreshError": "行业与概念板块行情源均未返回有效数据"}
@@ -191,6 +193,7 @@ class SectorQuoteTimestampTests(unittest.TestCase):
         for index in (2, 5, 6):
             self.mocks[index].assert_not_called()
         with (patch.object(concept_data.market_data, "sector_overview", return_value=result) as refresh,
+              patch("backend.forecast_pipeline.cached_histories", return_value={}),
               patch.object(FeedbackPriceClient, "calendar", return_value=CALENDAR),
               patch.object(concept_data.ConceptResearchClient, "daily_history", return_value=[]),
               patch.object(concept_data.ConceptResearchClient, "strong_stocks", return_value=[])):
@@ -198,7 +201,7 @@ class SectorQuoteTimestampTests(unittest.TestCase):
         refresh.assert_called_once_with(False)
         self.assertEqual(evidence["tradeDate"], "20260930")
         self.assertEqual(evidence["dataAsOf"], original["updatedAt"])
-        self.assertEqual(evidence["candidates"][0]["code"], board["code"])
+        self.assertEqual(evidence["candidates"], [])
         self.assertTrue(any("今日休市" in warning for warning in evidence["warnings"]))
 
     def test_industry_only_cold_refresh_does_not_invent_concepts(self):

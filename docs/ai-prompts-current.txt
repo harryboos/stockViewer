@@ -1,7 +1,10 @@
 AI 预测与推荐：当前提示词汇总
-生成日期：2026-10-10
+生成日期：2026-10-16
 
-本文件从当前代码提取静态指令及输出结构。实际调用会附加当次数据；不包含密钥、真实用户数据或模型内部思考。概念推荐与预测固定使用 GLM 5.3 MAX。旧 forecast v5 文本保留作历史对照。
+本文件从当前代码提取静态指令及输出结构。实际调用会附加当次数据；不包含密钥、真实用户数据或模型内部思考。概念推荐与预测固定使用 DeepSeek Flash · MAX。旧 forecast v5 文本保留作历史对照。
+
+概念推荐与预测的调用配置：model=deepseek-flash，thinking.type=enabled，reasoning_effort=max，JSON 输出与流式接收；使用 DEEPSEEK_API_KEY，DEEPSEEK_BASE_URL 默认 https://api.deepseek.com。DEEPSEEK_MODEL 只控制普通每日选股，不覆盖这两个研究模块。新任务分别使用 concept:deepseek / forecast:deepseek；历史 GLM 报告保留原始模型、提示词版本及收益。
+新闻搜索独立使用 GLM_API_KEY / GLM_BASE_URL；未配置或搜索不可用时使用东方财富资讯降级。DeepSeek 密钥不会用于智谱搜索。普通每日 GLM 选股卡片仍使用其原有配置。
 
 
 一、每日 AI 个股选股（版本 6）
@@ -136,7 +139,7 @@ risk 结合该股票的涨跌表现、成交额或数据缺口说明具体风险
 }
 
 
-二、当日强势概念推荐（版本 concept-v4-evidence-review-glm53-max）
+二、当日强势概念推荐（版本 concept-v6-deepseek-flash-max）
 
 
 系统指令
@@ -207,6 +210,7 @@ unknown表示先后未核实，before_quote也只证明时间在先，不证明�
 区分已发生事实、影响传导推断与未来确认条件。
 没有可核对的现实事件允许catalysts=[]，不得为填字段捏造原因。
 缺失数据不作0，不用记忆补造财报、客户关系、新闻或收益。
+输出前逐项检查引用：hypothesis必须evidenceIds=[]，即使推断参考了真实资料，也不能把资料列为该推断已证实的依据。
 
 
 输出结构
@@ -415,10 +419,13 @@ unknown表示先后未核实，before_quote也只证明时间在先，不证明�
 }
 
 
-运行时数据：decisionAt、quoteAsOf、tradeDate、dataAsOf、scope、warnings，以及实际候选、指标、成份股和有日期的证据。预测另有 window、candidateSelection（不含基线）、discoveryFeatures、relativeStrength、riskContext、historicalFeedback。原始历史序列、comparisonUniverse 与 evaluationPlan 仅供计算/事后核对，不发送给模型。
+运行时数据：decisionAt、quoteAsOf、tradeDate、dataAsOf、scope、warnings，以及实际候选、指标、成份股和有日期的证据。预测另有 window、candidateSelection（包含 historyQuality 核验汇总与 snapshotCoverage，不含基线与未通过核验的概念明细）、候选 historyQuality、discoveryFeatures、relativeStrength、riskContext、historicalFeedback。原始历史序列、comparisonUniverse 与 evaluationPlan 仅供计算/事后核对，不发送给模型。
 
 
-三、未来半个月概念预测（版本 forecast-v7-discovery-risk-evaluation-glm53-max）
+三、未来半个月概念预测（版本 forecast-v10-complete-history-deepseek-flash-max）
+
+调用前处理（服务端执行）：按交易日历检查截至行情日期的最近 21 个交易日价格覆盖，旧格式快照的已有候选范围也执行同一检查。先复用同口径历史并补读缺口，仍不足的概念不发送给模型；负收益本身不会被排除。盘中最后一根尚未收盘，覆盖完整不等于所有日线已收盘。
+若没有任何合格候选，记录失败并保留覆盖诊断，跳过模型，不写入成功预测或观望档案，也不占用当日首版。只有合格候选经过模型比较后主动输出空名单，才记为观望。以下静态指令用于有合格候选的实际调用。
 
 
 系统指令
@@ -486,6 +493,10 @@ historicalFeedback.available=false表示本次反馈读取失败，必须说明�
 30日反馈只是原15日预测的延伸观察，不是另一个30日预测命中率。
 样本区间重叠、概念重复，不能视作独立试验；
 小样本不能外推未来胜率，历史成功不能取代当前新闻和技术证据。
+技术历史准入：候选已按交易日历核对最近21个交易日且截至行情快照日期；
+historyQuality仅证明价格覆盖，不证明未来胜率或现实催化。
+盘中末日仍未收盘，不能称全部日线已收盘；
+缺历史方向不会进入本次AI比较。
 决策复盘规则：先比较全部候选的趋势阶段、催化增量与共同风险，再选0至3个方向；
 不按输入顺序或当日涨幅直接抄榜。
 candidateSignals只表示行情召回通道，不是买入评分或未来胜率；
@@ -552,6 +563,7 @@ unknown表示先后未核实，before_quote也只证明时间在先，不证明�
 区分已发生事实、影响传导推断与未来确认条件。
 没有可核对的现实事件允许catalysts=[]，不得为填字段捏造原因。
 缺失数据不作0，不用记忆补造财报、客户关系、新闻或收益。
+输出前逐项检查引用：hypothesis必须evidenceIds=[]，即使推断参考了真实资料，也不能把资料列为该推断已证实的依据。
 完整保留上述核验要求，但最终报告应简练，避免多字段重复同一段论述：summary约100字；
 每概念thesis和每项Assessment约80字；
 每个催化的event/transmission/impact分别约60字；
@@ -776,4 +788,4 @@ confirmation和invalidation分别约60字。
 }
 
 
-运行时数据：decisionAt、quoteAsOf、tradeDate、dataAsOf、scope、warnings，以及实际候选、指标、成份股和有日期的证据。预测另有 window、candidateSelection（不含基线）、discoveryFeatures、relativeStrength、riskContext、historicalFeedback。原始历史序列、comparisonUniverse 与 evaluationPlan 仅供计算/事后核对，不发送给模型。
+运行时数据：decisionAt、quoteAsOf、tradeDate、dataAsOf、scope、warnings，以及实际候选、指标、成份股和有日期的证据。预测另有 window、candidateSelection（包含 historyQuality 核验汇总与 snapshotCoverage，不含基线与未通过核验的概念明细）、候选 historyQuality、discoveryFeatures、relativeStrength、riskContext、historicalFeedback。原始历史序列、comparisonUniverse 与 evaluationPlan 仅供计算/事后核对，不发送给模型。

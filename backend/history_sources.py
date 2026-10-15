@@ -16,7 +16,7 @@ from .market_numbers import number_or_none
 
 
 def normalize_bars(rows: list, start: str, end: str) -> list[dict]:
-    result = {}
+    result, conflicts = {}, set()
     for row in rows:
         try:
             day = date.fromisoformat(str(row[0])).isoformat()
@@ -26,10 +26,13 @@ def normalize_bars(rows: list, start: str, end: str) -> list[dict]:
             opening, close, high, low = values
             if high < max(opening, close) or low > min(opening, close) or not start <= day <= end:
                 continue
-            result[day] = {"date": day, "open": opening, "close": close, "high": high, "low": low}
+            bar = {"date": day, "open": opening, "close": close, "high": high, "low": low}
+            if day in result and result[day] != bar:
+                conflicts.add(day)
+            result[day] = bar
         except (ValueError, TypeError, IndexError):
             continue
-    return sorted(result.values(), key=lambda row: row["date"])
+    return [result[day] for day in sorted(result) if day not in conflicts]
 
 
 def validate_window(start: str, end: str) -> None:
