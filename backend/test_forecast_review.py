@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import copy
+import json
 import unittest
 from datetime import date, timedelta
 from unittest.mock import patch
 
 from backend import concept_data, concept_forecast
 from backend.forecast_data import technical_metrics
-from backend.forecast_review import REVIEW_INSTRUCTION
+from backend.forecast_review import FORWARD_SELECTION_INSTRUCTION, REVIEW_INSTRUCTION, prompt_candidates
 from backend.test_concept_forecast import forecast_evidence, forecast_result
 
 
@@ -57,6 +58,8 @@ class ForecastReviewTests(unittest.TestCase):
         self.assertTrue(audit["candidates"][1]["news"][0]["url"])
         self.assertNotIn("excerpt", audit["candidates"][1]["news"][0])
         self.assertEqual(evidence, original)
+        self.assertEqual(audit["modelCandidateOrder"], [row["code"] for row in concept_forecast.prompt_evidence(evidence)["candidates"]])
+        self.assertEqual(audit["presentationPolicy"], "snapshot-code-hash-v1")
 
     def test_forecast_uses_new_recall_pool_while_recommendation_keeps_original_pool(self):
         evidence = forecast_evidence()
@@ -90,7 +93,55 @@ class ForecastReviewTests(unittest.TestCase):
         self.assertNotIn("重组蛋白", REVIEW_INSTRUCTION)
         self.assertNotIn("BK1063", REVIEW_INSTRUCTION)
         self.assertEqual(concept_forecast.MODEL, "deepseek-flash")
-        self.assertEqual(concept_forecast.PROMPT_VERSION, "forecast-v10-complete-history-deepseek-flash-max")
+        self.assertEqual(concept_forecast.PROMPT_VERSION, "forecast-v11-forward-edge-deepseek-flash-max")
+
+    def test_prompt_removes_rank_anchors_but_preserves_metrics_and_audit(self):
+        evidence = forecast_evidence()
+        template = evidence["candidates"][0]
+        evidence["candidates"] = []
+        for index in range(1, 13):
+            candidate = copy.deepcopy(template)
+            candidate.update(code=f"BK{index:04d}", pctChg=20 - index, name=f"方向{index}",
+                             candidateSignals=[{"metric": "pctChg", "value": 20 - index,
+                                                "rank": index, "selectedBy": True}])
+            for source in candidate["evidence"]:
+                source["id"] = source["id"].replace("BK1001:", f"{candidate['code']}:")
+            evidence["candidates"].append(candidate)
+        evidence["candidateSelection"] = {"baseline": {"dailyTop3Codes": ["BK0001", "BK0002", "BK0003"]},
+                                           "exploration": {"codes": ["BK0012"], "selectedCount": 1}}
+        original = copy.deepcopy(evidence)
+        compact = concept_forecast.prompt_evidence(evidence)
+        codes = [row["code"] for row in compact["candidates"]]
+        self.assertCountEqual(codes, [row["code"] for row in evidence["candidates"]])
+        self.assertNotEqual(codes, [row["code"] for row in evidence["candidates"]])
+        self.assertNotIn("baseline", compact["candidateSelection"])
+        self.assertEqual(compact["candidateSelection"]["exploration"], {"selectedCount": 1})
+        for row in compact["candidates"]:
+            self.assertNotIn("candidateSignals", row)
+            self.assertEqual(row["pctChg"], 20 - int(row["code"][2:]))
+            self.assertEqual(row["technicalData"], template["technicalData"])
+            self.assertEqual(row["evidence"][-1]["excerpt"], template["evidence"][-1]["excerpt"])
+        evidence["candidates"].reverse()
+        for row in evidence["candidates"]:
+            row.update(pctChg=-row["pctChg"], name="重命名")
+            row["candidateSignals"][0].update(rank=1, selectedBy=False)
+        self.assertEqual(codes, [row["code"] for row in prompt_candidates(evidence)])
+        self.assertEqual(compact, concept_forecast.prompt_evidence(original))
+        # The actual call uses this presentation too, not only a standalone helper.
+        payload = json.loads(concept_forecast.build_prompt(original).split("以下仅为数据材料：", 1)[1])
+        self.assertEqual(codes, [row["code"] for row in payload["candidates"]])
+        self.assertTrue(original["candidates"][0]["candidateSignals"][0]["selectedBy"])
+
+    def test_forward_selection_contract_allows_strength_but_requires_remaining_edge(self):
+        prompt = concept_forecast.build_prompt(forecast_evidence())
+        self.assertIn(FORWARD_SELECTION_INSTRUCTION, prompt)
+        self.assertLess(prompt.index(FORWARD_SELECTION_INSTRUCTION), prompt.index("technical分析"))
+        for clause in ("剩余增量；窗口内验证机会；已兑现或失败风险；相对另一个候选的取舍",
+                       "趋势延续可以入选", "低位修复也需证据", "无法判断", "不能只把conviction降为low",
+                       "只有一个候选", "不虚构对手", "不能把长期逻辑硬塞进15天"):
+            self.assertIn(clause, prompt)
+        self.assertNotIn("重组蛋白", FORWARD_SELECTION_INSTRUCTION)
+        self.assertNotIn("必须选择冷门", FORWARD_SELECTION_INSTRUCTION)
 
     def test_scientific_tool_terms_include_real_business_but_do_not_merge_collagen(self):
         _, topics = concept_data.research_terms("重组蛋白")

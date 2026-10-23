@@ -16,8 +16,9 @@ from .concept_identity import concept_provider
 from .market_numbers import number_or_none as _finite
 from .forecast_candidates import (_available_boards, _metric, _ranked_round_robin,
                                   daily_change_baseline, select_forecast_boards)
+from .forecast_quality import MIN_HISTORY_SESSIONS
 
-METHOD = "dated-discovery-round-robin-v2"
+METHOD = "dated-discovery-round-robin-exploration-v3"
 CHINA_TZ = ZoneInfo("Asia/Shanghai")
 CHANNELS = ("pctChg", "breadth", "relativeAmount", "momentum3d", "momentum5d", "eventClue", "relativeStrength5d", "amount")
 
@@ -227,7 +228,26 @@ def build_discovery_pool(boards: list[dict], histories: dict, trade_date: str,
         if clues:
             row["eventClues"] = clues
         enriched.append(row)
-    selected, channels = _ranked_round_robin(enriched, CHANNELS, _channel_value, limit)
+    ranked, channels = _ranked_round_robin(enriched, CHANNELS, _channel_value, limit)
+    # Preserve a small comparison sample after recall: exploratory history reads
+    # alone do not help if correlated popularity routes consume every final slot.
+    reserved = min(2, limit // 6)
+    selected = ranked[:max(0, limit - reserved)]
+    seen = {row["code"] for row in selected}
+    exploratory = sorted((row for row in enriched if row["code"] not in seen
+                          and row["discoveryFeatures"]["historyAligned"]
+                          and row["discoveryFeatures"]["historyBars"] >= MIN_HISTORY_SESSIONS),
+                         key=lambda row: (hashlib.sha256(f"{day}:{row['code']}".encode()).hexdigest(), row["code"]))
+    exploration = [{**row, "candidateSignals": []} for row in exploratory[:reserved]]
+    selected.extend(exploration)
+    seen.update(row["code"] for row in exploration)
+    # Sparse history must not shrink the research pool. Return unused seats to
+    # the original ranking, without new data reads or duplicate concepts.
+    selected.extend(row for row in ranked if row["code"] not in seen)
+    selected = selected[:limit]
+    for channel, counts in channels.items():
+        counts["selectedCount"] = sum(any(signal["metric"] == channel and signal["selectedBy"]
+                                          for signal in row["candidateSignals"]) for row in selected)
     metadata = {"method": METHOD, "provider": provider, "tradeDate": day,
                 "eventCutoff": cutoff.isoformat(timespec="seconds"),
                 "availableCount": len(available), "snapshotCount": len(all_available),
@@ -238,6 +258,10 @@ def build_discovery_pool(boards: list[dict], histories: dict, trade_date: str,
                 "ignoredFutureBars": ignored_future, "ignoredInvalidBars": ignored_invalid,
                 "selectedCount": len(selected), "limit": limit,
                 "channels": channels,
+                "exploration": {"reservedCount": reserved, "availableCount": len(exploratory),
+                                "selectedCount": len(exploration), "codes": [row["code"] for row in exploration],
+                                "method": "snapshot-date-code-hash", "minimumHistoryBars": MIN_HISTORY_SESSIONS,
+                                "note": "名称无关的比较样本，不是强势评分或推荐；价格历史须对齐且根数足够，最终仍需交易日历核验。未用名额返回多通道候选。"},
                 "baseline": {"dailyTop3Codes": daily_change_baseline(available),
                              "candidateEqualWeightCodes": [row["code"] for row in selected]},
                 "channelDefinitions": {

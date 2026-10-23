@@ -21,6 +21,73 @@ def bars(closes: list[float], amounts: list[float] | None = None, start: str = "
 
 
 class DiscoveryTests(unittest.TestCase):
+    def test_final_pool_keeps_exploration_when_popularity_routes_overlap(self):
+        rows = [board(index) for index in range(1, 49)]
+        histories = {row["code"]: bars([100 + index for index in range(21)]) for row in rows}
+        original = copy.deepcopy((rows, histories))
+        selected, metadata = build_discovery_pool(rows, histories, "2026-09-21")
+        codes = [row["code"] for row in selected]
+        exploration = metadata["exploration"]
+        self.assertEqual(len(codes), 12)
+        self.assertEqual(len(set(codes)), 12)
+        self.assertEqual(exploration["reservedCount"], 2)
+        self.assertEqual(exploration["selectedCount"], 2)
+        self.assertEqual(exploration["minimumHistoryBars"], 21)
+        self.assertTrue(any(int(code[2:]) > 12 for code in exploration["codes"]))
+        self.assertEqual(codes[:10], [f"BK{index:04d}" for index in range(1, 11)])
+        self.assertEqual(set(codes[10:]), set(exploration["codes"]))
+        self.assertTrue(all(row["candidateSignals"] == [] for row in selected if row["code"] in exploration["codes"]))
+        self.assertEqual(sum(item["selectedCount"] for item in metadata["channels"].values()) + exploration["selectedCount"], 12)
+        self.assertEqual(metadata["baseline"]["candidateEqualWeightCodes"], codes)
+        self.assertEqual((rows, histories), original)
+
+    def test_final_exploration_is_name_blind_order_independent_and_reproducible(self):
+        rows = [board(index) for index in range(1, 49)]
+        histories = {row["code"]: bars([100] * 22) for row in rows}
+        selected, metadata = build_discovery_pool(rows, histories, "2026-09-21")
+        renamed = [{**row, "name": "热门方向重组蛋白"} for row in reversed(rows)]
+        again, repeat = build_discovery_pool(renamed, dict(reversed(list(histories.items()))), "20260921")
+        self.assertEqual([row["code"] for row in selected], [row["code"] for row in again])
+        self.assertEqual(metadata["exploration"], repeat["exploration"])
+        # A future price cannot alter today's exploratory choice or indicators.
+        without_future = {code: history[:-1] for code, history in histories.items()}
+        no_future, _ = build_discovery_pool(rows, without_future, "2026-09-21")
+        self.assertEqual([row["code"] for row in selected], [row["code"] for row in no_future])
+        _, next_day = build_discovery_pool(rows, histories, "2026-09-22")
+        self.assertNotEqual(metadata["exploration"]["codes"], next_day["exploration"]["codes"])
+
+    def test_sparse_or_stale_exploration_returns_unused_seat_to_ranked_pool(self):
+        rows = [board(index) for index in range(1, 49)]
+        histories = {row["code"]: bars([100] * 11, start="2026-09-11") for row in rows}
+        histories["BK0031"] = bars([100] * 21)
+        histories["BK0032"] = bars([100] * 20)
+        histories["BK0033"] = bars([100] * 21, start="2026-08-31")
+        histories["BK0034"] = bars([100] * 20) + [{"date": "2026-09-22", "close": 100}]
+        selected, metadata = build_discovery_pool(rows, histories, "2026-09-21")
+        codes = [row["code"] for row in selected]
+        self.assertEqual(metadata["exploration"]["availableCount"], 1)
+        self.assertEqual(metadata["exploration"]["codes"], ["BK0031"])
+        self.assertEqual(len(codes), 12)
+        self.assertEqual(len(set(codes)), 12)
+        self.assertIn("BK0011", codes)
+        self.assertEqual(sum(item["selectedCount"] for item in metadata["channels"].values()), 11)
+        none, empty = build_discovery_pool(rows, {}, "2026-09-21")
+        self.assertEqual(empty["exploration"]["selectedCount"], 0)
+        self.assertEqual([row["code"] for row in none], [f"BK{index:04d}" for index in range(1, 13)])
+
+    def test_final_exploration_respects_small_and_large_limits(self):
+        rows = [board(index) for index in range(1, 49)]
+        histories = {row["code"]: bars([100] * 21) for row in rows}
+        for limit in (0, 1, 5, 6, 11, 12, 18, 100):
+            with self.subTest(limit=limit):
+                selected, metadata = build_discovery_pool(rows, histories, "2026-09-21", limit=limit)
+                self.assertEqual(len(selected), min(limit, len(rows)))
+                self.assertEqual(len({row["code"] for row in selected}), len(selected))
+                self.assertEqual(metadata["exploration"]["reservedCount"], min(2, limit // 6))
+                self.assertLessEqual(metadata["exploration"]["selectedCount"], min(2, limit // 6))
+                self.assertEqual(sum(item["selectedCount"] for item in metadata["channels"].values())
+                                 + metadata["exploration"]["selectedCount"], len(selected))
+
     def test_reversal_and_relative_turnover_recalled_outside_daily_leaders(self):
         rows = [board(index) for index in range(1, 41)]
         histories = {

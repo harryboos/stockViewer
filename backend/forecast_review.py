@@ -1,19 +1,54 @@
 """Versioned forecast review rules and compact, immutable candidate audit data."""
 from __future__ import annotations
 
+import hashlib
 from copy import deepcopy
+
+
+PRESENTATION_POLICY = "snapshot-code-hash-v1"
+
+
+def prompt_candidates(evidence: dict) -> list[dict]:
+    """Present the same pool reproducibly without encoding momentum in its order."""
+    day = str(evidence.get("tradeDate") or "").replace("-", "")
+    # Separate this salt from exploratory sampling; otherwise sampled low-hash
+    # codes would systematically appear first and introduce a new position bias.
+    return sorted(evidence.get("candidates", []), key=lambda row: (
+        hashlib.sha256(f"forecast-presentation:{day}:{row['code']}".encode()).digest(), row["code"]))
+
+
+FORWARD_SELECTION_INSTRUCTION = (
+    "前瞻选择准则：研究预测窗口内仍可能兑现的增量及失败风险；当日涨幅、近5/10日收益和历史排名只描述已有状态，"
+    "不能直接作为未来排序。候选输入按日期与代码稳定打散，位置、召回通道和被检索次数都不是推荐评分。"
+    "对全部候选先区分已发生事实、未来窗口待验证的变化、已有价格反应和反面证据，再决定0至3个方向。"
+    "比较趋势延续、早期修复与事件推进，不给任何阶段固定名额；尚未上涨不能证明存在预期差。"
+    "入选理由须回答：去掉当日涨幅排名后，还有什么具体依据支持未来半个月发生变化？"
+    "依据可以是已公开但尚待推进的经营/政策事件，或有量价、广度、相对强度证据的技术结构变化；"
+    "不能只复述上涨、成交活跃、均线多头、长期行业空间或强者恒强。"
+    "趋势延续可以入选，但需说明原驱动还有哪个未完成环节、何种新增验证能支持延续，以及兑现后转弱的风险；"
+    "低位修复也需证据，不能仅因滞涨、跌幅大、低RSI或近期输给大盘而推荐。"
+    "核对窗口适配：有来源支持的日程才写确定日期；无确定日程时给出窗口内可跟踪的条件并承认时点不确定，"
+    "不能把长期逻辑硬塞进15天或假定政策、订单必定在两周落地。"
+    "预期是否已反映在价格中只能作为研究推断：结合事件首发时间、change20d、均线偏离与动量变化讨论兑现风险；"
+    "资料不足就写无法判断，不能断言市场尚未发现、低估或未计价。"
+    "每个入选thesis简要写清‘剩余增量；窗口内验证机会；已兑现或失败风险；相对另一个候选的取舍’。"
+    "取舍须引用本次候选中另一个真实名称或代码及其已给事实，解释为何本方向的未来依据更合适；"
+    "只有一个候选时明确缺少横向比较，不虚构对手；不要求输出完整内部推理过程。"
+    "如果候选只剩已有涨势和泛化叙事，或无法说明窗口内的验证机会，输出concepts=[]并解释等待什么，"
+    "不能只把conviction降为low后仍为凑数入选。探索席位只是比较机会，不是必须推荐的冷门配额。"
+)
 
 
 REVIEW_INSTRUCTION = (
     "技术历史准入：候选已按交易日历核对最近21个交易日且截至行情快照日期；historyQuality仅证明价格覆盖，"
     "不证明未来胜率或现实催化。盘中末日仍未收盘，不能称全部日线已收盘；缺历史方向不会进入本次AI比较。"
-    "决策复盘规则：先比较全部候选的趋势阶段、催化增量与共同风险，再选0至3个方向；不按输入顺序或当日涨幅直接抄榜。"
-    "candidateSignals只表示行情召回通道，不是买入评分或未来胜率；未覆盖方向不能被宣称已研究或不存在机会。"
+    "决策复盘规则：比较候选的趋势阶段、催化增量与共同风险，不按输入顺序或当日涨幅直接抄榜。"
+    "行情召回通道只解释发现范围，不是买入评分或未来胜率；未覆盖方向不能被宣称已研究或不存在机会。"
     "candidateSelection说明实际发现范围：快照数量、历史已读取/对齐数量与入池数量不同，不能将有限读取说成全市场扫描。"
     "discoveryFeatures提供动量变化与相对成交额；momentumChange3d/5d是最近窗口收益减上一相邻窗口收益，单位百分点，"
     "动量改善仍可能是负收益下跌减速，不等于趋势已反转。historyContinuity未验证时不宣称已核对全部交易日。"
     "eventClues只是筛选前的概念名称与新闻匹配，不能当作新利好、首次公开或确定受益；要再次核对主体、时间与传导链。"
-    "区分‘初期修复、趋势延续、加速后拥挤、转弱、证据不足’，在每项thesis中说明阶段及未来窗口还剩什么增量。"
+    "区分‘初期修复、趋势延续、加速后拥挤、转弱、证据不足’，阶段必须有当期资料支持。"
     "近5日负收益或仍低于MA20不能单独排除反转候选：若有预测时已公开的新催化，结合change3d、"
     "previousChange5d、momentumChange5d、ma5Slope5d、广度和成交额检验改善；负收益也不能单独当作抄底理由。"
     "momentumChange5d是最近5日收益减此前5日收益，单位百分点；distanceToMa20是当前价格偏离20日均线的百分比；"
@@ -32,7 +67,7 @@ REVIEW_INSTRUCTION = (
     "riskContext.pairs是共同风险检查：correlation20d为已对齐收益相关性，样本不足或无波动时未知，不能当0；"
     "strongStockSampleOverlap只是所给强势股样本重合，不能推断全成份股重合或组合权重；sharedNewsSources是共同URL，"
     "不同URL仍可能转载同一事件，不能声称为独立证据。低相关也不能证明产业链风险独立。"
-    "优先比较有新催化且动量改善/相对强度有支持的方向，并与延续、拥挤和转弱阶段对照；指标不构成经回测验证的硬阈值。"
+    "动量改善与相对强度提供技术验证，不是必须已经上涨或同时跑赢两个基准的入选门槛；指标不构成经回测验证的硬阈值。"
     "若多个入选方向高度共振，在summary解释共同驱动及为何仍保留；无法说明新增证据差异时减少重复方向。"
     "休市期间价格没有刷新不等于催化延续；重新核验新闻和复市兑现风险，阶段反馈不得当成最终成败。"
     "historicalFeedback.missedLeaderCases是已到期、已核对的同口径漏选对照，仅用于复盘，不是本次候选或推荐标签。"
@@ -57,7 +92,9 @@ def candidate_audit(evidence: dict, selected: set[str]) -> dict:
             "news": [{key: source.get(key) for key in ("id", "title", "publishedAt", "publishedAtPrecision", "temporalRelation", "source", "url")}
                      for source in item.get("evidence", []) if source.get("kind") == "news"],
         })
-    return {"version": 1, "complete": True, "decisionAt": evidence.get("decisionAt"),
+    return {"version": 2, "complete": True, "decisionAt": evidence.get("decisionAt"),
+            "presentationPolicy": PRESENTATION_POLICY,
+            "modelCandidateOrder": [row["code"] for row in prompt_candidates(evidence)],
             "dataAsOf": evidence.get("dataAsOf"), "quoteAsOf": evidence.get("quoteAsOf"),
             "scope": evidence.get("scope"), "selection": deepcopy(evidence.get("candidateSelection")),
             "candidates": candidates,

@@ -105,6 +105,26 @@ class ForecastPipelineTests(unittest.TestCase):
         self.assertEqual(client.daily_history.call_args_list[0].args[0], code)
         self.assertTrue(any(item["id"] == source["id"] for item in candidate["evidence"]))
 
+    def test_exploration_metadata_tracks_calendar_verified_final_candidates(self):
+        snapshot = overview()
+        cached = {row["code"]: pipeline.normalized_history(history(growth=0, amount=False), TRADE_DATE)
+                  for row in snapshot["forecastDiscoveryBoards"]}
+        _, before = pipeline.build_discovery_pool(snapshot["forecastDiscoveryBoards"], cached, TRADE_DATE)
+        gapped_code = before["exploration"]["codes"][0]
+        # Raw aligned row counts can pass discovery, but an interior calendar
+        # gap must exclude this direction from the actual model pool and audit.
+        cached[gapped_code].pop(-5)
+        result, _, _ = self.collect(snapshot=snapshot, cached=cached, fresh_history=[])
+        candidates = {row["code"]: row for row in result["candidates"]}
+        exploration = result["candidateSelection"]["exploration"]
+        self.assertNotIn(gapped_code, candidates)
+        self.assertNotIn(gapped_code, exploration["codes"])
+        self.assertEqual(exploration["selectedCount"], 2)
+        self.assertEqual(len(candidates), 12)
+        self.assertTrue(set(exploration["codes"]) <= candidates.keys())
+        self.assertTrue(all(candidates[code]["historyQuality"]["status"] == "ready"
+                            for code in exploration["codes"]))
+
     def test_same_end_date_cache_prefers_turnover_coverage_over_extra_price_rows(self):
         meta = [cache_row("BK0001", history(40, amount=True))]
         research = [{"cache_key": f"evaluation:BK0001:2026-07-01:2026-09-11", "updated_at": QUOTE,

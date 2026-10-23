@@ -226,7 +226,8 @@ def collect_forecast_evidence(overview: dict, freshness_note: str | None, key: s
         decision_at=cutoff, relative_strength=relative_recall)
     selected, eligible_selection = build_discovery_pool(eligible, histories, trade_date, event_sources,
         decision_at=cutoff, relative_strength=relative_recall)
-    selection.update(selectedCount=len(selected), channels=eligible_selection["channels"])
+    selection.update(selectedCount=len(selected), channels=eligible_selection["channels"],
+                     exploration=eligible_selection["exploration"])
     selection["note"] = "覆盖仅限已取得的同来源快照；历史读取数量不等于完整数量。最终进入AI的概念已按交易日历核验最近21个交易日；未读取或未补齐方向不代表没有机会。"
     selection["baseline"]["candidateEqualWeightCodes"] = [row["code"] for row in selected]
     selection["historyQuality"] = {"requiredSessions": MIN_HISTORY_SESSIONS,
